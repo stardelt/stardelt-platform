@@ -1,4 +1,4 @@
-# Stardelt Nova — UI + backend in one pod.
+# stardelt Nova — UI + backend in one pod.
 # Image baked by nova-image/Dockerfile (multi-stage: UI dist + axum binary).
 apiVersion: apps/v1
 kind: Deployment

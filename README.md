@@ -1,6 +1,6 @@
 # stardelt-platform
 
-Production-shape deployment artifacts. Helm values, manifests, and scripts to install Stardelt on any conformant Kubernetes cluster.
+Production-shape deployment artifacts. Helm values, manifests, and scripts to install stardelt on any conformant Kubernetes cluster.
 
 > For a local laptop demo (kind cluster, sample data), see [github.com/stardelt/stardelt-demos](https://github.com/stardelt/stardelt-demos).
 > Full documentation: [docs.stardelt.io](https://docs.stardelt.io)
@@ -81,7 +81,7 @@ helm-values/          Helm values files, one per chart
 manifests/            Plain Kubernetes manifests (kubectl apply)
   cnpg-postgres.yaml    CloudNative-PG Cluster for Lakekeeper metadata
   lakekeeper-bootstrap.yaml  Job: accept ToS + create default warehouse
-  nova-deployment.yaml  Stardelt Nova UI + backend
+  nova-deployment.yaml  stardelt Nova UI + backend
   s3-credentials.example.yaml  Template for the ozone-s3-creds Secret
 
 images/

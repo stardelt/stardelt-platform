@@ -12,7 +12,7 @@
 #   - import_datasources.yaml pre-creates the Trino warehouse database
 #     connection so SQL Lab works immediately after install.
 
-# Use the Stardelt-owned image (superset-image/Dockerfile) which has
+# Use the stardelt-owned image (superset-image/Dockerfile) which has
 # psycopg2-binary + trino pre-installed in /app/.venv/. The chart's default
 # bootstrap is fine; we just leave the marker file.
 image:
@@ -51,7 +51,7 @@ extraConfigs:
 init:
   adminUser:
     username: admin
-    firstname: Stardelt
+    firstname: stardelt
     lastname: Admin
     email: admin@stardelt.local
     password: admin

@@ -1,4 +1,4 @@
-# Stardelt's Superset image: baseline Apache Superset 5.0 + the python
+# stardelt's Superset image: baseline Apache Superset 5.0 + the python
 # drivers the upstream image does not ship in its venv:
 #   - psycopg2-binary: needed to connect to the chart's bundled Postgres
 #     backend. Without it the init-db job and gunicorn workers crash.

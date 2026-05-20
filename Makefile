@@ -1,4 +1,4 @@
-# Stardelt Platform — install/upgrade/uninstall against your current kube-context.
+# stardelt Platform — install/upgrade/uninstall against your current kube-context.
 #
 # Usage:
 #   make install              # install all components into the stardelt namespace
@@ -53,7 +53,7 @@ _helm-plugin:
 # ---------------------------------------------------------------------------
 # Install
 # ---------------------------------------------------------------------------
-install: deps _helm-repos _helm-plugin ## Install all Stardelt components (idempotent)
+install: deps _helm-repos _helm-plugin ## Install all stardelt components (idempotent)
 	@echo "› [1/9] CloudNative-PG operator"
 	@helm upgrade --install cnpg cnpg/cloudnative-pg \
 	  --version $(CNPG_VERSION) \
@@ -99,7 +99,7 @@ install: deps _helm-repos _helm-plugin ## Install all Stardelt components (idemp
 	@kubectl apply -f manifests/nova-deployment.yaml
 
 	@echo ""
-	@echo "Stardelt installed. Run 'make pf' to open port-forwards."
+	@echo "stardelt installed. Run 'make pf' to open port-forwards."
 
 # ---------------------------------------------------------------------------
 # Upgrade (helm upgrade is idempotent — same as install)
@@ -109,7 +109,7 @@ upgrade: install ## Upgrade all components (same as install)
 # ---------------------------------------------------------------------------
 # Uninstall
 # ---------------------------------------------------------------------------
-uninstall: ## Uninstall all Stardelt components (reverse order)
+uninstall: ## Uninstall all stardelt components (reverse order)
 	@echo "› removing manifests"
 	@kubectl delete -f manifests/nova-deployment.yaml        --ignore-not-found
 	@kubectl delete -f manifests/lakekeeper-bootstrap.yaml   --ignore-not-found

@@ -13,7 +13,7 @@
 
 executor: KubernetesExecutor
 
-# Stardelt-owned image with DAGs baked in
+# stardelt-owned image with DAGs baked in
 images:
   airflow:
     repository: stardelt/airflow
