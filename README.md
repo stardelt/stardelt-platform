@@ -3,7 +3,7 @@
 Production-shape deployment artifacts. Helm values, manifests, and scripts to install stardelt on any conformant Kubernetes cluster.
 
 > For a local laptop demo (kind cluster, sample data), see [github.com/stardelt/stardelt-demos](https://github.com/stardelt/stardelt-demos).
-> Full documentation: [docs.stardelt.io](https://docs.stardelt.io)
+> Full documentation: [stardelt.io](https://stardelt.io)
 
 ---
 
