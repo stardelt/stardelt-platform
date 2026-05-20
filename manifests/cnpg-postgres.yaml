@@ -1,0 +1,19 @@
+# CloudNative-PG Cluster backing Lakekeeper's catalog metadata.
+# Single-instance for kind MVP. The operator creates secrets
+# `lakekeeper-pg-app` (user creds) and `lakekeeper-pg-superuser` automatically.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: lakekeeper-pg
+  namespace: stardelt
+spec:
+  instances: 1
+  storage:
+    size: 2Gi
+  bootstrap:
+    initdb:
+      database: lakekeeper
+      owner: lakekeeper
+  resources:
+    requests: { cpu: "50m", memory: "256Mi" }
+    limits:   { cpu: "1",   memory: "512Mi" }

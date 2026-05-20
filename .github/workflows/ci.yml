@@ -1,0 +1,134 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Lint YAML files and shell scripts
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint (yamllint + shellcheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install yamllint + shellcheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends yamllint shellcheck
+
+      - name: Lint helm-values YAML
+        run: |
+          yamllint -d '{extends: relaxed, rules: {line-length: {max: 140}}}' \
+            helm-values/
+
+      - name: Lint manifests YAML
+        run: |
+          yamllint -d '{extends: relaxed, rules: {line-length: {max: 140}}}' \
+            manifests/
+
+      - name: ShellCheck scripts
+        run: |
+          shellcheck scripts/check-deps.sh scripts/port-forwards.sh
+
+  # ---------------------------------------------------------------------------
+  # helm template each chart with its values file
+  # ---------------------------------------------------------------------------
+  helm-lint:
+    name: Helm lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: "3.18.x"
+
+      - name: Add helm repos
+        run: |
+          helm repo add cnpg           https://cloudnative-pg.github.io/charts
+          helm repo add seaweedfs      https://seaweedfs.github.io/seaweedfs/helm
+          helm repo add lakekeeper     https://charts.lakekeeper.io
+          helm repo add trino          https://trinodb.github.io/charts
+          helm repo add apache-airflow https://airflow.apache.org
+          helm repo add superset       https://apache.github.io/superset
+          helm repo update
+
+      - name: helm template — cnpg
+        run: |
+          helm template cnpg cnpg/cloudnative-pg \
+            --version 0.28.2 \
+            --namespace stardelt > /dev/null
+
+      - name: helm template — seaweedfs
+        run: |
+          helm template seaweedfs seaweedfs/seaweedfs \
+            --version 4.25.1 \
+            --namespace stardelt \
+            -f helm-values/seaweedfs.yaml > /dev/null
+
+      - name: helm template — lakekeeper
+        run: |
+          helm template lakekeeper lakekeeper/lakekeeper \
+            --version 0.11.0 \
+            --namespace stardelt \
+            -f helm-values/lakekeeper.yaml > /dev/null
+
+      - name: helm template — trino
+        run: |
+          helm template trino trino/trino \
+            --version 1.42.2 \
+            --namespace stardelt \
+            -f helm-values/trino.yaml > /dev/null
+
+      - name: helm template — airflow
+        run: |
+          helm template airflow apache-airflow/airflow \
+            --version 1.21.0 \
+            --namespace stardelt \
+            -f helm-values/airflow.yaml > /dev/null
+
+      - name: helm template — superset
+        run: |
+          helm template superset superset/superset \
+            --version 0.15.5 \
+            --namespace stardelt \
+            -f helm-values/superset.yaml > /dev/null
+
+  # ---------------------------------------------------------------------------
+  # Build + push Superset image (push to main only)
+  # ---------------------------------------------------------------------------
+  image-superset:
+    name: Build Superset image
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: images/superset
+          file: images/superset/Dockerfile
+          push: true
+          tags: ghcr.io/stardelt/superset:dev
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -1,0 +1,4 @@
+*.kubeconfig
+.env
+.env.local
+*.log

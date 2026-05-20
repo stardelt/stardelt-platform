@@ -1,0 +1,6 @@
+.git/
+*.md
+.github/
+helm-values/
+manifests/
+scripts/

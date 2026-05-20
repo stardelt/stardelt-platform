@@ -1,0 +1,57 @@
+# Stardelt Nova — UI + backend in one pod.
+# Image baked by nova-image/Dockerfile (multi-stage: UI dist + axum binary).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nova
+  namespace: stardelt
+  labels:
+    app.kubernetes.io/name: nova
+    app.kubernetes.io/part-of: stardelt
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: nova }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: nova, app.kubernetes.io/part-of: stardelt }
+    spec:
+      containers:
+        - name: nova
+          image: stardelt/nova:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: NOVA_TRINO_URL
+              value: http://trino.stardelt.svc.cluster.local:8080
+            - name: NOVA_LAKEKEEPER_URL
+              value: http://lakekeeper.stardelt.svc.cluster.local:8181
+            - name: NOVA_WAREHOUSE_NAME
+              value: warehouse
+            - name: NOVA_DEV_USER
+              value: stardelt-dev
+            - name: RUST_LOG
+              value: info,tower_http=info
+          readinessProbe:
+            httpGet: { path: /api/health, port: http }
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            requests: { cpu: "50m",  memory: "64Mi"  }
+            limits:   { cpu: "1",    memory: "256Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nova
+  namespace: stardelt
+  labels: { app.kubernetes.io/name: nova }
+spec:
+  type: ClusterIP
+  selector: { app.kubernetes.io/name: nova }
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

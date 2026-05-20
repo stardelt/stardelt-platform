@@ -1,0 +1,88 @@
+# Bootstrap Lakekeeper: accept ToS + create the default `warehouse` pointing
+# at Ozone S3. Idempotent: skips bootstrap if already bootstrapped, skips
+# warehouse create if it already exists (409 Conflict).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: lakekeeper-bootstrap
+  namespace: stardelt
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 4
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: bootstrap
+          image: curlimages/curl:8.10.1
+          env:
+            - name: LK
+              value: http://lakekeeper:8181
+            - name: S3_ENDPOINT
+              valueFrom: { secretKeyRef: { name: ozone-s3-creds, key: endpoint } }
+            - name: S3_BUCKET
+              valueFrom: { secretKeyRef: { name: ozone-s3-creds, key: bucket } }
+            - name: S3_REGION
+              valueFrom: { secretKeyRef: { name: ozone-s3-creds, key: region } }
+            - name: S3_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: ozone-s3-creds, key: access-key } }
+            - name: S3_SECRET_KEY
+              valueFrom: { secretKeyRef: { name: ozone-s3-creds, key: secret-key } }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              echo "▶ checking Lakekeeper info"
+              INFO=$(curl -fsS "$LK/management/v1/info")
+              echo "$INFO"
+              BOOTSTRAPPED=$(echo "$INFO" | grep -o '"bootstrapped":[^,}]*' | cut -d: -f2 | tr -d ' "')
+
+              if [ "$BOOTSTRAPPED" = "true" ]; then
+                echo "✓ already bootstrapped"
+              else
+                echo "▶ bootstrapping"
+                curl -fsS -X POST -H 'Content-Type: application/json' \
+                  -d '{"accept-terms-of-use":true,"is-operator":true}' \
+                  "$LK/management/v1/bootstrap"
+                echo
+                echo "✓ bootstrapped"
+              fi
+
+              echo "▶ checking for existing 'warehouse'"
+              EXISTING=$(curl -fsS "$LK/management/v1/warehouse" || echo '{"warehouses":[]}')
+              echo "$EXISTING"
+              if echo "$EXISTING" | grep -q '"name":"warehouse"'; then
+                echo "✓ warehouse 'warehouse' already exists"
+                exit 0
+              fi
+
+              echo "▶ creating warehouse 'warehouse' on s3://$S3_BUCKET ($S3_ENDPOINT)"
+              cat > /tmp/wh.json <<EOF
+              {
+                "warehouse-name": "warehouse",
+                "project-id": "00000000-0000-0000-0000-000000000000",
+                "storage-profile": {
+                  "type": "s3",
+                  "bucket": "$S3_BUCKET",
+                  "key-prefix": "warehouse",
+                  "endpoint": "$S3_ENDPOINT",
+                  "region": "$S3_REGION",
+                  "path-style-access": true,
+                  "flavor": "minio",
+                  "sts-enabled": false,
+                  "remote-signing-enabled": false
+                },
+                "storage-credential": {
+                  "type": "s3",
+                  "credential-type": "access-key",
+                  "aws-access-key-id": "$S3_ACCESS_KEY",
+                  "aws-secret-access-key": "$S3_SECRET_KEY"
+                }
+              }
+              EOF
+              cat /tmp/wh.json
+              curl -fsS -X POST -H 'Content-Type: application/json' \
+                -d @/tmp/wh.json \
+                "$LK/management/v1/warehouse"
+              echo
+              echo "✓ warehouse created"
