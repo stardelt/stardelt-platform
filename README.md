@@ -25,15 +25,13 @@ kubectl config current-context
 
 ## S3 credentials (required before install)
 
-All components that touch object storage read credentials from the `ozone-s3-creds` Secret. Copy the example, fill it in, and apply it **before** running `make install`:
+All components that touch object storage read credentials from the `stardelt-s3-creds` Secret. Copy the example, fill it in, and apply it **before** running `make install`:
 
 ```sh
 cp manifests/s3-credentials.example.yaml manifests/s3-credentials.yaml
 # Edit manifests/s3-credentials.yaml — fill in access-key, secret-key, endpoint, bucket, region
 kubectl apply -f manifests/s3-credentials.yaml
 ```
-
-> The Secret name is `ozone-s3-creds` (kept from the original Ozone deployment for backward compatibility).
 
 ---
 
@@ -82,7 +80,7 @@ manifests/            Plain Kubernetes manifests (kubectl apply)
   cnpg-postgres.yaml    CloudNative-PG Cluster for Lakekeeper metadata
   lakekeeper-bootstrap.yaml  Job: accept ToS + create default warehouse
   nova-deployment.yaml  stardelt Nova UI + backend
-  s3-credentials.example.yaml  Template for the ozone-s3-creds Secret
+  s3-credentials.example.yaml  Template for the stardelt-s3-creds Secret
 
 images/
   superset/Dockerfile   Superset 5.0.0 + psycopg2 + trino driver

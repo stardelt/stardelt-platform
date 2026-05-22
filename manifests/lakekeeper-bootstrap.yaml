@@ -1,5 +1,5 @@
 # Bootstrap Lakekeeper: accept ToS + create the default `warehouse` pointing
-# at Ozone S3. Idempotent: skips bootstrap if already bootstrapped, skips
+# at SeaweedFS / S3. Idempotent: skips bootstrap if already bootstrapped, skips
 # warehouse create if it already exists (409 Conflict).
 apiVersion: batch/v1
 kind: Job
@@ -19,15 +19,15 @@ spec:
             - name: LK
               value: http://lakekeeper:8181
             - name: S3_ENDPOINT
-              valueFrom: { secretKeyRef: { name: ozone-s3-creds, key: endpoint } }
+              valueFrom: { secretKeyRef: { name: stardelt-s3-creds, key: endpoint } }
             - name: S3_BUCKET
-              valueFrom: { secretKeyRef: { name: ozone-s3-creds, key: bucket } }
+              valueFrom: { secretKeyRef: { name: stardelt-s3-creds, key: bucket } }
             - name: S3_REGION
-              valueFrom: { secretKeyRef: { name: ozone-s3-creds, key: region } }
+              valueFrom: { secretKeyRef: { name: stardelt-s3-creds, key: region } }
             - name: S3_ACCESS_KEY
-              valueFrom: { secretKeyRef: { name: ozone-s3-creds, key: access-key } }
+              valueFrom: { secretKeyRef: { name: stardelt-s3-creds, key: access-key } }
             - name: S3_SECRET_KEY
-              valueFrom: { secretKeyRef: { name: ozone-s3-creds, key: secret-key } }
+              valueFrom: { secretKeyRef: { name: stardelt-s3-creds, key: secret-key } }
           command: ["/bin/sh", "-c"]
           args:
             - |

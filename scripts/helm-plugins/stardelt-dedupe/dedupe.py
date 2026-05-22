@@ -3,10 +3,10 @@
 so later entries override earlier ones — restoring helm v3 behavior under v4's
 server-side apply.
 
-Some upstream charts (apache/ozone-helm-charts v0.2.0) hardcode env vars in
-their _helpers.tpl and append user-provided env after them. Under helm v3 the
-duplicates were tolerated (kube applied last-wins); helm v4's SSA path now
-fails with `duplicate entries for key`. This renderer strips earlier duplicates.
+Some upstream charts hardcode env vars in their _helpers.tpl and append
+user-provided env after them. Under helm v3 the duplicates were tolerated
+(kube applied last-wins); helm v4's SSA path now fails with `duplicate entries
+for key`. This renderer strips earlier duplicates.
 """
 from __future__ import annotations
 import sys

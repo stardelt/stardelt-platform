@@ -1,9 +1,8 @@
 # SeaweedFS — S3-compatible storage for the MVP.
 # Chart: seaweedfs/seaweedfs 4.25.1, appVersion 4.25.
 #
-# Chosen as the documented fallback when Apache Ozone's S3 Gateway proved
-# unable to honor replication=ONE on single-datanode kind (see docs/MVP.md).
-# SeaweedFS gives us the same S3 surface without the Hadoop-era complexity.
+# S3-compatible object store for the lakehouse. Backs Iceberg tables via
+# Trino + Lakekeeper.
 
 master:
   replicas: 1
