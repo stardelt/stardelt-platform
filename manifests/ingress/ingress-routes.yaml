@@ -1,0 +1,81 @@
+# Host-routed ingress for every stardelt UI. All share the wildcard cert
+# (stardelt-wildcard-tls) and the oauth2 forward-auth middleware, EXCEPT the
+# auth host itself (it must stay reachable to perform the login/callback).
+#
+# Traefik middleware is attached via the namespaced annotation
+# <namespace>-<middleware-name>@kubernetescrd.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: stardelt-auth
+  namespace: stardelt
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+spec:
+  tls:
+    - hosts: ["auth.__STARDELT_DOMAIN__"]
+      secretName: stardelt-wildcard-tls
+  rules:
+    - host: auth.__STARDELT_DOMAIN__
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: oauth2-proxy
+                port: { number: 4180 }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: stardelt-uis
+  namespace: stardelt
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.middlewares: stardelt-oauth2-forward-auth@kubernetescrd
+spec:
+  tls:
+    - hosts:
+        - nova.__STARDELT_DOMAIN__
+        - superset.__STARDELT_DOMAIN__
+        - airflow.__STARDELT_DOMAIN__
+        - trino.__STARDELT_DOMAIN__
+      secretName: stardelt-wildcard-tls
+  rules:
+    - host: nova.__STARDELT_DOMAIN__
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: nova
+                port: { number: 8080 }
+    - host: superset.__STARDELT_DOMAIN__
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: superset
+                port: { number: 8088 }
+    - host: airflow.__STARDELT_DOMAIN__
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: airflow-api-server
+                port: { number: 8080 }
+    - host: trino.__STARDELT_DOMAIN__
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: trino
+                port: { number: 8080 }
