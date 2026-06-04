@@ -1,0 +1,61 @@
+# oauth2-proxy — GitHub provider, restricted to the stardelt org.
+# Fronts every stardelt UI via a Traefik forward-auth middleware (see
+# middleware-auth.yaml). Emits identity headers consumed at the edge.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oauth2-proxy
+  namespace: stardelt
+  labels: { app.kubernetes.io/name: oauth2-proxy }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: oauth2-proxy }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: oauth2-proxy }
+    spec:
+      containers:
+        - name: oauth2-proxy
+          image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
+          args:
+            - --provider=github
+            - --github-org=stardelt
+            - --http-address=0.0.0.0:4180
+            - --reverse-proxy=true
+            - --cookie-domain=.__STARDELT_DOMAIN__
+            - --whitelist-domain=.__STARDELT_DOMAIN__
+            - --cookie-secure=true
+            - --email-domain=*
+            - --upstream=static://202
+            - --redirect-url=https://auth.__STARDELT_DOMAIN__/oauth2/callback
+            - --set-xauthrequest=true
+            - --pass-access-token=false
+            - --skip-provider-button=false
+          env:
+            - name: OAUTH2_PROXY_CLIENT_ID
+              valueFrom: { secretKeyRef: { name: oauth2-proxy-creds, key: client-id } }
+            - name: OAUTH2_PROXY_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: oauth2-proxy-creds, key: client-secret } }
+            - name: OAUTH2_PROXY_COOKIE_SECRET
+              valueFrom: { secretKeyRef: { name: oauth2-proxy-creds, key: cookie-secret } }
+          ports:
+            - containerPort: 4180
+              name: http
+          resources:
+            requests: { cpu: "10m", memory: "32Mi" }
+            limits:   { cpu: "200m", memory: "128Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: oauth2-proxy
+  namespace: stardelt
+  labels: { app.kubernetes.io/name: oauth2-proxy }
+spec:
+  type: ClusterIP
+  selector: { app.kubernetes.io/name: oauth2-proxy }
+  ports:
+    - name: http
+      port: 4180
+      targetPort: http
