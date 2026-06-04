@@ -51,6 +51,74 @@ NAMESPACE=my-namespace make install
 
 ---
 
+## Internet access (ingress + SSO)
+
+Expose the UIs on per-service subdomains behind GitHub SSO. **Not used by the
+kind laptop demo.**
+
+Config is layered **prod-default / lab-override**: a bare `make ingress` targets
+**prod** (`cloud.stardelt.io`, committed defaults in `environments/prod.env`).
+The Hetzner dev cluster is an explicit opt-in via `STARDELT_ENV=lab`, which
+sources `environments/lab.env` (`lab.stardelt.io`, DNS re-sync on). Edit
+`environments/lab.env` freely; leave `environments/prod.env` stable.
+
+### One-time per cluster
+
+1. Choose the environment for the session (prod is the default):
+   ```sh
+   export STARDELT_ENV=lab        # omit / set prod for the production cluster
+   ```
+2. Create a **GitHub OAuth App** in the `stardelt` org (one per environment —
+   lab and prod need different callback URLs). With `STARDELT_ENV=lab` the domain
+   is `lab.stardelt.io`:
+   - Homepage URL: `https://nova.lab.stardelt.io`
+   - Callback URL: `https://auth.lab.stardelt.io/oauth2/callback`
+3. Apply the two secrets (copy the templates, fill them in):
+   ```sh
+   cp manifests/cloudflare-api-token.example.yaml manifests/cloudflare-api-token.yaml
+   cp manifests/oauth2-proxy-creds.example.yaml    manifests/oauth2-proxy-creds.yaml
+   # edit both: Cloudflare DNS:Edit token; GitHub client id/secret;
+   #   cookie-secret via: openssl rand -base64 32
+   kubectl apply -f manifests/cloudflare-api-token.yaml
+   kubectl apply -f manifests/oauth2-proxy-creds.yaml
+   ```
+4. Install the ingress stack:
+   ```sh
+   STARDELT_ENV=lab make ingress      # prod: just `make ingress`
+   ```
+
+### Hosts (lab)
+
+| URL | Service |
+|---|---|
+| `https://nova.lab.stardelt.io` | Nova UI + API gateway |
+| `https://superset.lab.stardelt.io` | Superset BI |
+| `https://airflow.lab.stardelt.io` | Airflow |
+| `https://trino.lab.stardelt.io` | Trino UI |
+| `https://auth.lab.stardelt.io` | oauth2-proxy (login/callback) |
+
+In prod the same hosts live under `cloud.stardelt.io`. All hosts except `auth`
+require a GitHub login as a `stardelt` org member.
+
+### After recreating the ephemeral lab cluster
+
+The master gets a new public IP, so re-point DNS (one command). Prod never needs
+this — its IP is static.
+```sh
+STARDELT_ENV=lab make dns-sync     # if ingress is already installed
+# or: STARDELT_ENV=lab make ingress # full (re)install — also re-points DNS
+kubectl get certificate -n stardelt   # wait for stardelt-wildcard → Ready
+```
+
+### Verify
+
+```sh
+curl -sI https://trino.lab.stardelt.io | head -1     # → 302 (redirect to GitHub) when logged out
+kubectl get certificate -n stardelt                  # stardelt-wildcard READY=True
+```
+
+---
+
 ## Makefile targets
 
 | Target | Description |
@@ -63,6 +131,9 @@ NAMESPACE=my-namespace make install
 | `build-superset-image` | Build `ghcr.io/stardelt/superset:dev` locally |
 | `push-superset-image` | Push that image to ghcr.io |
 | `pf` | Open port-forwards to Nova, Trino, Lakekeeper, Superset |
+| `ingress` | Install ingress stack (cert-manager + oauth2-proxy + routes); `STARDELT_ENV=prod\|lab` |
+| `dns-sync` | Re-point the wildcard A-record at the current master IP (lab) |
+| `uninstall-ingress` | Remove the ingress stack (keeps cert-manager CRDs) |
 
 ---
 
