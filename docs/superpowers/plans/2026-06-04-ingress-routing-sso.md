@@ -4,7 +4,7 @@
 
 **Goal:** Expose Nova, Superset, Airflow, and Trino on per-service subdomains of `${STARDELT_DOMAIN}`, fronted by k3s Traefik with a cert-manager DNS-01 wildcard TLS cert and a single GitHub-org-restricted oauth2-proxy sign-in.
 
-**Architecture:** All work lives in `stardelt-platform`. Services stay `ClusterIP`; we add cert-manager (Helm), oauth2-proxy (Helm), a Traefik forward-auth `Middleware`, and host-routed `Ingress` objects rendered from `__STARDELT_DOMAIN__` token files via `envsubst` in a new `make ingress` target. A `scripts/dns-sync.sh` keeps a single Cloudflare wildcard A-record pointed at the (ephemeral) master IP. Verification is by `kubectl`/`curl`, not unit tests — this is declarative infra.
+**Architecture:** All work lives in `stardelt-platform`. Services stay `ClusterIP`; we add cert-manager (Helm), oauth2-proxy (Helm), a Traefik forward-auth `Middleware`, and host-routed `Ingress` objects rendered from token files (`__STARDELT_DOMAIN__`, `__STARDELT_ACME_SERVER__`) via `sed` in a new `make ingress` target. Config is layered **prod-default / lab-override**: `STARDELT_ENV` defaults to `prod`, and the Makefile sources `environments/<env>.env` for the domain, ACME server, and a `STARDELT_DNS_SYNC` flag. In lab, `scripts/dns-sync.sh` keeps a single Cloudflare wildcard A-record pointed at the ephemeral master IP; in prod that step is skipped. Verification is by `kubectl`/`curl`, not unit tests — this is declarative infra.
 
 **Tech Stack:** Kubernetes, k3s Traefik, cert-manager (ACME DNS-01 / Cloudflare), oauth2-proxy (GitHub provider), Helm, `envsubst`, `curl`, Cloudflare API, hetzner-k3s.
 
@@ -17,8 +17,9 @@ Design spec: `docs/superpowers/specs/2026-06-04-ingress-routing-sso-design.md`. 
 ## Conventions used throughout
 
 - **Namespace:** `stardelt` (matches `NAMESPACE ?= stardelt` in `Makefile`).
-- **Domain variable:** `STARDELT_DOMAIN` (e.g. `lab.stardelt.io`). Every host is `<svc>.${STARDELT_DOMAIN}`.
-- **Template token:** literal string `__STARDELT_DOMAIN__` inside `manifests/ingress/*.yaml`, substituted at apply time. Do **not** use Helm/Kustomize.
+- **Env layering:** `STARDELT_ENV` defaults to `prod`. The Makefile sources `environments/$(STARDELT_ENV).env`, which sets `STARDELT_DOMAIN`, `STARDELT_ACME_SERVER`, and `STARDELT_DNS_SYNC`. Prod runs on committed defaults; `lab` is the edited override. `STARDELT_ENV=lab make ingress` targets the dev cluster.
+- **Domain variable:** `STARDELT_DOMAIN` (prod `cloud.stardelt.io`, lab `lab.stardelt.io`). Every host is `<svc>.${STARDELT_DOMAIN}`.
+- **Template tokens:** literal strings `__STARDELT_DOMAIN__` and `__STARDELT_ACME_SERVER__` inside `manifests/ingress/*.yaml`, substituted at apply time. Do **not** use Helm/Kustomize.
 - **In-cluster backends (verified against the existing values files):**
   | Host | Service | Port |
   |---|---|---|
@@ -33,6 +34,8 @@ Design spec: `docs/superpowers/specs/2026-06-04-ingress-routing-sso-design.md`. 
 ## File Structure
 
 **Create:**
+- `environments/prod.env` — committed prod defaults (domain, ACME prod, dns-sync off).
+- `environments/lab.env` — lab override (domain, ACME prod, dns-sync on).
 - `manifests/ingress/cluster-issuer.yaml` — cert-manager `ClusterIssuer` (ACME DNS-01 / Cloudflare). Token file.
 - `manifests/ingress/certificate.yaml` — wildcard `Certificate` → secret `stardelt-wildcard-tls`. Token file.
 - `manifests/ingress/oauth2-proxy.yaml` — oauth2-proxy `Deployment` + `Service`. Token file.
@@ -62,18 +65,23 @@ Design spec: `docs/superpowers/specs/2026-06-04-ingress-routing-sso-design.md`. 
 `scripts/render.sh`:
 ```bash
 #!/usr/bin/env bash
-# Render a manifest template by substituting ${STARDELT_DOMAIN} (and only that).
+# Render a manifest template by substituting our explicit tokens (and only those):
+#   __STARDELT_DOMAIN__       → $STARDELT_DOMAIN
+#   __STARDELT_ACME_SERVER__  → $STARDELT_ACME_SERVER (optional; left as-is if unset)
 # Usage: STARDELT_DOMAIN=lab.stardelt.io scripts/render.sh manifests/ingress/foo.yaml
-# The template uses the literal token __STARDELT_DOMAIN__.
 set -euo pipefail
 
 file="${1:?usage: render.sh <template-file>}"
 : "${STARDELT_DOMAIN:?STARDELT_DOMAIN must be set (e.g. lab.stardelt.io)}"
+acme="${STARDELT_ACME_SERVER:-https://acme-v02.api.letsencrypt.org/directory}"
 
-sed "s/__STARDELT_DOMAIN__/${STARDELT_DOMAIN}/g" "$file"
+# '|' as the sed delimiter because the ACME server value contains '/'.
+sed -e "s/__STARDELT_DOMAIN__/${STARDELT_DOMAIN}/g" \
+    -e "s|__STARDELT_ACME_SERVER__|${acme}|g" \
+    "$file"
 ```
 
-We use `sed` (not `envsubst`) so unrelated `$` shell-style refs in manifests are never touched — only our explicit token is replaced.
+We use `sed` (not `envsubst`) so unrelated `$` shell-style refs in manifests are never touched — only our explicit tokens are replaced. The ACME server defaults to Let's Encrypt prod when unset, so templates without that token are unaffected.
 
 - [ ] **Step 2: Make executable and verify it fails without the var**
 
@@ -99,6 +107,59 @@ host: nova.lab.stardelt.io
 ```bash
 git add scripts/render.sh
 git commit -m "feat: add render.sh token-substitution helper for ingress manifests"
+```
+
+---
+
+### Task 1B: Environment files (prod-default / lab-override)
+
+**Files:**
+- Create: `environments/prod.env`
+- Create: `environments/lab.env`
+
+- [ ] **Step 1: Write the prod defaults**
+
+`environments/prod.env`:
+```bash
+# Production defaults. This is the canonical path — `make ingress` with no
+# STARDELT_ENV targets prod. Keep this minimal and stable; rarely edit it.
+STARDELT_DOMAIN=cloud.stardelt.io
+STARDELT_ACME_SERVER=https://acme-v02.api.letsencrypt.org/directory
+# Prod has a stable IP/LB, so DNS is set once and never re-synced.
+STARDELT_DNS_SYNC=false
+```
+
+- [ ] **Step 2: Write the lab override**
+
+`environments/lab.env`:
+```bash
+# Lab (dev) overrides. Opt in with: STARDELT_ENV=lab make ingress
+# Edit this freely while developing.
+STARDELT_DOMAIN=lab.stardelt.io
+STARDELT_ACME_SERVER=https://acme-v02.api.letsencrypt.org/directory
+# Switch to LE staging during heavy cert churn to avoid rate limits:
+#   STARDELT_ACME_SERVER=https://acme-staging-v02.api.letsencrypt.org/directory
+# The lab master IP changes on every hetzner-k3s recreate, so re-point DNS.
+STARDELT_DNS_SYNC=true
+```
+
+- [ ] **Step 3: Verify both files source cleanly and expose the expected vars**
+
+```bash
+( set -a; . environments/prod.env; set +a; echo "prod: $STARDELT_DOMAIN dns=$STARDELT_DNS_SYNC" )
+( set -a; . environments/lab.env;  set +a; echo "lab:  $STARDELT_DOMAIN dns=$STARDELT_DNS_SYNC" )
+```
+Expected:
+```
+prod: cloud.stardelt.io dns=false
+lab:  lab.stardelt.io dns=true
+```
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add environments/prod.env environments/lab.env
+git commit -m "feat: add prod-default/lab-override environment files"
 ```
 
 ---
@@ -201,7 +262,7 @@ metadata:
   name: letsencrypt-prod
 spec:
   acme:
-    server: https://acme-v02.api.letsencrypt.org/directory
+    server: __STARDELT_ACME_SERVER__
     email: admin@stardelt.io
     privateKeySecretRef:
       name: letsencrypt-prod-account-key
@@ -584,40 +645,57 @@ git commit -m "feat: add dns-sync.sh to point wildcard A-record at master IP"
 
 ---
 
-### Task 8: Makefile wiring — versions, repos, `ingress` + `dns-sync` targets
+### Task 8: Makefile wiring — env layering, versions, repos, `ingress` + `dns-sync` targets
 
 **Files:**
 - Modify: `Makefile`
 
-- [ ] **Step 1: Add pinned chart versions**
+- [ ] **Step 1: Add env layering at the top of the Makefile**
 
-In `Makefile`, after the `SUPERSET_VERSION := 0.15.5` line, add:
+In `Makefile`, immediately after the `NAMESPACE ?= stardelt` line, add:
+```makefile
+# Environment layering: prod is the default (runs on committed defaults);
+# `STARDELT_ENV=lab make ingress` opts into the edited dev cluster.
+# environments/<env>.env sets STARDELT_DOMAIN, STARDELT_ACME_SERVER, STARDELT_DNS_SYNC.
+STARDELT_ENV ?= prod
+include environments/$(STARDELT_ENV).env
+export STARDELT_DOMAIN STARDELT_ACME_SERVER STARDELT_DNS_SYNC
+```
+`include` makes the env file's `KEY=value` lines into Make variables; `export`
+pushes them into the environment of every recipe shell (so `render.sh` and
+`dns-sync.sh` see them). A missing env file makes `include` fail loudly, which
+is the desired guard against a typo'd `STARDELT_ENV`.
+
+- [ ] **Step 2: Add pinned chart versions**
+
+After the `SUPERSET_VERSION := 0.15.5` line, add:
 ```makefile
 CERT_MANAGER_VERSION := 1.16.2
 OAUTH2_PROXY_VERSION := 7.7.1
 ```
-(`OAUTH2_PROXY_VERSION` is the oauth2-proxy *Helm chart* version; the proxy container image tag is pinned separately in `manifests/ingress/oauth2-proxy.yaml`.)
+(`OAUTH2_PROXY_VERSION` is reserved for a future Helm-based oauth2-proxy install; this plan deploys oauth2-proxy via the manifest in Task 4, with its container image tag pinned there. The variable is added now so the pin lives alongside the others.)
 
-- [ ] **Step 2: Add helm repos for cert-manager + oauth2-proxy**
+- [ ] **Step 3: Add helm repo for cert-manager**
 
 In the `_helm-repos:` recipe, before the `@helm repo update` line, add:
 ```makefile
 	@helm repo add jetstack       https://charts.jetstack.io                         2>/dev/null || true
-	@helm repo add oauth2-proxy   https://oauth2-proxy.github.io/manifests           2>/dev/null || true
 ```
 
-- [ ] **Step 3: Add the `ingress`, `dns-sync`, and `uninstall-ingress` targets**
+- [ ] **Step 4: Add the `ingress`, `dns-sync`, and `uninstall-ingress` targets**
 
 Add to the `.PHONY` line: `ingress dns-sync uninstall-ingress`. Then append this block to the end of `Makefile`:
 ```makefile
 # ---------------------------------------------------------------------------
-# Ingress: cert-manager + oauth2-proxy + Traefik routes (lab/prod clusters only)
+# Ingress: cert-manager + oauth2-proxy + Traefik routes
 # ---------------------------------------------------------------------------
-# Requires STARDELT_DOMAIN (e.g. lab.stardelt.io) and these secrets applied:
+# Config comes from environments/$(STARDELT_ENV).env (default: prod).
+# Lab cluster:  STARDELT_ENV=lab make ingress
+# Before running, apply the two secrets:
 #   kubectl apply -f manifests/cloudflare-api-token.yaml
 #   kubectl apply -f manifests/oauth2-proxy-creds.yaml
-ingress: deps _helm-repos ## Install ingress stack (needs STARDELT_DOMAIN)
-	@: "$${STARDELT_DOMAIN:?STARDELT_DOMAIN must be set, e.g. lab.stardelt.io}"
+ingress: deps _helm-repos ## Install ingress stack (STARDELT_ENV=prod|lab)
+	@echo "› env=$(STARDELT_ENV) domain=$(STARDELT_DOMAIN) dns-sync=$(STARDELT_DNS_SYNC)"
 	@echo "› [1/6] cert-manager"
 	@helm upgrade --install cert-manager jetstack/cert-manager \
 	  --version $(CERT_MANAGER_VERSION) \
@@ -638,17 +716,19 @@ ingress: deps _helm-repos ## Install ingress stack (needs STARDELT_DOMAIN)
 	@bash scripts/render.sh manifests/ingress/ingress-routes.yaml | kubectl apply -f -
 
 	@echo "› [6/6] DNS sync"
-	@STARDELT_DOMAIN=$(STARDELT_DOMAIN) NAMESPACE=$(NAMESPACE) bash scripts/dns-sync.sh
+	@if [ "$(STARDELT_DNS_SYNC)" = "true" ]; then \
+	  NAMESPACE=$(NAMESPACE) bash scripts/dns-sync.sh; \
+	else \
+	  echo "  skipped (STARDELT_DNS_SYNC=$(STARDELT_DNS_SYNC); prod uses a static IP)"; \
+	fi
 
 	@echo ""
 	@echo "Ingress installed for *.$(STARDELT_DOMAIN). Check: kubectl get certificate -n $(NAMESPACE)"
 
-dns-sync: ## Re-point the wildcard A-record at the current master IP
-	@: "$${STARDELT_DOMAIN:?STARDELT_DOMAIN must be set, e.g. lab.stardelt.io}"
-	@STARDELT_DOMAIN=$(STARDELT_DOMAIN) NAMESPACE=$(NAMESPACE) bash scripts/dns-sync.sh
+dns-sync: ## Re-point the wildcard A-record at the current master IP (lab)
+	@NAMESPACE=$(NAMESPACE) bash scripts/dns-sync.sh
 
 uninstall-ingress: ## Remove the ingress stack (keeps cert-manager CRDs)
-	@: "$${STARDELT_DOMAIN:?STARDELT_DOMAIN must be set, e.g. lab.stardelt.io}"
 	@bash scripts/render.sh manifests/ingress/ingress-routes.yaml | kubectl delete --ignore-not-found -f -
 	@kubectl delete --ignore-not-found -f manifests/ingress/middleware-auth.yaml
 	@bash scripts/render.sh manifests/ingress/oauth2-proxy.yaml | kubectl delete --ignore-not-found -f -
@@ -657,26 +737,31 @@ uninstall-ingress: ## Remove the ingress stack (keeps cert-manager CRDs)
 	@helm uninstall cert-manager --namespace cert-manager --ignore-not-found 2>/dev/null || true
 	@echo "Ingress stack removed."
 ```
+`STARDELT_DOMAIN` and `STARDELT_ACME_SERVER` are exported (Step 1), so the
+`render.sh` invocations pick them up from the environment without explicit
+pass-through.
 
-- [ ] **Step 4: Verify the targets parse and show in help**
+- [ ] **Step 5: Verify env layering resolves and targets show in help**
 
 ```bash
 make help | grep -E 'ingress|dns-sync'
+make -np STARDELT_ENV=prod 2>/dev/null | grep -E 'STARDELT_DOMAIN|STARDELT_DNS_SYNC' | head -2
+make -np STARDELT_ENV=lab  2>/dev/null | grep -E 'STARDELT_DOMAIN|STARDELT_DNS_SYNC' | head -2
 ```
-Expected: shows `ingress`, `dns-sync`, and `uninstall-ingress` with their descriptions.
+Expected: help shows `ingress`, `dns-sync`, `uninstall-ingress`; the prod dump shows `cloud.stardelt.io` + `false`; the lab dump shows `lab.stardelt.io` + `true`.
 
-- [ ] **Step 5: Verify `ingress` refuses to run without STARDELT_DOMAIN**
+- [ ] **Step 6: Verify a bad env fails loudly**
 
 ```bash
-make ingress 2>&1 | head -3; echo "rc=${PIPESTATUS[0]}"
+make ingress STARDELT_ENV=nope 2>&1 | head -3; echo "rc=${PIPESTATUS[0]}"
 ```
-Expected: fails fast with `STARDELT_DOMAIN must be set` and a non-zero `rc` (it must not reach the helm step).
+Expected: fails with a "No such file" error for `environments/nope.env` and a non-zero `rc` — it must not reach the helm step.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add Makefile
-git commit -m "feat: add make ingress/dns-sync/uninstall-ingress targets + chart pins"
+git commit -m "feat: add env-layered make ingress/dns-sync targets + chart pins"
 ```
 
 ---
@@ -736,19 +821,26 @@ Insert after the existing "Quickstart" section in `README.md`:
 ````markdown
 ## Internet access (ingress + SSO)
 
-For a real cluster (the Hetzner `stardelt-lab` dev cluster, or future prod),
-expose the UIs on per-service subdomains behind GitHub SSO. **Not used by the
+Expose the UIs on per-service subdomains behind GitHub SSO. **Not used by the
 kind laptop demo.**
+
+Config is layered **prod-default / lab-override**: a bare `make ingress` targets
+**prod** (`cloud.stardelt.io`, committed defaults in `environments/prod.env`).
+The Hetzner dev cluster is an explicit opt-in via `STARDELT_ENV=lab`, which
+sources `environments/lab.env` (`lab.stardelt.io`, DNS re-sync on). Edit
+`environments/lab.env` freely; leave `environments/prod.env` stable.
 
 ### One-time per cluster
 
-1. Pick the base domain and export it for the whole session:
+1. Choose the environment for the session (prod is the default):
    ```sh
-   export STARDELT_DOMAIN=lab.stardelt.io   # prod: cloud.stardelt.io
+   export STARDELT_ENV=lab        # omit / set prod for the production cluster
    ```
-2. Create a **GitHub OAuth App** in the `stardelt` org:
-   - Homepage URL: `https://nova.$STARDELT_DOMAIN`
-   - Callback URL: `https://auth.$STARDELT_DOMAIN/oauth2/callback`
+2. Create a **GitHub OAuth App** in the `stardelt` org (one per environment —
+   lab and prod need different callback URLs). With `STARDELT_ENV=lab` the domain
+   is `lab.stardelt.io`:
+   - Homepage URL: `https://nova.lab.stardelt.io`
+   - Callback URL: `https://auth.lab.stardelt.io/oauth2/callback`
 3. Apply the two secrets (copy the templates, fill them in):
    ```sh
    cp manifests/cloudflare-api-token.example.yaml manifests/cloudflare-api-token.yaml
@@ -760,45 +852,46 @@ kind laptop demo.**
    ```
 4. Install the ingress stack:
    ```sh
-   make ingress
+   STARDELT_ENV=lab make ingress      # prod: just `make ingress`
    ```
 
-### Hosts
+### Hosts (lab)
 
 | URL | Service |
 |---|---|
-| `https://nova.$STARDELT_DOMAIN` | Nova UI + API gateway |
-| `https://superset.$STARDELT_DOMAIN` | Superset BI |
-| `https://airflow.$STARDELT_DOMAIN` | Airflow |
-| `https://trino.$STARDELT_DOMAIN` | Trino UI |
-| `https://auth.$STARDELT_DOMAIN` | oauth2-proxy (login/callback) |
+| `https://nova.lab.stardelt.io` | Nova UI + API gateway |
+| `https://superset.lab.stardelt.io` | Superset BI |
+| `https://airflow.lab.stardelt.io` | Airflow |
+| `https://trino.lab.stardelt.io` | Trino UI |
+| `https://auth.lab.stardelt.io` | oauth2-proxy (login/callback) |
 
-All hosts except `auth` require a GitHub login as a `stardelt` org member.
+In prod the same hosts live under `cloud.stardelt.io`. All hosts except `auth`
+require a GitHub login as a `stardelt` org member.
 
-### After recreating an ephemeral cluster
+### After recreating the ephemeral lab cluster
 
-The master gets a new public IP, so re-point DNS (one command):
+The master gets a new public IP, so re-point DNS (one command). Prod never needs
+this — its IP is static.
 ```sh
-export STARDELT_DOMAIN=lab.stardelt.io
-make dns-sync          # if ingress is already installed
-# or: make ingress     # full (re)install — also re-points DNS
+STARDELT_ENV=lab make dns-sync     # if ingress is already installed
+# or: STARDELT_ENV=lab make ingress # full (re)install — also re-points DNS
 kubectl get certificate -n stardelt   # wait for stardelt-wildcard → Ready
 ```
 
 ### Verify
 
 ```sh
-curl -sI https://trino.$STARDELT_DOMAIN | head -1     # → 302 (redirect to GitHub) when logged out
-kubectl get certificate -n stardelt                   # stardelt-wildcard READY=True
+curl -sI https://trino.lab.stardelt.io | head -1     # → 302 (redirect to GitHub) when logged out
+kubectl get certificate -n stardelt                  # stardelt-wildcard READY=True
 ```
 ````
 
 - [ ] **Step 2: Verify the section renders and links are consistent**
 
 ```bash
-grep -nE 'STARDELT_DOMAIN|make ingress|make dns-sync|oauth2|stardelt-wildcard' README.md | head
+grep -nE 'STARDELT_ENV|make ingress|make dns-sync|oauth2|stardelt-wildcard' README.md | head
 ```
-Expected: shows the new commands and host references; no stray `__STARDELT_DOMAIN__` token (the README uses the shell var `$STARDELT_DOMAIN`, not the manifest token).
+Expected: shows the new commands and host references; no stray `__STARDELT_DOMAIN__` token (the README uses concrete hostnames, not the manifest token).
 
 - [ ] **Step 3: Commit**
 
@@ -818,7 +911,7 @@ This task is **operational** — run against the real `stardelt-lab` cluster. It
 - [ ] **Step 1: Install ingress and watch the cert issue**
 
 ```bash
-export STARDELT_DOMAIN=lab.stardelt.io
+export STARDELT_ENV=lab
 make ingress
 kubectl get certificate -n stardelt -w   # wait until stardelt-wildcard READY=True (DNS-01 can take 1-3 min)
 ```
@@ -863,18 +956,21 @@ No commit (operational task). If any step failed, fix the relevant manifest/secr
 
 **Spec coverage:**
 - Per-service subdomains → Task 6. ✓
-- `STARDELT_DOMAIN` templating via token substitution → Tasks 1, 8. ✓
+- Env layering (prod-default / lab-override, `STARDELT_ENV`) → Tasks 1B, 8. ✓
+- `STARDELT_DOMAIN` + `STARDELT_ACME_SERVER` token substitution → Tasks 1, 8. ✓
 - k3s Traefik (entrypoints/middleware annotations, no chart install) → Tasks 5, 6. ✓
-- cert-manager + DNS-01 wildcard cert → Tasks 3, 8. ✓
+- cert-manager + DNS-01 wildcard cert (env-selected ACME server) → Tasks 3, 8. ✓
 - oauth2-proxy GitHub-org SSO → Task 4. ✓
 - Forward-auth + Layer-1 identity headers → Task 5. ✓
 - Secrets inventory (cloudflare-api-token, oauth2-proxy-creds, auto wildcard tls) + example templates + gitignore → Task 2. ✓
-- dns-sync for ephemeral IP → Tasks 7, 8. ✓
+- dns-sync for ephemeral IP, env-conditional (lab only) → Tasks 7, 8. ✓
 - Install order in make target → Task 8. ✓
 - Recreate runbook + verification checklist + failure modes → Tasks 10, 11. ✓
 - demos/platform version-sync rule → Task 9. ✓
 - Layer-2 explicitly out of scope → not implemented (correct). ✓
 
-**Placeholder scan:** No TBD/TODO. `__STARDELT_DOMAIN__` and `$STARDELT_DOMAIN` are intentional (manifest token vs shell var) and consistently distinguished. `REPLACE_WITH_*` strings live only in `*.example.yaml` templates by design.
+**Placeholder scan:** No TBD/TODO. `__STARDELT_DOMAIN__` / `__STARDELT_ACME_SERVER__` (manifest tokens) and `$STARDELT_DOMAIN` / `$STARDELT_ENV` (shell/Make vars) are intentional and consistently distinguished. `REPLACE_WITH_*` strings live only in `*.example.yaml` templates by design.
 
-**Type/name consistency:** Service backends (`nova:8080`, `superset:8088`, `airflow-api-server:8080`, `trino:8080`, `oauth2-proxy:4180`) are identical across Tasks 4, 6, and the spec. Middleware name `oauth2-forward-auth` matches its annotation reference `stardelt-oauth2-forward-auth@kubernetescrd` in Task 6. Secret keys (`api-token`; `client-id`/`client-secret`/`cookie-secret`) match between Task 2 templates and their consumers in Tasks 3, 4. Cert secret `stardelt-wildcard-tls` matches between Tasks 3 and 6.
+**Type/name consistency:** Service backends (`nova:8080`, `superset:8088`, `airflow-api-server:8080`, `trino:8080`, `oauth2-proxy:4180`) are identical across Tasks 4, 6, and the spec. Middleware name `oauth2-forward-auth` matches its annotation reference `stardelt-oauth2-forward-auth@kubernetescrd` in Task 6. Env var names (`STARDELT_ENV`, `STARDELT_DOMAIN`, `STARDELT_ACME_SERVER`, `STARDELT_DNS_SYNC`) match across the env files (Task 1B), `render.sh` (Task 1), and the Makefile (Task 8). Secret keys (`api-token`; `client-id`/`client-secret`/`cookie-secret`) match between Task 2 templates and their consumers in Tasks 3, 4. Cert secret `stardelt-wildcard-tls` matches between Tasks 3 and 6.
+
+**Task numbering note:** tasks run 1, 1B, 2–11 (1B inserted to keep the original numbering stable). Execute in that order.

@@ -43,6 +43,7 @@ only by one variable and two secrets.
 | Access control | **SSO via oauth2-proxy** |
 | Identity provider | **GitHub**, restricted to the `stardelt` org |
 | Domain scheme | **Env subdomain + base var** (`STARDELT_DOMAIN`) |
+| Env layering | **`STARDELT_ENV` defaults to `prod`** — prod runs on committed defaults; `lab` is the edited override layer |
 | Ingress controller | **k3s built-in Traefik** |
 | IP→DNS strategy | **Approach A** — manual/scripted single wildcard A-record + DNS-01 wildcard cert |
 | Identity passthrough | **Layer 1 only** — edge forwards identity headers to all upstreams; apps consume them later |
@@ -76,25 +77,54 @@ a new public IP. `scripts/dns-sync.sh` reads it and updates the single Cloudflar
 **wildcard** A-record. Because the record is a wildcard, adding a new service
 later requires zero DNS work — just a new Ingress object.
 
-## Domain templating & dev/prod parity
+## Environment layering (prod-default, lab-override)
 
-- **`STARDELT_DOMAIN`** is the single variable driving every hostname:
-  `lab.stardelt.io` (dev), `cloud.stardelt.io` (future prod). Hosts derive as
+The guiding principle: **prod is the canonical path that runs on committed
+defaults; lab is the deviation you actively edit.** This keeps prod boring and
+safe while the lab stays fast to hack on, and it inverts the common failure mode
+where prod becomes the special-cased thing.
+
+- **`STARDELT_ENV` defaults to `prod`.** A bare `make ingress` targets prod. The
+  dev cluster is an explicit opt-in: `STARDELT_ENV=lab make ingress`.
+- **Per-environment config lives in `environments/<env>.env`**, sourced by the
+  Makefile. Each file sets `STARDELT_DOMAIN` and a small set of named knobs:
+  - **`environments/prod.env`** — the *defaults*. Minimal, set-and-forget:
+    `STARDELT_DOMAIN=cloud.stardelt.io`, static DNS (no IP tracking),
+    Let's Encrypt **prod** issuer. You should rarely touch this.
+  - **`environments/lab.env`** — the *override layer* you edit freely:
+    `STARDELT_DOMAIN=lab.stardelt.io`, `dns-sync` **on** (ephemeral Hetzner master
+    IP re-pointed each rebuild), issuer switchable to LE **staging** during heavy
+    cert churn.
+- **The honest prod↔lab differences, named explicitly:**
+
+  | Knob | `prod` (default) | `lab` (edited) |
+  |---|---|---|
+  | `STARDELT_DOMAIN` | `cloud.stardelt.io` | `lab.stardelt.io` |
+  | `STARDELT_DNS_SYNC` | `false` (static IP/LB) | `true` (re-point each rebuild) |
+  | `STARDELT_ACME_SERVER` | LE prod | LE prod (switchable to staging) |
+  | GitHub org gate | `stardelt` | `stardelt` |
+
+- **`STARDELT_DOMAIN`** remains the single variable driving every hostname:
   `nova.${STARDELT_DOMAIN}`, `superset.${STARDELT_DOMAIN}`,
   `airflow.${STARDELT_DOMAIN}`, `trino.${STARDELT_DOMAIN}`,
   `auth.${STARDELT_DOMAIN}`.
 - **Injection mechanism:** the platform uses plain manifests + `helm upgrade`
   via a `Makefile`, not a templating engine. To avoid pulling in Helm/Kustomize
-  solely for this, ingress manifests live as `manifests/ingress/*.yaml` with a
-  literal `__STARDELT_DOMAIN__` token, and a `make ingress` target performs
-  `envsubst`-style substitution at apply time — the same copy-and-fill spirit as
-  the existing `s3-credentials.example.yaml` convention. Helm-chart services
-  (Superset, Airflow, Trino) receive ingress via a standalone Ingress manifest
-  rather than chart-specific `ingress:` blocks, to keep all routing in one place
-  and controller-portable.
-- **Per-cluster differences** are exactly: `STARDELT_DOMAIN`, the cert-manager
-  `ClusterIssuer` ACME email, and the oauth2-proxy GitHub OAuth app
-  (client-id/secret + callback URL). No manifest divergence between lab and prod.
+  solely for this, ingress manifests live as `manifests/ingress/*.yaml` with
+  literal `__STARDELT_DOMAIN__` / `__STARDELT_ACME_SERVER__` tokens, and the
+  `make ingress` target performs `sed` substitution at apply time — the same
+  copy-and-fill spirit as the existing `s3-credentials.example.yaml` convention.
+  Helm-chart services (Superset, Airflow, Trino) receive ingress via a standalone
+  Ingress manifest rather than chart-specific `ingress:` blocks, to keep all
+  routing in one place and controller-portable.
+- **Forward-looking:** this same `environments/<env>.env` rail is where future
+  prod-vs-lab divergence belongs (replica counts, resource requests — the current
+  values files are lab/kind-tuned, e.g. Trino "1 worker"). Out of scope now
+  (YAGNI), but the structure exists so adding those is a new line in the env
+  file, not a new mechanism.
+- **Per-cluster secrets** are still out-of-band and differ per environment: the
+  Cloudflare token (same zone, fine to reuse) and the oauth2-proxy GitHub OAuth
+  app (lab and prod need different callback URLs → separate OAuth apps).
 
 ## TLS, cert-manager & secrets
 
@@ -156,12 +186,15 @@ later requires zero DNS work — just a new Ingress object.
   then idempotently `PATCH`es the single Cloudflare wildcard A-record
   `*.${STARDELT_DOMAIN}` using `cloudflare-api-token`. Safe to re-run; domain and
   record name come from `STARDELT_DOMAIN`.
-- **Install order** (in `make install` / a new `make ingress`):
+- **Install order** (in a new `make ingress`, after sourcing `environments/<env>.env`):
   cert-manager → `ClusterIssuer` + `Certificate` → oauth2-proxy + `Middleware`
-  → Ingress objects → `dns-sync.sh`.
-- **Cluster-recreate runbook:** `hetzner-k3s create` → `make ingress` (or just
-  `dns-sync.sh` if ingress is already installed) → wait for the certificate to be
-  re-issued automatically → done. One command beyond cluster creation.
+  → Ingress objects → `dns-sync.sh` **only when `STARDELT_DNS_SYNC=true`** (lab).
+  In prod the DNS step is skipped because the IP is static.
+- **Cluster-recreate runbook (lab only):** `hetzner-k3s create` →
+  `STARDELT_ENV=lab make ingress` (or just `STARDELT_ENV=lab make dns-sync` if
+  ingress is already installed) → wait for the certificate to be re-issued
+  automatically → done. One command beyond cluster creation. Prod never needs
+  this — its IP does not change.
 - **kind/demos parity:** the kind demo cannot do real public DNS/TLS, so ingress
   there stays **optional and disabled by default**, documented as "lab cluster
   only" to avoid breaking the laptop demo. The cert-manager chart version pin is
