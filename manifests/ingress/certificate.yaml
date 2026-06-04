@@ -1,0 +1,16 @@
+# One wildcard cert covering every per-service subdomain plus the apex.
+# Stored in secret stardelt-wildcard-tls; every Ingress references it.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: stardelt-wildcard
+  namespace: stardelt
+spec:
+  secretName: stardelt-wildcard-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  commonName: "*.__STARDELT_DOMAIN__"
+  dnsNames:
+    - "*.__STARDELT_DOMAIN__"
+    - "__STARDELT_DOMAIN__"

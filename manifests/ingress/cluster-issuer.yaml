@@ -1,0 +1,20 @@
+# Lets-Encrypt issuer using ACME DNS-01 via Cloudflare.
+# DNS-01 (not HTTP-01) so we can issue a wildcard cert and need no inbound :80.
+# The ACME server is env-selected (__STARDELT_ACME_SERVER__): LE prod by default,
+# switchable to LE staging in environments/lab.env during heavy cert churn.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: __STARDELT_ACME_SERVER__
+    email: admin@stardelt.io
+    privateKeySecretRef:
+      name: letsencrypt-prod-account-key
+    solvers:
+      - dns01:
+          cloudflare:
+            apiTokenSecretRef:
+              name: cloudflare-api-token
+              key: api-token
