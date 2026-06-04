@@ -7,6 +7,13 @@
 
 NAMESPACE ?= stardelt
 
+# Environment layering: prod is the default (runs on committed defaults);
+# `STARDELT_ENV=lab make ingress` opts into the edited dev cluster.
+# environments/<env>.env sets STARDELT_DOMAIN, STARDELT_ACME_SERVER, STARDELT_DNS_SYNC.
+STARDELT_ENV ?= prod
+include environments/$(STARDELT_ENV).env
+export STARDELT_DOMAIN STARDELT_ACME_SERVER STARDELT_DNS_SYNC
+
 # Pinned chart versions
 CNPG_VERSION       := 0.28.2
 SEAWEEDFS_VERSION  := 4.25.1
@@ -14,15 +21,17 @@ LAKEKEEPER_VERSION := 0.11.0
 TRINO_VERSION      := 1.42.2
 AIRFLOW_VERSION    := 1.21.0
 SUPERSET_VERSION   := 0.15.5
+CERT_MANAGER_VERSION := 1.16.2
+OAUTH2_PROXY_VERSION := 7.7.1
 
 HELM_FLAGS := --namespace $(NAMESPACE) --create-namespace --wait --timeout 5m
 
 SUPERSET_IMAGE := ghcr.io/stardelt/superset:dev
 
-.PHONY: help deps install upgrade uninstall build-superset-image push-superset-image pf
+.PHONY: help deps install upgrade uninstall build-superset-image push-superset-image pf ingress dns-sync uninstall-ingress
 
 help: ## Show this help
-	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | \
+	@grep -E '^[a-zA-Z_-]+:.*##' $(firstword $(MAKEFILE_LIST)) | \
 	  awk 'BEGIN {FS = ":.*## "}; {printf "  \033[36m%-28s\033[0m %s\n", $$1, $$2}'
 
 deps: ## Check required CLI tools
@@ -40,6 +49,7 @@ _helm-repos:
 	@helm repo add trino          https://trinodb.github.io/charts                   2>/dev/null || true
 	@helm repo add apache-airflow https://airflow.apache.org                         2>/dev/null || true
 	@helm repo add superset       https://apache.github.io/superset                  2>/dev/null || true
+	@helm repo add jetstack       https://charts.jetstack.io                         2>/dev/null || true
 	@helm repo update
 
 _helm-plugin:
@@ -141,3 +151,54 @@ push-superset-image: ## Push the Superset image to ghcr.io
 # ---------------------------------------------------------------------------
 pf: ## Open port-forwards to in-cluster services
 	@NAMESPACE=$(NAMESPACE) bash scripts/port-forwards.sh
+
+# ---------------------------------------------------------------------------
+# Ingress: cert-manager + oauth2-proxy + Traefik routes
+# ---------------------------------------------------------------------------
+# Config comes from environments/$(STARDELT_ENV).env (default: prod).
+# Lab cluster:  STARDELT_ENV=lab make ingress
+# Before running, apply the two secrets:
+#   kubectl apply -f manifests/cloudflare-api-token.yaml
+#   kubectl apply -f manifests/oauth2-proxy-creds.yaml
+ingress: deps _helm-repos ## Install ingress stack (STARDELT_ENV=prod|lab)
+	@echo "› env=$(STARDELT_ENV) domain=$(STARDELT_DOMAIN) dns-sync=$(STARDELT_DNS_SYNC)"
+	@echo "› [1/6] cert-manager"
+	@helm upgrade --install cert-manager jetstack/cert-manager \
+	  --version $(CERT_MANAGER_VERSION) \
+	  --namespace cert-manager --create-namespace --wait --timeout 5m \
+	  --set crds.enabled=true
+
+	@echo "› [2/6] ClusterIssuer + wildcard Certificate"
+	@bash scripts/render.sh manifests/ingress/cluster-issuer.yaml | kubectl apply -f -
+	@bash scripts/render.sh manifests/ingress/certificate.yaml    | kubectl apply -f -
+
+	@echo "› [3/6] oauth2-proxy"
+	@bash scripts/render.sh manifests/ingress/oauth2-proxy.yaml | kubectl apply -f -
+
+	@echo "› [4/6] Traefik forward-auth middleware"
+	@kubectl apply -f manifests/ingress/middleware-auth.yaml
+
+	@echo "› [5/6] Ingress routes"
+	@bash scripts/render.sh manifests/ingress/ingress-routes.yaml | kubectl apply -f -
+
+	@echo "› [6/6] DNS sync"
+	@if [ "$(STARDELT_DNS_SYNC)" = "true" ]; then \
+	  NAMESPACE=$(NAMESPACE) bash scripts/dns-sync.sh; \
+	else \
+	  echo "  skipped (STARDELT_DNS_SYNC=$(STARDELT_DNS_SYNC); prod uses a static IP)"; \
+	fi
+
+	@echo ""
+	@echo "Ingress installed for *.$(STARDELT_DOMAIN). Check: kubectl get certificate -n $(NAMESPACE)"
+
+dns-sync: ## Re-point the wildcard A-record at the current master IP (lab)
+	@NAMESPACE=$(NAMESPACE) bash scripts/dns-sync.sh
+
+uninstall-ingress: ## Remove the ingress stack (keeps cert-manager CRDs)
+	@bash scripts/render.sh manifests/ingress/ingress-routes.yaml | kubectl delete --ignore-not-found -f -
+	@kubectl delete --ignore-not-found -f manifests/ingress/middleware-auth.yaml
+	@bash scripts/render.sh manifests/ingress/oauth2-proxy.yaml | kubectl delete --ignore-not-found -f -
+	@bash scripts/render.sh manifests/ingress/certificate.yaml  | kubectl delete --ignore-not-found -f -
+	@bash scripts/render.sh manifests/ingress/cluster-issuer.yaml | kubectl delete --ignore-not-found -f -
+	@helm uninstall cert-manager --namespace cert-manager --ignore-not-found 2>/dev/null || true
+	@echo "Ingress stack removed."
