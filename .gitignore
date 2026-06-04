@@ -2,3 +2,9 @@
 .env
 .env.local
 *.log
+
+# Filled-in secrets (never commit) — only the *.example.yaml templates are tracked
+manifests/cloudflare-api-token.yaml
+manifests/oauth2-proxy-creds.yaml
+# Rendered ingress manifests
+manifests/ingress/*.rendered.yaml

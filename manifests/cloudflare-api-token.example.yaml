@@ -1,0 +1,12 @@
+# Cloudflare API token used by cert-manager (DNS-01) and scripts/dns-sync.sh.
+# Scope: DNS:Edit on the stardelt.io zone.
+# Copy to manifests/cloudflare-api-token.yaml, fill in, then:
+#   kubectl apply -f manifests/cloudflare-api-token.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cloudflare-api-token
+  namespace: stardelt
+type: Opaque
+stringData:
+  api-token: "REPLACE_WITH_CLOUDFLARE_DNS_EDIT_TOKEN"
