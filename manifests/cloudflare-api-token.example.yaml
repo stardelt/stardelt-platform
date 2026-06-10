@@ -1,12 +1,19 @@
 # Cloudflare API token used by cert-manager (DNS-01) and scripts/dns-sync.sh.
-# Scope: DNS:Edit on the stardelt.io zone.
+# Scope: Zone:Read + DNS:Edit on the stardelt.io zone. NOTE: DNS:Edit alone is
+# not enough — cert-manager lists zones to resolve the zone id, and a token
+# without Zone:Read produces an empty zone id so the ACME order never finalizes.
+#
+# NAMESPACE: with a cluster-scoped ClusterIssuer (what we use), cert-manager
+# resolves this secret in its --cluster-resource-namespace (the `cert-manager`
+# namespace), NOT `stardelt`. Create it there. dns-sync.sh reads it from the
+# namespace you point it at; keep a copy wherever that script expects it.
 # Copy to manifests/cloudflare-api-token.yaml, fill in, then:
 #   kubectl apply -f manifests/cloudflare-api-token.yaml
 apiVersion: v1
 kind: Secret
 metadata:
   name: cloudflare-api-token
-  namespace: stardelt
+  namespace: cert-manager
 type: Opaque
 stringData:
-  api-token: "REPLACE_WITH_CLOUDFLARE_DNS_EDIT_TOKEN"
+  api-token: "REPLACE_WITH_CLOUDFLARE_ZONE_READ_AND_DNS_EDIT_TOKEN"

@@ -64,6 +64,10 @@ sources `environments/lab.env` (`lab.stardelt.io`, DNS re-sync on). Edit
 
 ### One-time per cluster
 
+0. Ensure a **Traefik** ingress controller (with its CRDs) is running — the SSO
+   wiring uses a Traefik forward-auth Middleware. k3s ships Traefik by default,
+   but some installers (e.g. hetzner-k3s) disable it; install it first there:
+   `helm upgrade --install traefik traefik/traefik -n traefik --create-namespace`.
 1. Choose the environment for the session (prod is the default):
    ```sh
    export STARDELT_ENV=lab        # omit / set prod for the production cluster
@@ -77,8 +81,11 @@ sources `environments/lab.env` (`lab.stardelt.io`, DNS re-sync on). Edit
    ```sh
    cp manifests/cloudflare-api-token.example.yaml manifests/cloudflare-api-token.yaml
    cp manifests/oauth2-proxy-creds.example.yaml    manifests/oauth2-proxy-creds.yaml
-   # edit both: Cloudflare DNS:Edit token; GitHub client id/secret;
-   #   cookie-secret via: openssl rand -base64 32
+   # edit both: Cloudflare token with Zone:Read + DNS:Edit (DNS:Edit alone fails —
+   #   cert-manager needs Zone:Read to resolve the zone id); GitHub client
+   #   id/secret; cookie-secret via: openssl rand -base64 32
+   # NOTE: the cloudflare-api-token Secret must live in the `cert-manager`
+   #   namespace (the ClusterIssuer resolves it there), not `stardelt`.
    kubectl apply -f manifests/cloudflare-api-token.yaml
    kubectl apply -f manifests/oauth2-proxy-creds.yaml
    ```
