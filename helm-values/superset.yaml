@@ -12,13 +12,18 @@
 #   - import_datasources.yaml pre-creates the Trino warehouse database
 #     connection so SQL Lab works immediately after install.
 
-# Use the stardelt-owned image (superset-image/Dockerfile) which has
-# psycopg2-binary + trino pre-installed in /app/.venv/. The chart's default
-# bootstrap is fine; we just leave the marker file.
+# stardelt's Superset image (images/superset/Dockerfile): upstream Superset 5.0.0
+# plus psycopg2-binary + the Trino SQLAlchemy driver, pre-installed in /app/.venv/.
+# Built and published by CI (the `Image` workflow), not by hand — a local
+# `make build-superset-image` is for iteration only.
 image:
-  repository: stardelt/superset
+  repository: ghcr.io/stardelt/superset
   tag: dev
   pullPolicy: IfNotPresent
+
+# The package is private, so the pod needs the same pull secret as Nova.
+imagePullSecrets:
+  - ghcr-creds
 
 bootstrapScript: |
   #!/bin/bash

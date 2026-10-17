@@ -222,33 +222,29 @@ For persistent overrides, modify the files in `helm-values/` directly and commit
 
 ### Nova image
 
-`manifests/nova-deployment.yaml` defaults to `stardelt/nova:dev` (produced by the
-stardelt-demos local build). In production, override the image reference to:
-
-```yaml
-image: ghcr.io/stardelt/nova:latest
-```
+`manifests/nova-deployment.yaml` uses `ghcr.io/stardelt/nova:dev` with
+`imagePullPolicy: Always`, and pulls through the `ghcr-creds` secret.
 
 ### Superset image
 
 The Superset image adds `psycopg2-binary` and the `trino` SQLAlchemy driver to the
-upstream Superset 5.0.0 base. Build and push it once before installing:
-
-```sh
-make build-superset-image
-make push-superset-image
-```
-
-The chart's `image.repository` in `helm-values/superset.yaml` already points to
-`stardelt/superset:dev`. Update to `ghcr.io/stardelt/superset:dev` (or a versioned tag)
-for production deployments.
+upstream Superset 5.0.0 base. **CI builds it** — the `Image` workflow in this repo
+publishes `ghcr.io/stardelt/superset:dev` (plus `sha-<short>`) on merge to `main`, and
+`helm-values/superset.yaml` points at it with the `ghcr-creds` pull secret. A local
+`make build-superset-image` + `make push-superset-image` is only for iteration.
 
 ---
 
 ## Container images
 
-stardelt images live under `ghcr.io/stardelt/*` (e.g. `ghcr.io/stardelt/nova:dev`). The GHCR
-packages are private, so the cluster needs a pull secret named `ghcr-creds` in the namespace:
+stardelt images live under `ghcr.io/stardelt/*` and are built by CI, not by the
+cluster: merge to `main` publishes `dev` and an immutable `sha-<short>` tag, and the
+job summary prints the digest. **Pin deployments by digest** — a moving tag may keep
+serving a cached layer.
+
+`nova` is public; `operator` and `superset` are internal/private until someone flips
+them in the package settings (the API refuses), so the cluster needs a pull secret
+named `ghcr-creds` in the namespace:
 
 ```sh
 ./dev/ghcr-pull-secret.sh          # requires gh with write:packages
