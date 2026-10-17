@@ -1,0 +1,46 @@
+# JupyterHub — multi-user notebook environment (the front door for interactive analysis).
+# Chart: jupyterhub/jupyterhub 4.4.3, appVersion 5.5.3.
+#
+# Dev shape: DummyAuthenticator (no IdP yet), ephemeral per-user storage, small
+# resources so it fits the cheap single node next to the core stack. Phase 1
+# replaces the dummy auth with Keycloak OIDC and adds persistent volumes.
+#
+# The public service is `proxy-public` on port 80 (used by the playground ingress).
+
+hub:
+  config:
+    JupyterHub:
+      authenticator_class: dummy
+    DummyAuthenticator:
+      # DEV ONLY. Replace with Keycloak OIDC before anything real.
+      password: stardelt
+  resources:
+    requests: { cpu: "50m", memory: "256Mi" }
+    limits:   { cpu: "500m", memory: "512Mi" }
+
+proxy:
+  service:
+    type: ClusterIP
+  chp:
+    resources:
+      requests: { cpu: "50m", memory: "128Mi" }
+      limits:   { cpu: "500m", memory: "256Mi" }
+  traefik:
+    resources:
+      requests: { cpu: "50m", memory: "128Mi" }
+      limits:   { cpu: "500m", memory: "256Mi" }
+
+singleuser:
+  image:
+    name: quay.io/jupyter/scipy-notebook
+    tag: "2024-10-07"
+  defaultUrl: /lab
+  startTimeout: 300
+  memory:
+    limit: 1G
+    guarantee: 256M
+  cpu:
+    limit: 1
+    guarantee: 0.1
+  storage:
+    type: none
