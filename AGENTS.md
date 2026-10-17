@@ -1,9 +1,8 @@
 # AGENTS.md — stardelt-platform
 
-Deployment repo for stardelt: Helm values, manifests and install scripts that bring the
-platform up on any conformant Kubernetes cluster. It vendors no charts — installs are
-pinned upstream charts plus the values in this repo, wired so every component shares one
-storage/catalog/identity path (master spec §6).
+Deployment repo for stardelt: Helm values, manifests and install scripts that bring
+the platform up on any conformant Kubernetes cluster. No charts are vendored — the
+install is pinned upstream charts + this repo's values (master spec §6).
 
 ## Read first
 
@@ -15,16 +14,14 @@ storage/catalog/identity path (master spec §6).
 
 The running development environment is the Hetzner k3s cluster
 (`alpha.dev.stardelt.io`), provisioned by `dev/hetzner-k3s/` (`make dev-up`, needs
-`HCLOUD_TOKEN`; `make dev-dns` points the hostname at it). Your `kubectl` current-context
-selects the target cluster — pin it (dev kubeconfig: `~/.kube/stardelt-dev.yaml`).
+`HCLOUD_TOKEN`). `kubectl`'s current-context selects the target cluster — pin it.
 
 ## Layout
 
 - `Makefile` — single source of truth: chart versions pinned as `<COMPONENT>_VERSION`
   (Renovate updates them via `renovate.json`) and every install target.
 - `helm-values/` — one values file per chart; `helm-values/slim/` = small-node overrides.
-- `manifests/` — kubectl resources: CNPG Postgres, Lakekeeper bootstrap, Nova deployment,
-  S3 credential templates.
+- `manifests/` — CNPG Postgres, Lakekeeper bootstrap, Nova deployment, S3 cred templates.
 - `scripts/` — `check-deps.sh` (`make deps`), `lint.sh` (`make lint`), port-forwards.
 - `dev/` — Hetzner k3s provisioning, playground ingress/DNS, `ghcr-pull-secret.sh`.
 - `images/superset/` — Superset image (+psycopg2, Trino driver).
@@ -58,7 +55,6 @@ CI (`.github/workflows/ci.yml`): yamllint on `helm-values/` + `manifests/`,
 
 - Images are `ghcr.io/stardelt/*` and private: create the `ghcr-creds` pull secret with
   `./dev/ghcr-pull-secret.sh` (needs `gh` logged in with `write:packages`).
-- `make install` expects the `stardelt-s3-creds` Secret to exist first (template:
-  `manifests/s3-credentials.example.yaml`); `install-core` applies the pinned dev secret
-  (`manifests/s3-credentials.dev.yaml`) itself.
+- `make install` needs the `stardelt-s3-creds` Secret (template:
+  `manifests/s3-credentials.example.yaml`); `install-core` applies the dev secret itself.
 - `SLIM=1` adds `-f helm-values/slim/trino.yaml` (install-core only).
