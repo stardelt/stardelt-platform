@@ -19,7 +19,7 @@ HELM_FLAGS := --namespace $(NAMESPACE) --create-namespace --wait --timeout 5m
 
 SUPERSET_IMAGE := ghcr.io/stardelt/superset:dev
 
-.PHONY: help deps install upgrade uninstall build-superset-image push-superset-image pf
+.PHONY: help deps install upgrade uninstall build-superset-image push-superset-image pf dev-up dev-down
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | \
@@ -141,3 +141,12 @@ push-superset-image: ## Push the Superset image to ghcr.io
 # ---------------------------------------------------------------------------
 pf: ## Open port-forwards to in-cluster services
 	@NAMESPACE=$(NAMESPACE) bash scripts/port-forwards.sh
+
+# ---------------------------------------------------------------------------
+# Hetzner k3s development cluster
+# ---------------------------------------------------------------------------
+dev-up: ## Provision the Hetzner k3s dev cluster (needs HCLOUD_TOKEN)
+	@bash dev/hetzner-k3s/provision.sh
+
+dev-down: ## Destroy the Hetzner k3s dev cluster
+	@bash dev/hetzner-k3s/destroy.sh
