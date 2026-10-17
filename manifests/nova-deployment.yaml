@@ -35,6 +35,10 @@ spec:
               value: warehouse
             - name: NOVA_DEV_USER
               value: stardelt-dev
+            # External base domain for deep-linking platform apps in Nova.
+            # Empty = no links. The dev playground sets this to alpha.dev.stardelt.io.
+            - name: NOVA_BASE_DOMAIN
+              value: ""
             - name: RUST_LOG
               value: info,tower_http=info
           readinessProbe:
