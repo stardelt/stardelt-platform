@@ -4,7 +4,9 @@ A real single-node k3s cluster on Hetzner Cloud, used as the **primary dev envir
 because the full chart set (Airflow, Superset, Trino, SeaweedFS, Lakekeeper, …) does not fit
 comfortably on a laptop. `kind` remains a fallback for Nova-only work.
 
-Cost note: `cpx41` (8 vCPU / 16 GB) is roughly €30/mo. Destroy it when not in use.
+Cost note: `cx32` (4 vCPU / 8 GB) is about **€7/month**. Bump to `cx42` (8 vCPU / 16 GB,
+~€16/month) if Airflow or Superset get `OOMKilled`. Hetzner bills while the server exists, so
+`make dev-down` when idle.
 
 ## What this gives you
 
@@ -47,11 +49,24 @@ All via env vars (see `.env.example`):
 |---|---|---|
 | `HCLOUD_TOKEN` | — | required API token |
 | `NAME` | `stardelt-dev` | server + firewall + key name |
-| `TYPE` | `cpx41` | server type (8 vCPU / 16 GB) |
+| `TYPE` | `cx32` | server type (4 vCPU / 8 GB, ~€7/mo) |
 | `LOCATION` | `nbg1` | `nbg1`, `fsn1`, `hel1`, `ash`, `hil` |
 | `IMAGE` | `ubuntu-24.04` | base image |
 | `ALLOW_CIDR` | your current IP `/32` | who may reach SSH + 6443 |
 | `SSH_PUBKEY` | `~/.ssh/id_ed25519.pub` | key uploaded to Hetzner |
+| `INGRESS_HOST` | `alpha.dev.stardelt.io` | playground hostname (A + wildcard A) |
+
+## Playground DNS
+
+If `~/.config/stardelt/cloudflare.env` exists, `provision.sh` points
+`$INGRESS_HOST` and `*.$INGRESS_HOST` at the node automatically. Manage it by hand:
+
+```sh
+make dev-dns        # upsert A + wildcard A → node IP
+make dev-dns-down   # remove them
+```
+
+See [dev/playground](../playground) for the ingress + TLS setup.
 
 ## Tear it down
 

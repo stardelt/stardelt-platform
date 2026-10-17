@@ -19,7 +19,7 @@ HELM_FLAGS := --namespace $(NAMESPACE) --create-namespace --wait --timeout 5m
 
 SUPERSET_IMAGE := ghcr.io/stardelt/superset:dev
 
-.PHONY: help deps install upgrade uninstall build-superset-image push-superset-image pf dev-up dev-down
+.PHONY: help deps install upgrade uninstall build-superset-image push-superset-image pf dev-up dev-down dev-dns dev-dns-down
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | \
@@ -150,3 +150,13 @@ dev-up: ## Provision the Hetzner k3s dev cluster (needs HCLOUD_TOKEN)
 
 dev-down: ## Destroy the Hetzner k3s dev cluster
 	@bash dev/hetzner-k3s/destroy.sh
+
+dev-dns: ## Point the playground hostname (and wildcard) at the dev node
+	@SERVER="$${NAME:-stardelt-dev}"; HOST="$${INGRESS_HOST:-alpha.dev.stardelt.io}"; \
+	 IP=$$(hcloud server ip $$SERVER); \
+	 echo "› $$HOST → $$IP"; \
+	 IP="$$IP" NAME="$$HOST" bash dev/cloudflare-dns.sh upsert
+
+dev-dns-down: ## Remove the playground DNS records
+	@HOST="$${INGRESS_HOST:-alpha.dev.stardelt.io}"; \
+	 NAME="$$HOST" bash dev/cloudflare-dns.sh delete

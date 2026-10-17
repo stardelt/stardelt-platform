@@ -4,9 +4,17 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Optional Cloudflare credentials — used to point the playground DNS at the node.
+CF_ENV="${CF_ENV:-$HOME/.config/stardelt/cloudflare.env}"
+if [ -f "$CF_ENV" ]; then
+  set -a; . "$CF_ENV"; set +a
+fi
+
 # Auth: HCLOUD_TOKEN env var OR an active `hcloud context`.
 NAME="${NAME:-stardelt-dev}"
-TYPE="${TYPE:-cpx41}"
+# Cheapest type that plausibly runs the demo stack. Bump to cx42 (8 vCPU/16 GB, ~€16/mo)
+# if Airflow/Superset get OOMKilled.
+TYPE="${TYPE:-cx32}"
 IMAGE="${IMAGE:-ubuntu-24.04}"
 LOCATION="${LOCATION:-nbg1}"
 SSH_PUBKEY="${SSH_PUBKEY:-$HOME/.ssh/id_ed25519.pub}"
@@ -72,6 +80,16 @@ mkdir -p "$(dirname "$KUBECONFIG_OUT")"
 ssh -o StrictHostKeyChecking=accept-new "root@${IP}" 'cat /etc/rancher/k3s/k3s.yaml' \
   | sed "s|127.0.0.1|${IP}|g" > "$KUBECONFIG_OUT"
 chmod 600 "$KUBECONFIG_OUT"
+
+INGRESS_HOST="${INGRESS_HOST:-alpha.dev.stardelt.io}"
+if [ -f "$CF_ENV" ] && [ -x "$HERE/cloudflare-dns.sh" ]; then
+  echo "› DNS: ${INGRESS_HOST} and *.${INGRESS_HOST} → ${IP}"
+  if NAME="$INGRESS_HOST" IP="$IP" bash "$HERE/cloudflare-dns.sh" upsert; then
+    echo "  playground: https://${INGRESS_HOST} (after the ingress + TLS are up)"
+  else
+    echo "  DNS update failed — continuing" >&2
+  fi
+fi
 
 echo
 echo "✓ k3s ready at https://${IP}:6443"
