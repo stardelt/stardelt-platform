@@ -55,7 +55,7 @@ jobs:
         run: |
           helm repo add cnpg           https://cloudnative-pg.github.io/charts
           helm repo add seaweedfs      https://seaweedfs.github.io/seaweedfs/helm
-          helm repo add lakekeeper     https://charts.lakekeeper.io
+          helm repo add lakekeeper     https://lakekeeper.github.io/lakekeeper-charts/
           helm repo add trino          https://trinodb.github.io/charts
           helm repo add apache-airflow https://airflow.apache.org
           helm repo add superset       https://apache.github.io/superset
