@@ -1,6 +1,11 @@
 # Playground ingresses. The wildcard A record (*.alpha.dev.stardelt.io) points at
 # the node, and ingress-nginx binds :80/:443 there, so each host only needs a
 # certificate.
+#
+# Not every backend exists in every profile (e.g. Superset/Airflow/JupyterHub are
+# not in `install-core`). An Ingress to a Service without endpoints simply 503s —
+# harmless. Nova's Apps page probes the services and shows what is actually up.
+---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -28,6 +33,30 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
+  name: trino
+  namespace: stardelt
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [trino.alpha.dev.stardelt.io]
+      secretName: trino-tls
+  rules:
+    - host: trino.alpha.dev.stardelt.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: trino
+                port:
+                  number: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
   name: superset
   namespace: stardelt
   annotations:
@@ -48,3 +77,51 @@ spec:
                 name: superset
                 port:
                   number: 8088
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: airflow
+  namespace: stardelt
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [airflow.alpha.dev.stardelt.io]
+      secretName: airflow-tls
+  rules:
+    - host: airflow.alpha.dev.stardelt.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: airflow-api-server
+                port:
+                  number: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: jupyterhub
+  namespace: stardelt
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [jupyter.alpha.dev.stardelt.io]
+      secretName: jupyterhub-tls
+  rules:
+    - host: jupyter.alpha.dev.stardelt.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: proxy-public
+                port:
+                  number: 80
