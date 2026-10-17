@@ -53,7 +53,9 @@ CI (`.github/workflows/ci.yml`): yamllint on `helm-values/` + `manifests/`,
 
 ## Gotchas
 
-- Images are `ghcr.io/stardelt/*` and private: create the `ghcr-creds` pull secret with
+- Images are `ghcr.io/stardelt/*` and **built by CI** (`Image` workflow: PR builds, merge to
+  `main` publishes `dev` + `sha-<short>`). `nova` and `stardelt-operator` packages are public;
+  `superset` is private, so the cluster needs the `ghcr-creds` pull secret on
   `./dev/ghcr-pull-secret.sh` (needs `gh` logged in with `write:packages`).
 - `make install` needs the `stardelt-s3-creds` Secret (template:
   `manifests/s3-credentials.example.yaml`); `install-core` applies the dev secret itself.
