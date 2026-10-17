@@ -23,7 +23,12 @@ SUPERSET_IMAGE := ghcr.io/stardelt/superset:dev
 # SLIM=1 applies the small-node overrides in helm-values/slim/ (for cx33 / 8 GB).
 TRINO_EXTRA := $(if $(filter 1,$(SLIM)),-f helm-values/slim/trino.yaml,)
 
+# Extra `-f`/`--set` arguments for the umbrella chart, e.g.
+#   make chart-template CHART_EXTRA="-f chart/values-slim.yaml"
+CHART_EXTRA ?=
+
 .PHONY: help deps lint install install-core install-notebooks upgrade uninstall build-superset-image push-superset-image pf dev-up dev-down dev-dns dev-dns-down
+.PHONY: chart-deps chart-template chart-install
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | \
@@ -178,6 +183,30 @@ uninstall: ## Uninstall all stardelt components (reverse order)
 	@helm uninstall cnpg       --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 
 	@echo "Uninstall complete."
+
+# ---------------------------------------------------------------------------
+# Umbrella chart — the declarative counterpart of `install`/`install-core`.
+#
+# chart/ ships the same components (same chart versions, same values, same
+# object names) as one Helm release named `stardelt`. Use it *instead of* the
+# per-component targets above in a given namespace: both paths own the same
+# object names, so a parallel install collides.
+#
+# Run `make chart-deps` once after a fresh clone and whenever chart/Chart.yaml
+# changes; it fetches the sub-charts into chart/charts/ (git-ignored).
+# ---------------------------------------------------------------------------
+chart-deps: ## Fetch/refresh the umbrella chart's sub-charts (helm dependency update)
+	@helm dependency update chart
+
+chart-template: ## Render the umbrella chart without installing it
+	@helm template stardelt chart --namespace $(NAMESPACE) $(CHART_EXTRA)
+
+chart-install: ## Install/upgrade the umbrella chart as release `stardelt`
+	@helm upgrade --install stardelt chart \
+	  --namespace $(NAMESPACE) --create-namespace \
+	  $(CHART_EXTRA)
+	@echo ""
+	@echo "stardelt installed from chart/. Run 'make pf' to open port-forwards."
 
 # ---------------------------------------------------------------------------
 # Superset image

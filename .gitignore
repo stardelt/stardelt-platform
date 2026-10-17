@@ -3,3 +3,8 @@
 .env.local
 *.log
 dev/hetzner-k3s/cluster.yaml
+
+# Umbrella chart dependencies — fetched by `make chart-deps`
+# (helm dependency update chart). Versions are pinned in chart/Chart.yaml.
+chart/charts/
+chart/Chart.lock

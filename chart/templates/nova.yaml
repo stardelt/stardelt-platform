@@ -1,0 +1,66 @@
+{{- if .Values.nova.enabled }}
+# stardelt Nova — UI + backend in one pod.
+# Image baked by the nova repo's Dockerfile (multi-stage: UI dist + axum binary).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nova
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: nova
+    app.kubernetes.io/part-of: stardelt
+spec:
+  replicas: {{ .Values.nova.replicas }}
+  selector:
+    matchLabels: { app.kubernetes.io/name: nova }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: nova, app.kubernetes.io/part-of: stardelt }
+    spec:
+      {{- with .Values.nova.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: nova
+          image: "{{ .Values.nova.image.repository }}:{{ .Values.nova.image.tag }}"
+          imagePullPolicy: {{ .Values.nova.image.pullPolicy }}
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: NOVA_TRINO_URL
+              value: {{ tpl .Values.nova.trinoURL . | quote }}
+            - name: NOVA_LAKEKEEPER_URL
+              value: {{ tpl .Values.nova.lakekeeperURL . | quote }}
+            - name: NOVA_WAREHOUSE_NAME
+              value: {{ .Values.nova.warehouseName | quote }}
+            - name: NOVA_DEV_USER
+              value: {{ .Values.nova.devUser | quote }}
+            # External base domain for deep-linking platform apps in Nova.
+            # Empty = no links. The dev playground sets this to alpha.dev.stardelt.io.
+            - name: NOVA_BASE_DOMAIN
+              value: {{ .Values.nova.baseDomain | quote }}
+            - name: RUST_LOG
+              value: {{ .Values.nova.logLevel | quote }}
+          readinessProbe:
+            httpGet: { path: /api/health, port: http }
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.nova.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nova
+  namespace: {{ .Release.Namespace }}
+  labels: { app.kubernetes.io/name: nova }
+spec:
+  type: ClusterIP
+  selector: { app.kubernetes.io/name: nova }
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+{{- end }}
