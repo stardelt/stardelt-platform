@@ -151,6 +151,18 @@ for production deployments.
 
 ---
 
+## Container images
+
+stardelt images live under `ghcr.io/stardelt/*` (e.g. `ghcr.io/stardelt/nova:dev`). The GHCR
+packages are private, so the cluster needs a pull secret named `ghcr-creds` in the namespace:
+
+```sh
+./dev/ghcr-pull-secret.sh          # requires gh with write:packages
+```
+
+Alternatively, make the packages public in the GitHub package settings and drop the
+`imagePullSecrets` entry. `nova:dev` is a mutable tag — pin by digest for reproducible installs.
+
 ## Uninstalling
 
 ```sh

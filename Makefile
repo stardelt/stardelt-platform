@@ -34,29 +34,21 @@ deps: ## Check required CLI tools
 # ---------------------------------------------------------------------------
 # Helm repo setup
 # ---------------------------------------------------------------------------
-.PHONY: _helm-repos _helm-plugin
+.PHONY: _helm-repos
 _helm-repos:
 	@echo "› adding helm repos"
 	@helm repo add cnpg           https://cloudnative-pg.github.io/charts           2>/dev/null || true
 	@helm repo add seaweedfs      https://seaweedfs.github.io/seaweedfs/helm         2>/dev/null || true
-	@helm repo add lakekeeper     https://charts.lakekeeper.io                       2>/dev/null || true
+	@helm repo add lakekeeper     https://lakekeeper.github.io/lakekeeper-charts/   2>/dev/null || true
 	@helm repo add trino          https://trinodb.github.io/charts                   2>/dev/null || true
 	@helm repo add apache-airflow https://airflow.apache.org                         2>/dev/null || true
 	@helm repo add superset       https://apache.github.io/superset                  2>/dev/null || true
 	@helm repo update
 
-_helm-plugin:
-	@if ! helm plugin list 2>/dev/null | grep -q stardelt-dedupe; then \
-	  echo "› installing stardelt-dedupe helm plugin"; \
-	  helm plugin install scripts/helm-plugins/stardelt-dedupe; \
-	else \
-	  echo "› stardelt-dedupe plugin already installed"; \
-	fi
-
 # ---------------------------------------------------------------------------
 # Install
 # ---------------------------------------------------------------------------
-install: deps _helm-repos _helm-plugin ## Install all stardelt components (idempotent)
+install: deps _helm-repos ## Install all stardelt components (idempotent)
 	@echo "› [1/9] CloudNative-PG operator"
 	@helm upgrade --install cnpg cnpg/cloudnative-pg \
 	  --version $(CNPG_VERSION) \
@@ -108,7 +100,7 @@ install: deps _helm-repos _helm-plugin ## Install all stardelt components (idemp
 # Core install — the cheap path for a single small node (cx33 / 8 GB).
 # Storage + catalog + query + Nova. Skips Airflow and Superset.
 # ---------------------------------------------------------------------------
-install-core: deps _helm-repos _helm-plugin ## Install the core only (storage+catalog+query+Nova)
+install-core: deps _helm-repos ## Install the core only (storage+catalog+query+Nova)
 	@echo "› [1/7] CloudNative-PG operator"
 	@helm upgrade --install cnpg cnpg/cloudnative-pg \
 	  --version $(CNPG_VERSION) \
@@ -197,8 +189,9 @@ dev-down: ## Destroy the Hetzner k3s dev cluster
 	@bash dev/hetzner-k3s/destroy.sh
 
 dev-dns: ## Point the playground hostname (and wildcard) at the dev node
-	@SERVER="$${NAME:-stardelt-dev}"; HOST="$${INGRESS_HOST:-alpha.dev.stardelt.io}"; \
-	 IP=$$(hcloud server ip $$SERVER); \
+	@KUBECONFIG="$${KUBECONFIG:-$$HOME/.kube/stardelt-dev.yaml}"; \
+	 IP=$$(kubectl --kubeconfig "$$KUBECONFIG" config view --minify -o jsonpath='{.clusters[0].cluster.server}' | sed -E 's#https://##; s#:.*##'); \
+	 HOST="$${INGRESS_HOST:-alpha.dev.stardelt.io}"; \
 	 echo "› $$HOST → $$IP"; \
 	 IP="$$IP" NAME="$$HOST" bash dev/cloudflare-dns.sh upsert
 

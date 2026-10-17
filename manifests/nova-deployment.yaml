@@ -16,10 +16,13 @@ spec:
     metadata:
       labels: { app.kubernetes.io/name: nova, app.kubernetes.io/part-of: stardelt }
     spec:
+      imagePullSecrets:
+        - name: ghcr-creds
       containers:
         - name: nova
-          image: stardelt/nova:dev
-          imagePullPolicy: IfNotPresent
+          image: ghcr.io/stardelt/nova:dev
+          # `:dev` is a mutable tag; Always re-pulls. Pin by digest for reproducible installs.
+          imagePullPolicy: Always
           ports:
             - containerPort: 8080
               name: http

@@ -3,15 +3,18 @@
 #
 # Overrides helm-values/trino.yaml (later -f wins): smaller heaps so Trino fits
 # next to SeaweedFS, CNPG, Lakekeeper and Nova on one 8 GB node.
+#
+# Constraint: query.maxMemory + 30% heap headroom must be <= max heap.
+#   900MB + 450MB = 1350MB <= 1500m  ✓
 server:
   workers: 1
   config:
     query:
-      maxMemory: "1GB"
+      maxMemory: "900MB"
 
 coordinator:
   jvm:
-    maxHeapSize: "1G"
+    maxHeapSize: "1500m"
     gcMethod:
       type: UseG1GC
   additionalJVMConfig:
@@ -19,7 +22,7 @@ coordinator:
 
 worker:
   jvm:
-    maxHeapSize: "1G"
+    maxHeapSize: "1500m"
     gcMethod:
       type: UseG1GC
   additionalJVMConfig:

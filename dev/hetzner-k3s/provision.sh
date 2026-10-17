@@ -36,6 +36,7 @@ if [ -n "$ALLOW_IPV6" ]; then
 fi
 
 CFG="$HERE/cluster.yaml"
+mkdir -p "$(dirname "$KUBECONFIG_PATH")"
 umask 077
 cat > "$CFG" <<EOF
 ---
@@ -114,9 +115,20 @@ hetzner-k3s create --config "$CFG" --quiet
 export KUBECONFIG="$KUBECONFIG_PATH"
 kubectl get nodes
 
-IP="$(grep -oE 'https://[0-9.]+:6443' "$KUBECONFIG_PATH" | head -1 | grep -oE '[0-9.]+' || true)"
+# Ensure the playground ports are open. hetzner-k3s did not apply
+# `custom_firewall_rules` reliably, so make it explicit and idempotent.
+if command -v hcloud >/dev/null 2>&1; then
+  for port in 80 443; do
+    hcloud firewall add-rule "$CLUSTER_NAME" \
+      --direction in --protocol tcp --port "$port" \
+      --source-ips 0.0.0.0/0 --source-ips ::/0 \
+      --description "playground-$port" >/dev/null 2>&1 || true
+  done
+fi
+
+IP="$(kubectl --kubeconfig "$KUBECONFIG_PATH" config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null | sed -E 's#https://##; s#:.*##' || true)"
 if [ -z "$IP" ]; then
-  IP="$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="ExternalIP")].address}' 2>/dev/null || true)"
+  IP="$(grep -oE 'https://[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' "$KUBECONFIG_PATH" | head -1 | sed 's|https://||' || true)"
 fi
 
 if [ -n "$IP" ] && [ -f "$CF_ENV" ] && [ -x "$HERE/../cloudflare-dns.sh" ]; then

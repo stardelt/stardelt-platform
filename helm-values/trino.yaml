@@ -12,7 +12,8 @@ server:
   workers: 1
   config:
     query:
-      maxMemory: "2GB"
+      # Must satisfy: maxMemory + 30% heap headroom <= max heap. 1200MB + 600MB <= 2GB.
+      maxMemory: "1200MB"
 
 coordinator:
   jvm:
