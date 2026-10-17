@@ -58,12 +58,16 @@ NAMESPACE=my-namespace make install
 | `help` | List all targets with descriptions |
 | `deps` | Run `scripts/check-deps.sh` to verify CLI tools |
 | `lint` | `bash -n` + ShellCheck every script under `scripts/` and `dev/` (ShellCheck only if installed) |
-| `install` | Add helm repos, install the dedupe plugin, deploy all components |
+| `install` | Add helm repos, deploy the full stack (9 steps) |
+| `install-core` | Core only (storage + catalog + query + Nova) — fits a small node; `SLIM=1` for 8 GB |
+| `install-notebooks` | JupyterHub (notebooks) |
 | `upgrade` | Re-run `install` (helm upgrade is idempotent) |
 | `uninstall` | Remove all helm releases and manifests in reverse order |
 | `build-superset-image` | Build `ghcr.io/stardelt/superset:dev` locally |
 | `push-superset-image` | Push that image to ghcr.io |
 | `pf` | Open port-forwards to Nova, Trino, Lakekeeper, Superset |
+| `dev-up` / `dev-down` | Create / delete the Hetzner k3s development cluster |
+| `dev-dns` / `dev-dns-down` | Point / remove the playground DNS records |
 
 ---
 
@@ -72,10 +76,12 @@ NAMESPACE=my-namespace make install
 ```
 helm-values/          Helm values files, one per chart
   airflow.yaml          Apache Airflow 3.x (KubernetesExecutor)
+  jupyterhub.yaml       JupyterHub multi-user notebooks
   lakekeeper.yaml       Lakekeeper Iceberg REST catalog
   seaweedfs.yaml        SeaweedFS S3-compatible storage
   superset.yaml         Apache Superset BI
   trino.yaml            Trino MPP SQL engine
+  slim/                 Small-node overrides (see `SLIM=1`)
 
 manifests/            Plain Kubernetes manifests (kubectl apply)
   cnpg-postgres.yaml    CloudNative-PG Cluster for Lakekeeper metadata
