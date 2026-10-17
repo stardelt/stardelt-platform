@@ -11,7 +11,7 @@ jobs:
   # Lint YAML files and shell scripts
   # ---------------------------------------------------------------------------
   lint:
-    name: Lint (yamllint + shellcheck)
+    name: Lint (yamllint + shell + renovate.json)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,9 +31,11 @@ jobs:
           yamllint -d '{extends: relaxed, rules: {line-length: {max: 140}}}' \
             manifests/
 
-      - name: ShellCheck scripts
-        run: |
-          shellcheck scripts/check-deps.sh scripts/port-forwards.sh
+      - name: Validate renovate.json
+        run: jq -e . renovate.json > /dev/null
+
+      - name: Lint shell scripts (bash -n + shellcheck)
+        run: make lint
 
   # ---------------------------------------------------------------------------
   # helm template each chart with its values file

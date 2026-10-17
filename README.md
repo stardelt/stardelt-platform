@@ -57,6 +57,7 @@ NAMESPACE=my-namespace make install
 |--------|-------------|
 | `help` | List all targets with descriptions |
 | `deps` | Run `scripts/check-deps.sh` to verify CLI tools |
+| `lint` | `bash -n` + ShellCheck every script under `scripts/` and `dev/` (ShellCheck only if installed) |
 | `install` | Add helm repos, install the dedupe plugin, deploy all components |
 | `upgrade` | Re-run `install` (helm upgrade is idempotent) |
 | `uninstall` | Remove all helm releases and manifests in reverse order |
@@ -87,6 +88,7 @@ images/
 
 scripts/
   check-deps.sh         Verify required CLI tools
+  lint.sh               bash -n + ShellCheck the shell scripts (make lint)
   port-forwards.sh      Background port-forwards to all services
   helm-plugins/
     stardelt-dedupe/    Helm v4 post-renderer: deduplicates env lists
@@ -104,6 +106,31 @@ scripts/
 | Trino | 1.42.2 | 480 |
 | Apache Airflow | 1.21.0 | 3.2.0 |
 | Apache Superset | 0.15.5 | 5.0.0 |
+
+---
+
+## Version pins
+
+Chart and application versions are pinned in the root [`Makefile`](Makefile) — one
+`<COMPONENT>_VERSION := x.y.z` line per chart. Every install path (`make install`,
+`make install-core`) reads the pin from there, so that file is the single source of truth for
+what gets deployed and a version bump is a one-line change.
+
+Dependencies are kept current by [Renovate](https://docs.renovatebot.com/), configured in
+[`renovate.json`](renovate.json). It opens grouped pull requests for:
+
+- the `*_VERSION` chart pins in the `Makefile` (read as Helm chart versions — see the
+  per-pin comments in `renovate.json` for why each one uses the `helm` datasource),
+- the base images in `images/**/Dockerfile`,
+- the action versions in `.github/workflows/**`,
+
+on a weekly schedule. Renovate keeps the versions exact (`rangeStrategy: pin`); major chart
+bumps are held back until they are approved on the Dependency Dashboard, since a chart major
+is what usually breaks a values file. Upgrading a component is therefore normally a review of
+a Renovate PR rather than a manual edit.
+
+Note that the table above and the `--version` flags in `.github/workflows/ci.yml` are still
+hand-maintained copies of the `Makefile` pins — keep them in sync when reviewing a chart bump.
 
 ---
 

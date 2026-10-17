@@ -1,0 +1,102 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": [
+    "Dependency automation for stardelt-platform.",
+    "",
+    "Chart versions are pinned in exactly one place: the root Makefile, as",
+    "`<COMPONENT>_VERSION := x.y.z`. The `customManagers` entries below teach Renovate to read",
+    "those pins, one entry per pin, each pointed at the registry that actually serves that chart.",
+    "",
+    "Dockerfile base images under `images/**` and the action versions in `.github/workflows/**`",
+    "need no custom manager: Renovate's built-in `dockerfile` and `github-actions` managers already",
+    "match those paths. The `packageRules` below group their updates.",
+    "",
+    "`customManagers` is the current name for the config key formerly called `regexManagers`; the",
+    "old name is no longer present in Renovate's published JSON schema."
+  ],
+  "extends": ["config:recommended"],
+  "timezone": "Europe/Berlin",
+  "schedule": ["before 6am on monday"],
+  "rangeStrategy": "pin",
+  "customManagers": [
+    {
+      "description": "Makefile pin `CNPG_VERSION` -> Helm chart `cloudnative-pg`. datasource=helm because the pin is consumed as `helm upgrade --install cnpg cnpg/cloudnative-pg --version $(CNPG_VERSION)`, so the thing that moves is the chart version. The CloudNative-PG operator image (`ghcr.io/cloudnative-pg/cloudnative-pg:1.2x.y`) and the GitHub release tag use a different numbering than the chart, so docker / github-releases would propose the wrong value.",
+      "customType": "regex",
+      "managerFilePatterns": ["/(^|/)Makefile$/"],
+      "matchStrings": ["CNPG_VERSION\\s*:=\\s*(?<currentValue>[^\\s#]+)"],
+      "depNameTemplate": "cloudnative-pg",
+      "datasourceTemplate": "helm",
+      "registryUrlTemplate": "https://cloudnative-pg.github.io/charts"
+    },
+    {
+      "description": "Makefile pin `SEAWEEDFS_VERSION` -> Helm chart `seaweedfs`. datasource=helm because `--version $(SEAWEEDFS_VERSION)` is a chart version (from https://seaweedfs.github.io/seaweedfs/helm). The chart version happens to equal the app version, but Renovate must look the chart up in the chart repo to get a value the chart repo can actually serve.",
+      "customType": "regex",
+      "managerFilePatterns": ["/(^|/)Makefile$/"],
+      "matchStrings": ["SEAWEEDFS_VERSION\\s*:=\\s*(?<currentValue>[^\\s#]+)"],
+      "depNameTemplate": "seaweedfs",
+      "datasourceTemplate": "helm",
+      "registryUrlTemplate": "https://seaweedfs.github.io/seaweedfs/helm"
+    },
+    {
+      "description": "Makefile pin `LAKEKEEPER_VERSION` -> Helm chart `lakekeeper` from the chart repo the Makefile adds (`https://lakekeeper.github.io/lakekeeper-charts`). datasource=helm is load-bearing here: chart 0.11.0 ships application 0.12.2, so a docker or github-releases datasource would propose an app version that no chart version exists for.",
+      "customType": "regex",
+      "managerFilePatterns": ["/(^|/)Makefile$/"],
+      "matchStrings": ["LAKEKEEPER_VERSION\\s*:=\\s*(?<currentValue>[^\\s#]+)"],
+      "depNameTemplate": "lakekeeper",
+      "datasourceTemplate": "helm",
+      "registryUrlTemplate": "https://lakekeeper.github.io/lakekeeper-charts"
+    },
+    {
+      "description": "Makefile pin `TRINO_VERSION` -> Helm chart `trino`. datasource=helm because the chart version (1.42.2) is independent of the Trino server release (480) that the chart deploys; the pin must track the chart.",
+      "customType": "regex",
+      "managerFilePatterns": ["/(^|/)Makefile$/"],
+      "matchStrings": ["TRINO_VERSION\\s*:=\\s*(?<currentValue>[^\\s#]+)"],
+      "depNameTemplate": "trino",
+      "datasourceTemplate": "helm",
+      "registryUrlTemplate": "https://trinodb.github.io/charts"
+    },
+    {
+      "description": "Makefile pin `AIRFLOW_VERSION` -> Helm chart `airflow` from the Apache chart repo (https://airflow.apache.org). datasource=helm because chart 1.21.0 and Airflow 3.2.0 are versioned separately.",
+      "customType": "regex",
+      "managerFilePatterns": ["/(^|/)Makefile$/"],
+      "matchStrings": ["AIRFLOW_VERSION\\s*:=\\s*(?<currentValue>[^\\s#]+)"],
+      "depNameTemplate": "airflow",
+      "datasourceTemplate": "helm",
+      "registryUrlTemplate": "https://airflow.apache.org"
+    },
+    {
+      "description": "Makefile pin `SUPERSET_VERSION` -> Helm chart `superset`. datasource=helm because chart 0.15.5 is unrelated to the Superset image tag (5.0.0) that the companion images/superset/Dockerfile builds on; that image is handled separately by the built-in dockerfile manager.",
+      "customType": "regex",
+      "managerFilePatterns": ["/(^|/)Makefile$/"],
+      "matchStrings": ["SUPERSET_VERSION\\s*:=\\s*(?<currentValue>[^\\s#]+)"],
+      "depNameTemplate": "superset",
+      "datasourceTemplate": "helm",
+      "registryUrlTemplate": "https://apache.github.io/superset"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "`make install` walks every chart in one pass, so a chart bump is only safe end to end. Group all Helm updates (including the Makefile pins read by the custom managers above) into one PR.",
+      "matchDatasources": ["helm"],
+      "groupName": "helm charts"
+    },
+    {
+      "description": "Chart majors routinely rename or drop values keys, which breaks the files in helm-values/. Require an explicit tick on the Dependency Dashboard before a major-chart PR is even opened.",
+      "matchDatasources": ["helm"],
+      "matchUpdateTypes": ["major"],
+      "groupName": "helm charts (major)",
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "Covers the `uses:` versions in .github/workflows/** via Renovate's built-in github-actions manager. Grouped, and rangeStrategy is forced back to `replace` so the major tags this repo uses (`actions/checkout@v4`) are kept instead of being rewritten to exact patch tags.",
+      "matchManagers": ["github-actions"],
+      "groupName": "github-actions",
+      "rangeStrategy": "replace"
+    },
+    {
+      "description": "Covers the `FROM` lines under images/** via Renovate's built-in dockerfile manager. Grouped because the image is rebuilt as a unit; the superset base image is served through the container-registry v2 token flow, so no registry alias is needed.",
+      "matchManagers": ["dockerfile"],
+      "groupName": "container base images"
+    }
+  ]
+}
