@@ -14,6 +14,7 @@ LAKEKEEPER_VERSION := 0.11.0
 TRINO_VERSION      := 1.42.2
 AIRFLOW_VERSION    := 1.21.0
 SUPERSET_VERSION   := 0.15.5
+JUPYTERHUB_VERSION := 4.4.3
 
 HELM_FLAGS := --namespace $(NAMESPACE) --create-namespace --wait --timeout 5m
 
@@ -22,7 +23,7 @@ SUPERSET_IMAGE := ghcr.io/stardelt/superset:dev
 # SLIM=1 applies the small-node overrides in helm-values/slim/ (for cx33 / 8 GB).
 TRINO_EXTRA := $(if $(filter 1,$(SLIM)),-f helm-values/slim/trino.yaml,)
 
-.PHONY: help deps install install-core upgrade uninstall build-superset-image push-superset-image pf dev-up dev-down dev-dns dev-dns-down
+.PHONY: help deps install install-core install-notebooks upgrade uninstall build-superset-image push-superset-image pf dev-up dev-down dev-dns dev-dns-down
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | \
@@ -43,6 +44,7 @@ _helm-repos:
 	@helm repo add trino          https://trinodb.github.io/charts                   2>/dev/null || true
 	@helm repo add apache-airflow https://airflow.apache.org                         2>/dev/null || true
 	@helm repo add superset       https://apache.github.io/superset                  2>/dev/null || true
+	@helm repo add jupyterhub     https://jupyterhub.github.io/helm-chart/           2>/dev/null || true
 	@helm repo update
 
 # ---------------------------------------------------------------------------
@@ -137,6 +139,18 @@ install-core: deps _helm-repos ## Install the core only (storage+catalog+query+N
 
 	@echo ""
 	@echo "Core installed. Run 'make pf' to reach Nova, Trino and Lakekeeper."
+
+# ---------------------------------------------------------------------------
+# Notebooks — JupyterHub (fits the cheap node alongside the core stack).
+# ---------------------------------------------------------------------------
+install-notebooks: deps _helm-repos ## Install JupyterHub (notebooks)
+	@echo "› JupyterHub"
+	@helm upgrade --install jupyterhub jupyterhub/jupyterhub \
+	  --version $(JUPYTERHUB_VERSION) \
+	  $(HELM_FLAGS) \
+	  -f helm-values/jupyterhub.yaml
+	@kubectl -n $(NAMESPACE) rollout status deploy/hub --timeout=5m
+	@echo "JupyterHub installed. Public service: proxy-public:80."
 
 # ---------------------------------------------------------------------------
 # Upgrade (helm upgrade is idempotent — same as install)

@@ -57,12 +57,16 @@ NAMESPACE=my-namespace make install
 |--------|-------------|
 | `help` | List all targets with descriptions |
 | `deps` | Run `scripts/check-deps.sh` to verify CLI tools |
-| `install` | Add helm repos, install the dedupe plugin, deploy all components |
+| `install` | Add helm repos, deploy the full stack (9 steps) |
+| `install-core` | Core only (storage + catalog + query + Nova) — fits a small node; `SLIM=1` for 8 GB |
+| `install-notebooks` | JupyterHub (notebooks) |
 | `upgrade` | Re-run `install` (helm upgrade is idempotent) |
 | `uninstall` | Remove all helm releases and manifests in reverse order |
 | `build-superset-image` | Build `ghcr.io/stardelt/superset:dev` locally |
 | `push-superset-image` | Push that image to ghcr.io |
 | `pf` | Open port-forwards to Nova, Trino, Lakekeeper, Superset |
+| `dev-up` / `dev-down` | Create / delete the Hetzner k3s development cluster |
+| `dev-dns` / `dev-dns-down` | Point / remove the playground DNS records |
 
 ---
 
