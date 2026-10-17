@@ -58,7 +58,10 @@ spec:
       containers:
         - name: nova
           image: ghcr.io/stardelt/nova:dev
-          # `:dev` is a mutable tag; Always re-pulls. Pin by digest for reproducible installs.
+          # `:dev` is a mutable tag, so it only takes effect when a pod starts:
+          # Always re-pulls, but nothing here changes when CI publishes — after a
+          # merge, roll the deployment (`kubectl -n stardelt rollout restart
+          # deploy/nova`) or pin the digest CI printed for a reproducible install.
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
