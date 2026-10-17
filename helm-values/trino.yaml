@@ -14,10 +14,13 @@ server:
     query:
       # Must satisfy: maxMemory + 30% heap headroom <= max heap. 1200MB + 600MB <= 2GB.
       maxMemory: "1200MB"
-    # Trino sits behind an ingress (ingress-nginx) that sets X-Forwarded-For;
-    # without this it answers 406 "Server configuration does not allow processing
-    # of the X-Forwarded-For header".
-    http-server.process-forwarded: true
+
+# Trino sits behind an ingress (ingress-nginx) that sets X-Forwarded-For; without
+# this it answers 406 "Server configuration does not allow processing of the
+# X-Forwarded-For header". `server.config` only renders known keys — extra
+# properties must go through `additionalConfigProperties`.
+additionalConfigProperties:
+  - http-server.process-forwarded=true
 
 coordinator:
   jvm:
