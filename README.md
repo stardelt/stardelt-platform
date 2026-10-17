@@ -75,10 +75,12 @@ NAMESPACE=my-namespace make install
 ```
 helm-values/          Helm values files, one per chart
   airflow.yaml          Apache Airflow 3.x (KubernetesExecutor)
+  jupyterhub.yaml       JupyterHub multi-user notebooks
   lakekeeper.yaml       Lakekeeper Iceberg REST catalog
   seaweedfs.yaml        SeaweedFS S3-compatible storage
   superset.yaml         Apache Superset BI
   trino.yaml            Trino MPP SQL engine
+  slim/                 Small-node overrides (see `SLIM=1`)
 
 manifests/            Plain Kubernetes manifests (kubectl apply)
   cnpg-postgres.yaml    CloudNative-PG Cluster for Lakekeeper metadata

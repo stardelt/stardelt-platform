@@ -16,7 +16,7 @@ AIRFLOW_VERSION    := 1.21.0
 SUPERSET_VERSION   := 0.15.5
 JUPYTERHUB_VERSION := 4.4.3
 
-HELM_FLAGS := --namespace $(NAMESPACE) --create-namespace --wait --timeout 5m
+HELM_FLAGS := --namespace $(NAMESPACE) --create-namespace --wait --timeout 10m
 
 SUPERSET_IMAGE := ghcr.io/stardelt/superset:dev
 
