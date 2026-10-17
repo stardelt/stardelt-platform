@@ -1,0 +1,46 @@
+# Reference hetzner-k3s config. provision.sh generates cluster.yaml (gitignored,
+# mode 600) from these settings; this file documents the shape.
+#
+#   make dev-up                       # generate + create
+#   hetzner-k3s delete -c cluster.yaml
+#
+# Docs: https://vitobotta.github.io/hetzner-k3s/Creating_a_cluster/
+---
+cluster_name: stardelt-dev
+kubeconfig_path: ~/.kube/stardelt-dev.yaml
+k3s_version: v1.37.1+k3s1
+config_format_version: 1
+schedule_workloads_on_masters: true     # single node: run pods on the master
+
+networking:
+  ssh:
+    port: 22
+    use_agent: false
+    public_key_path: "~/.ssh/id_ed25519.pub"
+    private_key_path: "~/.ssh/id_ed25519"
+  allowed_networks:
+    ssh: [0.0.0.0/0]                    # provision.sh pins this to your IP
+    api: [0.0.0.0/0]                    # (firewalls 6443)
+  custom_firewall_rules:                # open ingress for Traefik/nginx
+    - { description: http,  direction: in, protocol: tcp, port: "80",  source_ips: ["0.0.0.0/0", "::/0"] }
+    - { description: https, direction: in, protocol: tcp, port: "443", source_ips: ["0.0.0.0/0", "::/0"] }
+
+datastore:
+  mode: etcd
+
+masters_pool:
+  instance_type: cx33                   # 4 vCPU / 8 GB, ~EUR10/mo. cx43 = 16 GB.
+  instance_count: 1
+  locations: [nbg1]
+
+addons:
+  csi_driver:                { enabled: true }
+  cloud_controller_manager:  { enabled: true }
+  system_upgrade_controller: { enabled: true }
+  metrics_server:            { enabled: true }
+  cluster_autoscaler:        { enabled: false }
+  traefik:                   { enabled: false }   # we install ingress-nginx
+  servicelb:                 { enabled: false }
+
+create_load_balancer_for_the_kubernetes_api: false   # no extra LB cost
+protect_against_deletion: false                      # dev: `make dev-down` should work

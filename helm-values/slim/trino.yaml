@@ -1,0 +1,26 @@
+# Slim Trino overrides for the cheap dev cluster (cx33, 4 vCPU / 8 GB).
+# Usage:  make install-core SLIM=1
+#
+# Overrides helm-values/trino.yaml (later -f wins): smaller heaps so Trino fits
+# next to SeaweedFS, CNPG, Lakekeeper and Nova on one 8 GB node.
+server:
+  workers: 1
+  config:
+    query:
+      maxMemory: "1GB"
+
+coordinator:
+  jvm:
+    maxHeapSize: "1G"
+    gcMethod:
+      type: UseG1GC
+  additionalJVMConfig:
+    - "-Xms512m"
+
+worker:
+  jvm:
+    maxHeapSize: "1G"
+    gcMethod:
+      type: UseG1GC
+  additionalJVMConfig:
+    - "-Xms512m"

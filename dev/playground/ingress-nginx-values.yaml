@@ -1,0 +1,28 @@
+# Ingress-nginx for the dev node (no Hetzner Load Balancer, no extra cost).
+#
+# Runs as a host-network DaemonSet: it binds :80 and :443 directly on the node,
+# so DNS pointing at the node IP reaches it. The Service stays ClusterIP, so the
+# Hetzner Cloud Controller Manager never provisions a paid LB.
+#
+# Install:
+#   helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx --force-update
+#   helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+#     --namespace ingress-nginx --create-namespace \
+#     -f dev/playground/ingress-nginx-values.yaml --wait
+controller:
+  kind: DaemonSet
+  hostNetwork: true
+  dnsPolicy: ClusterFirstWithHostNet
+  service:
+    type: ClusterIP
+  publishService:
+    enabled: false
+  ingressClassResource:
+    name: nginx
+    default: true
+  admissionWebhooks:
+    enabled: false
+  updateStrategy:
+    type: RollingUpdate
+  config:
+    proxy-body-size: "64m"

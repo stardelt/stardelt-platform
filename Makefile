@@ -19,7 +19,10 @@ HELM_FLAGS := --namespace $(NAMESPACE) --create-namespace --wait --timeout 5m
 
 SUPERSET_IMAGE := ghcr.io/stardelt/superset:dev
 
-.PHONY: help deps install upgrade uninstall build-superset-image push-superset-image pf dev-up dev-down dev-dns dev-dns-down
+# SLIM=1 applies the small-node overrides in helm-values/slim/ (for cx33 / 8 GB).
+TRINO_EXTRA := $(if $(filter 1,$(SLIM)),-f helm-values/slim/trino.yaml,)
+
+.PHONY: help deps install install-core upgrade uninstall build-superset-image push-superset-image pf dev-up dev-down dev-dns dev-dns-down
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | \
@@ -100,6 +103,48 @@ install: deps _helm-repos _helm-plugin ## Install all stardelt components (idemp
 
 	@echo ""
 	@echo "stardelt installed. Run 'make pf' to open port-forwards."
+
+# ---------------------------------------------------------------------------
+# Core install — the cheap path for a single small node (cx33 / 8 GB).
+# Storage + catalog + query + Nova. Skips Airflow and Superset.
+# ---------------------------------------------------------------------------
+install-core: deps _helm-repos _helm-plugin ## Install the core only (storage+catalog+query+Nova)
+	@echo "› [1/7] CloudNative-PG operator"
+	@helm upgrade --install cnpg cnpg/cloudnative-pg \
+	  --version $(CNPG_VERSION) \
+	  $(HELM_FLAGS)
+
+	@echo "› [2/7] S3 credentials Secret (dev, pinned to SeaweedFS)"
+	@kubectl apply -f manifests/s3-credentials.dev.yaml
+
+	@echo "› [3/7] CNPG Cluster (Lakekeeper Postgres)"
+	@kubectl apply -f manifests/cnpg-postgres.yaml
+	@kubectl -n $(NAMESPACE) wait --for=condition=Ready --timeout=300s cluster/lakekeeper-pg
+
+	@echo "› [4/7] SeaweedFS"
+	@helm upgrade --install seaweedfs seaweedfs/seaweedfs \
+	  --version $(SEAWEEDFS_VERSION) \
+	  $(HELM_FLAGS) \
+	  -f helm-values/seaweedfs.yaml
+
+	@echo "› [5/7] Lakekeeper"
+	@helm upgrade --install lakekeeper lakekeeper/lakekeeper \
+	  --version $(LAKEKEEPER_VERSION) \
+	  $(HELM_FLAGS) \
+	  -f helm-values/lakekeeper.yaml
+
+	@echo "› [6/7] Lakekeeper bootstrap"
+	@kubectl apply -f manifests/lakekeeper-bootstrap.yaml
+
+	@echo "› [7/7] Trino + Nova"
+	@helm upgrade --install trino trino/trino \
+	  --version $(TRINO_VERSION) \
+	  $(HELM_FLAGS) \
+	  -f helm-values/trino.yaml $(TRINO_EXTRA)
+	@kubectl apply -f manifests/nova-deployment.yaml
+
+	@echo ""
+	@echo "Core installed. Run 'make pf' to reach Nova, Trino and Lakekeeper."
 
 # ---------------------------------------------------------------------------
 # Upgrade (helm upgrade is idempotent — same as install)

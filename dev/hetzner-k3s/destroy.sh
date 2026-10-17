@@ -1,20 +1,23 @@
 #!/usr/bin/env bash
-# Delete the Hetzner dev server. The firewall and SSH key are kept for reuse.
+# Delete the stardelt dev cluster and its playground DNS records.
 set -euo pipefail
-NAME="${NAME:-stardelt-dev}"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-command -v hcloud >/dev/null 2>&1 || { echo "hcloud CLI not found" >&2; exit 1; }
-if [ -z "${HCLOUD_TOKEN:-}" ]; then
-  hcloud context active >/dev/null 2>&1 || {
-    echo "No active hcloud context and HCLOUD_TOKEN is unset." >&2
-    echo "  Run:  hcloud context create stardelt" >&2
-    exit 1
-  }
+CF_ENV="${CF_ENV:-$HOME/.config/stardelt/cloudflare.env}"
+[ -f "$CF_ENV" ] && { set -a; . "$CF_ENV"; set +a; }
+HETZNER_ENV="${HETZNER_ENV:-$HOME/.config/stardelt/hetzner.env}"
+[ -f "$HETZNER_ENV" ] && { set -a; . "$HETZNER_ENV"; set +a; }
+INGRESS_HOST="${INGRESS_HOST:-alpha.dev.stardelt.io}"
+
+if [ -f "$HERE/cluster.yaml" ]; then
+  command -v hetzner-k3s >/dev/null || { echo "hetzner-k3s not found" >&2; exit 1; }
+  echo "› deleting cluster (hetzner-k3s)"
+  hetzner-k3s delete --config "$HERE/cluster.yaml" --force --quiet || true
+else
+  echo "no cluster.yaml — nothing to delete (run provision.sh first)"
 fi
 
-if hcloud server describe "$NAME" >/dev/null 2>&1; then
-  hcloud server delete "$NAME"
-  echo "✓ deleted server '$NAME' (firewall + ssh key kept)"
-else
-  echo "server '$NAME' does not exist"
+if [ -f "$CF_ENV" ] && [ -x "$HERE/../cloudflare-dns.sh" ]; then
+  echo "› removing DNS records for ${INGRESS_HOST}"
+  NAME="$INGRESS_HOST" bash "$HERE/../cloudflare-dns.sh" delete || true
 fi

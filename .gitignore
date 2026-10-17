@@ -2,3 +2,4 @@
 .env
 .env.local
 *.log
+dev/hetzner-k3s/cluster.yaml

@@ -1,99 +1,134 @@
 #!/usr/bin/env bash
-# Provision a single-node Hetzner Cloud VM running k3s for stardelt development.
+# Create the stardelt dev cluster on Hetzner Cloud with hetzner-k3s, then point DNS.
+#
+# Requirements: hetzner-k3s (https://github.com/vitobotta/hetzner-k3s), HCLOUD_TOKEN,
+# an SSH keypair, and optionally ~/.config/stardelt/cloudflare.env for DNS.
 set -euo pipefail
-
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Optional Cloudflare credentials — used to point the playground DNS at the node.
+# Credentials live outside the repo (mode 600).
 CF_ENV="${CF_ENV:-$HOME/.config/stardelt/cloudflare.env}"
-if [ -f "$CF_ENV" ]; then
-  set -a; . "$CF_ENV"; set +a
-fi
+[ -f "$CF_ENV" ] && { set -a; . "$CF_ENV"; set +a; }
+HETZNER_ENV="${HETZNER_ENV:-$HOME/.config/stardelt/hetzner.env}"
+[ -f "$HETZNER_ENV" ] && { set -a; . "$HETZNER_ENV"; set +a; }
 
-# Auth: HCLOUD_TOKEN env var OR an active `hcloud context`.
-NAME="${NAME:-stardelt-dev}"
-# Cheapest type that plausibly runs the demo stack. Bump to cx42 (8 vCPU/16 GB, ~€16/mo)
-# if Airflow/Superset get OOMKilled.
-TYPE="${TYPE:-cx32}"
-IMAGE="${IMAGE:-ubuntu-24.04}"
+: "${HCLOUD_TOKEN:?set HCLOUD_TOKEN (or put it in $HETZNER_ENV)}"
+command -v hetzner-k3s >/dev/null || {
+  echo "hetzner-k3s not found: https://github.com/vitobotta/hetzner-k3s" >&2
+  exit 1
+}
+
+CLUSTER_NAME="${CLUSTER_NAME:-stardelt-dev}"
+K3S_VERSION="${K3S_VERSION:-v1.37.1+k3s1}"
+NODE_TYPE="${NODE_TYPE:-cx33}"          # 4 vCPU / 8 GB, ~EUR10/mo. cx43 = 16 GB if OOM.
 LOCATION="${LOCATION:-nbg1}"
-SSH_PUBKEY="${SSH_PUBKEY:-$HOME/.ssh/id_ed25519.pub}"
-ALLOW_CIDR="${ALLOW_CIDR:-$(curl -fsS https://ifconfig.me)/32}"
-
-command -v hcloud >/dev/null 2>&1 || {
-  echo "hcloud CLI not found. Install: https://github.com/hetznercloud/cli#installation" >&2
-  exit 1
-}
-if [ -z "${HCLOUD_TOKEN:-}" ]; then
-  hcloud context active >/dev/null 2>&1 || {
-    echo "No active hcloud context and HCLOUD_TOKEN is unset." >&2
-    echo "  Run:  hcloud context create stardelt     (prompts for the API token)" >&2
-    echo "  or:   export HCLOUD_TOKEN=..." >&2
-    exit 1
-  }
-fi
-[ -f "$SSH_PUBKEY" ] || { echo "SSH public key not found: $SSH_PUBKEY" >&2; exit 1; }
-
-if hcloud server describe "$NAME" >/dev/null 2>&1; then
-  echo "server '$NAME' already exists — reusing"
-else
-  echo "› SSH key"
-  hcloud ssh-key describe "$NAME" >/dev/null 2>&1 || \
-    hcloud ssh-key create --name "$NAME" --public-key-from-file "$SSH_PUBKEY"
-
-  echo "› firewall (SSH + API from ${ALLOW_CIDR}, 80/443 open)"
-  if ! hcloud firewall describe "$NAME" >/dev/null 2>&1; then
-    hcloud firewall create --name "$NAME"
-    hcloud firewall add-rule "$NAME" --direction in --protocol tcp --port 22  --source-ips "$ALLOW_CIDR" --description ssh
-    hcloud firewall add-rule "$NAME" --direction in --protocol tcp --port 6443 --source-ips "$ALLOW_CIDR" --description kube-api
-    hcloud firewall add-rule "$NAME" --direction in --protocol tcp --port 80   --source-ips 0.0.0.0/0 --description http
-    hcloud firewall add-rule "$NAME" --direction in --protocol tcp --port 443  --source-ips 0.0.0.0/0 --description https
-  fi
-
-  echo "› server '$NAME' ($TYPE, $LOCATION)"
-  hcloud server create \
-    --name "$NAME" \
-    --type "$TYPE" \
-    --image "$IMAGE" \
-    --location "$LOCATION" \
-    --ssh-key "$NAME" \
-    --firewall "$NAME" \
-    --user-data-from-file "$HERE/cloud-init.yaml"
-fi
-
-IP="$(hcloud server ip "$NAME")"
-echo "› waiting for k3s on ${IP} ..."
-for i in $(seq 1 60); do
-  if ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 "root@${IP}" \
-       'test -f /etc/rancher/k3s/k3s.yaml' >/dev/null 2>&1; then
-    break
-  fi
-  sleep 5
-done
-ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 "root@${IP}" 'k3s kubectl get nodes' >/dev/null 2>&1 || {
-  echo "k3s did not become ready in time. Check cloud-init: ssh root@${IP} journalctl -u k3s" >&2
-  exit 1
-}
-
-KUBECONFIG_OUT="${KUBECONFIG_OUT:-$HOME/.kube/stardelt-dev.yaml}"
-mkdir -p "$(dirname "$KUBECONFIG_OUT")"
-ssh -o StrictHostKeyChecking=accept-new "root@${IP}" 'cat /etc/rancher/k3s/k3s.yaml' \
-  | sed "s|127.0.0.1|${IP}|g" > "$KUBECONFIG_OUT"
-chmod 600 "$KUBECONFIG_OUT"
-
+SSH_PUBLIC_KEY="${SSH_PUBLIC_KEY:-$HOME/.ssh/id_ed25519.pub}"
+SSH_PRIVATE_KEY="${SSH_PRIVATE_KEY:-$HOME/.ssh/id_ed25519}"
+KUBECONFIG_PATH="${KUBECONFIG_PATH:-$HOME/.kube/stardelt-dev.yaml}"
 INGRESS_HOST="${INGRESS_HOST:-alpha.dev.stardelt.io}"
-if [ -f "$CF_ENV" ] && [ -x "$HERE/cloudflare-dns.sh" ]; then
+
+ALLOW_IPV4="${ALLOW_IPV4:-$(curl -4 -fsS https://ifconfig.me)/32}"
+ALLOW_IPV6="${ALLOW_IPV6:-$(curl -6 -fsS https://ifconfig.me 2>/dev/null || true)}"
+ALLOWED="      - ${ALLOW_IPV4}"
+if [ -n "$ALLOW_IPV6" ]; then
+  ALLOWED="${ALLOWED}
+      - ${ALLOW_IPV6}/128"
+fi
+
+CFG="$HERE/cluster.yaml"
+umask 077
+cat > "$CFG" <<EOF
+---
+hetzner_token: ${HCLOUD_TOKEN}
+cluster_name: ${CLUSTER_NAME}
+kubeconfig_path: ${KUBECONFIG_PATH}
+k3s_version: ${K3S_VERSION}
+config_format_version: 1
+schedule_workloads_on_masters: true
+
+networking:
+  ssh:
+    port: 22
+    use_agent: false
+    public_key_path: "${SSH_PUBLIC_KEY}"
+    private_key_path: "${SSH_PRIVATE_KEY}"
+  allowed_networks:
+    ssh:
+${ALLOWED}
+    api:
+${ALLOWED}
+  custom_firewall_rules:
+    - description: "http"
+      direction: in
+      protocol: tcp
+      port: "80"
+      source_ips: ["0.0.0.0/0", "::/0"]
+    - description: "https"
+      direction: in
+      protocol: tcp
+      port: "443"
+      source_ips: ["0.0.0.0/0", "::/0"]
+  public_network:
+    ipv4: true
+    ipv6: true
+  private_network:
+    enabled: true
+    subnet: 10.0.0.0/16
+  cni:
+    enabled: true
+    mode: flannel
+
+datastore:
+  mode: etcd
+
+masters_pool:
+  instance_type: ${NODE_TYPE}
+  instance_count: 1
+  locations:
+    - ${LOCATION}
+
+addons:
+  csi_driver:
+    enabled: true
+  cloud_controller_manager:
+    enabled: true
+  system_upgrade_controller:
+    enabled: true
+  cluster_autoscaler:
+    enabled: false
+  traefik:
+    enabled: false
+  servicelb:
+    enabled: false
+  metrics_server:
+    enabled: true
+
+create_load_balancer_for_the_kubernetes_api: false
+protect_against_deletion: false
+EOF
+chmod 600 "$CFG"
+
+echo "› creating cluster '${CLUSTER_NAME}' (${NODE_TYPE} @ ${LOCATION}, k3s ${K3S_VERSION})"
+hetzner-k3s create --config "$CFG" --quiet
+
+export KUBECONFIG="$KUBECONFIG_PATH"
+kubectl get nodes
+
+IP="$(grep -oE 'https://[0-9.]+:6443' "$KUBECONFIG_PATH" | head -1 | grep -oE '[0-9.]+' || true)"
+if [ -z "$IP" ]; then
+  IP="$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="ExternalIP")].address}' 2>/dev/null || true)"
+fi
+
+if [ -n "$IP" ] && [ -f "$CF_ENV" ] && [ -x "$HERE/../cloudflare-dns.sh" ]; then
   echo "› DNS: ${INGRESS_HOST} and *.${INGRESS_HOST} → ${IP}"
-  if NAME="$INGRESS_HOST" IP="$IP" bash "$HERE/cloudflare-dns.sh" upsert; then
-    echo "  playground: https://${INGRESS_HOST} (after the ingress + TLS are up)"
-  else
-    echo "  DNS update failed — continuing" >&2
-  fi
+  NAME="$INGRESS_HOST" IP="$IP" bash "$HERE/../cloudflare-dns.sh" upsert \
+    || echo "  DNS update failed (continuing)" >&2
 fi
 
 echo
-echo "✓ k3s ready at https://${IP}:6443"
-echo "  export KUBECONFIG=\"${KUBECONFIG_OUT}\""
-echo "  kubectl get nodes"
+echo "✓ cluster ready (${NODE_TYPE} @ ${LOCATION})"
+echo "  export KUBECONFIG=\"${KUBECONFIG_PATH}\""
+echo "  node IP: ${IP:-unknown}"
 echo
-echo "Next: cd stardelt-platform && make install"
+echo "Next:  make install-core   # cheap: storage + catalog + query + Nova"
+echo "       make install        # full: + Airflow + Superset (needs cx43/16 GB)"
