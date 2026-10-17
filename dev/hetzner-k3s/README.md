@@ -67,6 +67,37 @@ Reference config: [`cluster.yaml.example`](./cluster.yaml.example).
 make dev-down        # hetzner-k3s delete + remove DNS records
 ```
 
+What disappears: the server, k3s itself, and **everything on its disk** — every
+PersistentVolumeClaim (SeaweedFS data, Lakekeeper's Postgres, JupyterHub homes,
+Trino spill). No Hetzner volumes are provisioned (`cluster.yaml` defines none), so
+local-path storage is the node's disk. The Cloudflare A records for
+`alpha.dev.stardelt.io` and `*.alpha.dev.stardelt.io` go with it.
+
+**Nothing on the cluster is irreplaceable.** The stack is reproducible from this repo
+(pinned chart versions in the `Makefile` + `helm-values/`) and the container images
+from `ghcr.io/stardelt/*`, which CI rebuilds from `main`. Tear it down whenever it
+stops being useful.
+
+Before the teardown, if you rotated `HCLOUD_TOKEN`, refresh the copy embedded in the
+cluster config — otherwise `dev-down` authenticates with a dead token:
+
+```sh
+set -a; . ~/.config/stardelt/hetzner.env; set +a
+sed -i "s|^hetzner_token:.*|hetzner_token: $HCLOUD_TOKEN|" dev/hetzner-k3s/cluster.yaml
+```
+
+Leftovers `dev-down` does not touch (safe to keep or remove):
+
+| Leftover | Path | Notes |
+|---|---|---|
+| Kubeconfig | `~/.kube/stardelt-dev.yaml` | points at a dead endpoint afterwards |
+| Cluster config | `dev/hetzner-k3s/cluster.yaml` | gitignored, mode 600, contains the Hetzner token |
+| Scratch | `/tmp/opencode/` | Kaniko manifests and other one-off files |
+| GHCR packages | `github.com/orgs/stardelt/packages` | images outlive the cluster on purpose; delete orphans by hand |
+
+If a browser still resolves the old hostname after teardown, it is the local resolver
+cache, not DNS: `sudo resolvectl flush-caches`.
+
 ## Notes
 
 - Single node, no HA — a development environment, not production.
