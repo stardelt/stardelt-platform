@@ -1,5 +1,41 @@
 # stardelt Nova — UI + backend in one pod.
-# Image baked by nova-image/Dockerfile (multi-stage: UI dist + axum binary).
+# Image published by CI from stardelt-nova (ghcr.io/stardelt/nova); pin by digest
+# for reproducible installs.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nova
+  namespace: stardelt
+  labels: { app.kubernetes.io/name: nova, app.kubernetes.io/part-of: stardelt }
+---
+# Nova's only cluster permission: read the workloads in its own namespace, so the
+# UI can show what is actually deployed — including digest pins. It writes nothing.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: nova-workload-reader
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nova-workload-reader
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: nova-workload-reader
+subjects:
+  - kind: ServiceAccount
+    name: nova
+    namespace: stardelt
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -16,6 +52,7 @@ spec:
     metadata:
       labels: { app.kubernetes.io/name: nova, app.kubernetes.io/part-of: stardelt }
     spec:
+      serviceAccountName: nova
       imagePullSecrets:
         - name: ghcr-creds
       containers:
@@ -35,6 +72,10 @@ spec:
               value: warehouse
             - name: NOVA_DEV_USER
               value: stardelt-dev
+            # Namespace whose workloads Nova reports (downward API).
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef: { fieldPath: metadata.namespace }
             # External base domain for deep-linking platform apps in Nova.
             # Empty = no links. The dev playground sets this to alpha.dev.stardelt.io.
             - name: NOVA_BASE_DOMAIN

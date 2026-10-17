@@ -1,6 +1,41 @@
 {{- if .Values.nova.enabled }}
 # stardelt Nova — UI + backend in one pod.
-# Image baked by the nova repo's Dockerfile (multi-stage: UI dist + axum binary).
+# Image published by CI from the nova repo (ghcr.io/stardelt/nova).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nova
+  namespace: {{ .Release.Namespace }}
+  labels: { app.kubernetes.io/name: nova, app.kubernetes.io/part-of: stardelt }
+---
+# Nova's only cluster permission: read the workloads in its own namespace, so the
+# UI can show what is actually deployed — including digest pins. It writes nothing.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: nova-workload-reader
+  namespace: {{ .Release.Namespace }}
+  labels: { app.kubernetes.io/part-of: stardelt }
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nova-workload-reader
+  namespace: {{ .Release.Namespace }}
+  labels: { app.kubernetes.io/part-of: stardelt }
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: nova-workload-reader
+subjects:
+  - kind: ServiceAccount
+    name: nova
+    namespace: {{ .Release.Namespace }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -17,6 +52,7 @@ spec:
     metadata:
       labels: { app.kubernetes.io/name: nova, app.kubernetes.io/part-of: stardelt }
     spec:
+      serviceAccountName: nova
       {{- with .Values.nova.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -37,6 +73,10 @@ spec:
               value: {{ .Values.nova.warehouseName | quote }}
             - name: NOVA_DEV_USER
               value: {{ .Values.nova.devUser | quote }}
+            # Namespace whose workloads Nova reports (downward API).
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef: { fieldPath: metadata.namespace }
             # External base domain for deep-linking platform apps in Nova.
             # Empty = no links. The dev playground sets this to alpha.dev.stardelt.io.
             - name: NOVA_BASE_DOMAIN
