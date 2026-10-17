@@ -1,0 +1,34 @@
+# Slim overrides for the cheap dev cluster (cx33, 4 vCPU / 8 GB).
+# Usage:  helm upgrade --install stardelt chart -n stardelt -f chart/values-slim.yaml
+#         (or: make chart-install CHART_EXTRA="-f chart/values-slim.yaml")
+#
+# Mirrors helm-values/slim/trino.yaml (the `make install-core SLIM=1` overrides)
+# on top of chart/values.yaml: smaller Trino heaps so Trino fits next to
+# SeaweedFS, CNPG, Lakekeeper and Nova on one 8 GB node. Values files are merged
+# key by key, so only the keys below are replaced — everything else keeps the
+# default from chart/values.yaml.
+#
+# Constraint: query.maxMemory + 30% heap headroom must be <= max heap.
+#   900MB + 450MB = 1350MB <= 1500m  ✓
+trino:
+  server:
+    workers: 1
+    config:
+      query:
+        maxMemory: "900MB"
+
+  coordinator:
+    jvm:
+      maxHeapSize: "1500m"
+      gcMethod:
+        type: UseG1GC
+    additionalJVMConfig:
+      - "-Xms512m"
+
+  worker:
+    jvm:
+      maxHeapSize: "1500m"
+      gcMethod:
+        type: UseG1GC
+    additionalJVMConfig:
+      - "-Xms512m"

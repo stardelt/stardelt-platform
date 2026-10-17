@@ -21,10 +21,10 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends yamllint shellcheck
 
-      - name: Lint helm-values YAML
+      - name: Lint helm-values + umbrella chart values YAML
         run: |
           yamllint -d '{extends: relaxed, rules: {line-length: {max: 140}}}' \
-            helm-values/
+            helm-values/ chart/Chart.yaml chart/values.yaml chart/values-slim.yaml
 
       - name: Lint manifests YAML
         run: |
@@ -101,6 +101,16 @@ jobs:
             --version 0.15.5 \
             --namespace stardelt \
             -f helm-values/superset.yaml > /dev/null
+
+      - name: helm dependency update — umbrella chart
+        run: helm dependency update chart
+
+      - name: helm lint + template — umbrella chart
+        run: |
+          helm lint chart
+          helm template stardelt chart -n stardelt > /dev/null
+          helm template stardelt chart -n stardelt --set superset.enabled=true > /dev/null
+          helm template stardelt chart -n stardelt -f chart/values-slim.yaml > /dev/null
 
   # ---------------------------------------------------------------------------
   # Build + push Superset image (push to main only)

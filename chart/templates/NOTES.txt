@@ -1,0 +1,28 @@
+stardelt platform {{ .Chart.Version }} — namespace {{ .Release.Namespace }}.
+
+Stardelt is up. The components below are the same objects a `make install`
+creates, so `make pf` and the playground ingresses keep working.
+
+  Core (always part of the baseline install):
+    {{ if .Values.postgres.enabled }}✓{{ else }}·{{ end }} Postgres (CNPG Cluster lakekeeper-pg)
+    {{ if .Values.seaweedfs.enabled }}✓{{ else }}·{{ end }} SeaweedFS S3          http://seaweedfs-s3:8333
+    {{ if .Values.lakekeeper.enabled }}✓{{ else }}·{{ end }} Lakekeeper catalog   http://lakekeeper:8181
+    {{ if .Values.trino.enabled }}✓{{ else }}·{{ end }} Trino                  http://trino:8080
+    {{ if .Values.nova.enabled }}✓{{ else }}·{{ end }} Nova UI              http://nova:8080
+
+  Optional (off by default):
+    {{ if .Values.superset.enabled }}✓{{ else }}·{{ end }} Superset   (enable with --set superset.enabled=true)
+    {{ if .Values.airflow.enabled }}✓{{ else }}·{{ end }} Airflow    (enable with --set airflow.enabled=true)
+    {{ if .Values.jupyterhub.enabled }}✓{{ else }}·{{ end }} JupyterHub (enable with --set jupyterhub.enabled=true)
+
+Nova runs with image {{ .Values.nova.image.repository }}:{{ .Values.nova.image.tag }}.
+{{- if .Values.s3Credentials.create }}
+The Secret {{ .Values.s3Credentials.name }} carries the dev S3 credentials that
+match the SeaweedFS defaults — replace them before this leaves a laptop.
+{{- else }}
+Using the pre-existing Secret {{ .Values.s3Credentials.name }} for S3 credentials.
+{{- end }}
+
+Next steps:
+  make pf                     # port-forward Nova :8080, Trino :8081, Lakekeeper :8181, Superset :8089
+  helm get manifest stardelt -n {{ .Release.Namespace }}   # what is actually deployed

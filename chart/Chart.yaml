@@ -1,0 +1,47 @@
+apiVersion: v2
+name: stardelt-platform
+description: |
+  stardelt data platform — umbrella chart: identity-less dev baseline of the
+  lakehouse spine (storage + catalog + query), plus the Nova UI. Heavy
+  components (BI, orchestration, notebooks) are optional sub-charts.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+icon: https://stardelt.io/img/logo.svg
+keywords:
+  - iceberg
+  - lakehouse
+  - data-platform
+
+# Chart and application versions mirror the pins in the root Makefile
+# (<COMPONENT>_VERSION := x.y.z), which stays the single source of truth for
+# what `make install` deploys. Keep both in sync when bumping a component.
+dependencies:
+  - name: cloudnative-pg
+    repository: https://cloudnative-pg.github.io/charts
+    version: 0.28.2
+    condition: cloudnative-pg.enabled
+  - name: seaweedfs
+    repository: https://seaweedfs.github.io/seaweedfs/helm
+    version: 4.25.1
+    condition: seaweedfs.enabled
+  - name: lakekeeper
+    repository: https://lakekeeper.github.io/lakekeeper-charts/
+    version: 0.11.0
+    condition: lakekeeper.enabled
+  - name: trino
+    repository: https://trinodb.github.io/charts
+    version: 1.42.2
+    condition: trino.enabled
+  - name: superset
+    repository: https://apache.github.io/superset
+    version: 0.15.5
+    condition: superset.enabled
+  - name: airflow
+    repository: https://airflow.apache.org
+    version: 1.21.0
+    condition: airflow.enabled
+  - name: jupyterhub
+    repository: https://jupyterhub.github.io/helm-chart/
+    version: 4.4.3
+    condition: jupyterhub.enabled

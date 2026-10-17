@@ -1,0 +1,588 @@
+# stardelt platform — umbrella chart values.
+#
+# This is the declarative counterpart of `make install`: one release instead of
+# nine `helm upgrade --install` / `kubectl apply` steps. The per-component
+# sources of truth for the Makefile path stay `helm-values/*.yaml` and
+# `manifests/*.yaml`; the blocks below mirror them — keep both in sync when a
+# value changes (the version pins live in the root Makefile and in Chart.yaml).
+#
+# Layout rules:
+#   - one block per sub-chart, named after the dependency in Chart.yaml, with an
+#     `enabled` toggle that Chart.yaml uses as its condition;
+#   - core stack on by default (Postgres, SeaweedFS, Lakekeeper, Trino, Nova),
+#     heavy components off (Superset, Airflow, JupyterHub) — same shape as
+#     `make install-core`;
+#   - in-cluster addresses use short service names, which resolve inside the
+#     release namespace, so the chart is namespace-agnostic;
+#   - `fullnameOverride` keeps the core sub-chart object names identical to a
+#     `make install` deployment (`seaweedfs-s3`, `lakekeeper`, `trino`, ...), so
+#     Nova, `make pf` and the playground ingresses keep working, and single
+#     components can be disabled while the Makefile keeps managing them.
+#     The optional components are named partly from the release name
+#     (`stardelt-postgresql`, `stardelt-api-server`, ...) because their charts
+#     use `.Release.Name` directly — names, not configuration, differ there.
+#     A chart install therefore shares object names with `make install`: use one
+#     or the other per namespace, never both.
+
+# ===========================================================================
+# Core stack
+# ===========================================================================
+
+cloudnative-pg:
+  # CNPG operator. Reconciles the `postgres` Cluster below and installs the
+  # CNPG CRDs cluster-wide. Disable when the cluster already runs an operator
+  # (the Makefile-managed release `cnpg`, or a platform-wide install).
+  enabled: true
+
+postgres:
+  # Plain manifest (not a sub-chart): CNPG Cluster backing Lakekeeper's catalog
+  # metadata. Equivalent to manifests/cnpg-postgres.yaml.
+  # The Cluster is named `lakekeeper-pg` — that name is referenced from
+  # `lakekeeper.externalDatabase` below, so change both together.
+  enabled: true
+  instances: 1
+  storage:
+    size: 2Gi
+  resources:
+    requests: { cpu: "50m", memory: "256Mi" }
+    limits:   { cpu: "1",   memory: "512Mi" }
+
+s3Credentials:
+  # Secret that every object-storage consumer reads: the SeaweedFS S3 endpoint
+  # plus access key / secret key / bucket / region. Equivalent to
+  # manifests/s3-credentials.dev.yaml.
+  #
+  # DEV DEFAULTS — these match the credentials pinned in the `seaweedfs` block
+  # below, so a fresh install works out of the box. For anything real, either
+  # override all four values, or set `create: false` and create the Secret
+  # yourself (see manifests/s3-credentials.example.yaml).
+  create: true
+  # Renaming requires updating the secretKeyRef entries under `trino.env` and
+  # `airflow.extraEnv` too.
+  name: stardelt-s3-creds
+  accessKey: stardelt-access-key
+  secretKey: stardelt-secret-key
+  # Rendered with `tpl`, so `{{ .Release.Namespace }}` expands.
+  endpoint: "http://seaweedfs-s3.{{ .Release.Namespace }}.svc.cluster.local:8333"
+  bucket: lakehouse
+  region: us-east-1
+
+seaweedfs:
+  # S3-compatible storage for the lakehouse (chart: seaweedfs 4.25.1).
+  enabled: true
+  # Keep the service names (`seaweedfs-s3`, ...) that the values below and the
+  # playground ingresses expect.
+  fullnameOverride: seaweedfs
+
+  master:
+    replicas: 1
+    data:
+      type: persistentVolumeClaim
+      size: 1Gi
+    defaultReplication: "000"
+    resources:
+      requests: { cpu: "50m", memory: "128Mi" }
+      limits:   { cpu: "1",   memory: "256Mi" }
+
+  volume:
+    replicas: 1
+    # PVC so the Iceberg data files survive pod restarts. emptyDir wipes on
+    # pod restart, which orphans the Iceberg metadata pointing at the files
+    # and surfaces as FileNotFoundException on Trino reads.
+    dataDirs:
+      - name: data
+        type: persistentVolumeClaim
+        size: 20Gi
+        maxVolumes: 0
+    resources:
+      requests: { cpu: "200m", memory: "512Mi" }
+      limits:   { cpu: "2",    memory: "2Gi"  }
+
+  filer:
+    replicas: 1
+    data:
+      type: persistentVolumeClaim
+      size: 1Gi
+    resources:
+      requests: { cpu: "50m", memory: "128Mi" }
+      limits:   { cpu: "1",   memory: "256Mi" }
+
+  s3:
+    enabled: true
+    replicas: 1
+    port: 8333
+    enableAuth: true
+    # Pin credentials so they match the `stardelt-s3-creds` Secret instead of
+    # auto-generating random ones (see `s3Credentials` above).
+    credentials:
+      admin:
+        accessKey: stardelt-access-key
+        secretKey: stardelt-secret-key
+    createBuckets:
+      - name: lakehouse
+        anonymousRead: false
+    resources:
+      requests: { cpu: "100m", memory: "256Mi" }
+      limits:   { cpu: "2",    memory: "1Gi"  }
+
+lakekeeper:
+  # Iceberg REST catalog (chart: lakekeeper 0.11.0, appVersion 0.12.2).
+  enabled: true
+  fullnameOverride: lakekeeper
+
+  # helmWait true so `helm upgrade --wait` blocks until migrations land.
+  helmWait: true
+
+  # Bundled postgres OFF → use the `postgres` Cluster above.
+  postgresql:
+    enabled: false
+
+  externalDatabase:
+    type: postgres
+    host_read:  lakekeeper-pg-rw
+    host_write: lakekeeper-pg-rw
+    port: 5432
+    database: lakekeeper
+    userSecret: lakekeeper-pg-app
+    userSecretKey: username
+    passwordSecret: lakekeeper-pg-app
+    passwordSecretKey: password
+
+  # Bundled OpenFGA OFF → authz backend "allowall" (no real authz yet).
+  authz:
+    backend: allowall
+
+  internalOpenFGA: false
+
+  catalog:
+    replicas: 1
+    resources:
+      requests: { cpu: "50m",  memory: "256Mi" }
+      limits:   { cpu: "1",    memory: "512Mi" }
+
+lakekeeperBootstrap:
+  # Plain manifest (not a sub-chart): Job that accepts the Lakekeeper terms of
+  # use and creates the default `warehouse` on S3. Idempotent: skips when
+  # already bootstrapped, skips warehouse creation on 409 Conflict.
+  # Equivalent to manifests/lakekeeper-bootstrap.yaml.
+  enabled: true
+  image: curlimages/curl:8.10.1
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 4
+
+trino:
+  # MPP SQL engine (chart: trino 1.42.2, appVersion 480).
+  #
+  # Catalog `warehouse` connects to Lakekeeper (REST Iceberg catalog) and
+  # reads/writes Parquet on SeaweedFS via its native S3 filesystem. Credentials
+  # come from the `stardelt-s3-creds` Secret via env-var substitution
+  # (`${ENV:S3_ACCESS_KEY}`).
+  enabled: true
+  fullnameOverride: trino
+
+  server:
+    workers: 1
+    config:
+      query:
+        # Must satisfy: maxMemory + 30% heap headroom <= max heap. 1200MB + 600MB <= 2GB.
+        maxMemory: "1200MB"
+
+  # Trino sits behind an ingress (ingress-nginx) that sets X-Forwarded-For; without
+  # this it answers 406 "Server configuration does not allow processing of the
+  # X-Forwarded-For header". `server.config` only renders known keys — extra
+  # properties must go through `additionalConfigProperties`.
+  additionalConfigProperties:
+    - http-server.process-forwarded=true
+
+  coordinator:
+    jvm:
+      maxHeapSize: "2G"
+      gcMethod:
+        type: UseG1GC
+    # Cap per-node so it stays well below heap (heap headroom defaults to ~30%).
+    additionalJVMConfig:
+      - "-Xms1G"
+    additionalExposedPorts: {}
+
+  worker:
+    jvm:
+      maxHeapSize: "2G"
+      gcMethod:
+        type: UseG1GC
+    additionalJVMConfig:
+      - "-Xms1G"
+
+  # Pull S3 creds from the stardelt-s3-creds Secret so catalog properties can
+  # substitute ${ENV:S3_ACCESS_KEY} / ${ENV:S3_SECRET_KEY}.
+  env:
+    - name: S3_ACCESS_KEY
+      valueFrom: { secretKeyRef: { name: stardelt-s3-creds, key: access-key } }
+    - name: S3_SECRET_KEY
+      valueFrom: { secretKeyRef: { name: stardelt-s3-creds, key: secret-key } }
+
+  catalogs:
+    warehouse: |
+      connector.name=iceberg
+      iceberg.catalog.type=rest
+      iceberg.rest-catalog.uri=http://lakekeeper:8181/catalog
+      iceberg.rest-catalog.warehouse=warehouse
+      iceberg.rest-catalog.vended-credentials-enabled=false
+      fs.native-s3.enabled=true
+      s3.endpoint=http://seaweedfs-s3:8333
+      s3.region=us-east-1
+      s3.path-style-access=true
+      s3.aws-access-key=${ENV:S3_ACCESS_KEY}
+      s3.aws-secret-key=${ENV:S3_SECRET_KEY}
+      # Single-replica SeaweedFS volume server can't sustain Trino's default
+      # parallel HTTP range requests (broken pipe / connection reset). Throttle
+      # both connection pool and the Iceberg metadata enumeration threads.
+      s3.max-connections=16
+      iceberg.split-manager-threads=4
+      iceberg.metadata.parallelism=2
+
+nova:
+  # stardelt Nova — UI + backend in one pod. Equivalent to
+  # manifests/nova-deployment.yaml.
+  enabled: true
+  replicas: 1
+
+  image:
+    repository: ghcr.io/stardelt/nova
+    # `:dev` is a mutable tag; Always re-pulls. Pin by digest for reproducible installs.
+    tag: dev
+    pullPolicy: Always
+
+  # GHCR packages are private by default; see dev/ghcr-pull-secret.sh.
+  # Set to [] when the images are public.
+  imagePullSecrets:
+    - ghcr-creds
+
+  # Rendered with `tpl`, so `{{ .Release.Namespace }}` expands.
+  trinoURL: "http://trino.{{ .Release.Namespace }}.svc.cluster.local:8080"
+  lakekeeperURL: "http://lakekeeper.{{ .Release.Namespace }}.svc.cluster.local:8181"
+  warehouseName: warehouse
+  devUser: stardelt-dev
+  # External base domain for deep-linking platform apps in Nova.
+  # Empty = no links. The dev playground sets this to alpha.dev.stardelt.io.
+  baseDomain: ""
+  logLevel: info,tower_http=info
+
+  resources:
+    requests: { cpu: "50m",  memory: "64Mi"  }
+    limits:   { cpu: "1",    memory: "256Mi" }
+
+# ===========================================================================
+# Heavy components — off by default, same as `make install-core`.
+# Enable with `--set <name>.enabled=true` or in your own values file.
+#
+# Superset and Airflow cannot both be `enabled` in the same release: the
+# Superset chart's bundled Redis and the Airflow chart define the same Helm
+# template names, so `helm template`/`helm install` fails with an error from the
+# Airflow chart (`redis.serviceAccountName`). Enable one here and install the
+# other as its own release.
+# ===========================================================================
+
+superset:
+  # BI / dashboards (chart: superset 0.15.5, appVersion 5.0.0).
+  #
+  # kind tuning:
+  #   - Single replica everywhere; celery-beat + websockets off.
+  #   - Bundled Postgres + Redis (Bitnami sub-charts) — could later migrate the
+  #     Postgres to CNPG to consolidate, kept bundled for MVP simplicity.
+  #   - bootstrapScript installs the `trino` python driver into the running pod
+  #     on each startup. For production, bake this into a custom image.
+  #   - Talisman / X-Frame-Options disabled so Nova can iframe Superset.
+  #     MVP-only: removes click-jacking protection.
+  #   - import_datasources.yaml pre-creates the Trino warehouse database
+  #     connection so SQL Lab works immediately after install.
+  # `fullnameOverride` gives Superset's own objects the same names as a
+  # `make install` deployment (`superset`, `superset-worker`, `Service/superset`).
+  # The bundled Bitnami Postgres/Redis are release-named instead
+  # (`stardelt-postgresql`, `stardelt-redis-master`).
+  #
+  # May not be enabled together with `airflow.enabled` — see the note above.
+  # (Rendering fails with a template error from the Airflow chart.)
+  enabled: false
+  fullnameOverride: superset
+
+  # Use the stardelt-owned image (images/superset/Dockerfile) which has
+  # psycopg2-binary + trino pre-installed in /app/.venv/. The chart's default
+  # bootstrap is fine; we just leave the marker file.
+  image:
+    repository: stardelt/superset
+    tag: dev
+    pullPolicy: IfNotPresent
+
+  bootstrapScript: |
+    #!/bin/bash
+    if [ ! -f ~/bootstrap ]; then echo "Running Superset" > ~/bootstrap; fi
+
+  # Allow iframe embedding from Nova (running on a different port locally).
+  configOverrides:
+    iframe_embedding: |
+      TALISMAN_ENABLED = False
+      # Flask-AppBuilder also sets X-Frame-Options via WTF_CSRF; suppress.
+      HTTP_HEADERS = {}
+      # Allow SameSite=None cookies if you ever want cross-site auth.
+      SESSION_COOKIE_SAMESITE = "Lax"
+      # ENABLE_PROXY_FIX so x-forwarded headers are honored when iframed.
+      ENABLE_PROXY_FIX = True
+
+  # Pin Superset's secret key (MVP only — generate a real one for prod).
+  extraSecretEnv:
+    SUPERSET_SECRET_KEY: "stardelt-mvp-superset-secret-do-not-use-in-prod-32-chars"
+
+  # Pre-import the Trino database connection on init.
+  extraConfigs:
+    import_datasources.yaml: |
+      databases:
+      - database_name: Trino Warehouse
+        sqlalchemy_uri: trino://stardelt-dev@trino:8080/warehouse
+        tables: []
+
+  # init Job creates admin user + imports the datasource above.
+  init:
+    adminUser:
+      username: admin
+      firstname: stardelt
+      lastname: Admin
+      email: admin@stardelt.local
+      password: admin
+    loadExamples: false
+
+  # Components
+  supersetNode:
+    replicas:
+      enabled: true
+      replicaCount: 1
+    resources:
+      requests: { cpu: "100m", memory: "512Mi" }
+      limits:   { cpu: "2",    memory: "1Gi"  }
+
+  supersetWorker:
+    replicas:
+      enabled: true
+      replicaCount: 1
+    # Default celery prefork concurrency = CPU count = 24+ on this host, which
+    # OOMs the worker pod (each prefork is a full Python process). Cap to 2.
+    command:
+      - "/bin/sh"
+      - "-c"
+      - ". {{ .Values.configMountPath }}/superset_bootstrap.sh; celery --app=superset.tasks.celery_app:app worker --concurrency=2"
+    resources:
+      requests: { cpu: "100m", memory: "512Mi" }
+      limits:   { cpu: "2",    memory: "1Gi"  }
+
+  supersetCeleryBeat:
+    enabled: false
+
+  supersetWebsockets:
+    enabled: false
+
+  # Bundled deps
+  postgresql:
+    enabled: true
+    primary:
+      persistence:
+        size: 2Gi
+      resources:
+        requests: { cpu: "50m", memory: "256Mi" }
+        limits:   { cpu: "1",   memory: "512Mi" }
+
+  redis:
+    enabled: true
+    master:
+      persistence:
+        size: 1Gi
+      resources:
+        requests: { cpu: "50m", memory: "128Mi" }
+        limits:   { cpu: "1",   memory: "256Mi" }
+    replica:
+      replicaCount: 0
+
+  service:
+    type: ClusterIP
+    port: 8088
+
+airflow:
+  # DAG-based orchestrator (chart: airflow 1.21.0, appVersion 3.2.0).
+  #
+  # kind tuning:
+  #   - executor: KubernetesExecutor — no celery, no redis, no workers
+  #   - bundled Postgres (Bitnami sub-chart) — single instance, low resources.
+  #     Could be migrated to CNPG later; bundled keeps this minimal for now.
+  #   - single replicas of api-server / scheduler / dag-processor / triggerer
+  #   - heavy resource trims for laptop-scale
+  #
+  # Names: the Airflow chart builds most object names from the release name
+  # (`stardelt-api-server`, `stardelt-scheduler`, `stardelt-postgresql`, ...), so
+  # they differ from a `make install` deployment (`airflow-api-server`, ...).
+  # Nothing in the chart depends on those names, only the playground ingress does.
+  #
+  # May not be enabled together with `superset.enabled` — see the note above.
+  enabled: false
+
+  executor: KubernetesExecutor
+
+  # stardelt-owned image with DAGs baked in
+  images:
+    airflow:
+      repository: stardelt/airflow
+      tag: dev
+      pullPolicy: IfNotPresent
+
+  # Stable Fernet/JWT/internal-API secret (kind-only, NEVER use in real envs).
+  # Without these the chart auto-generates, but a re-install would invalidate
+  # the database; pinning here makes upgrades safe.
+  fernetKey: "5oYDV8KzcRrChx4tWN5gP1NQXMRr9CkBaVYU6jLDB2I="
+  jwtSecret: "stardelt-mvp-jwt-do-not-use-in-prod"
+
+  # DAGs come from the image, not gitSync
+  dags:
+    gitSync:
+      enabled: false
+    persistence:
+      enabled: false
+
+  # Logs in emptyDir — fine for kind, lost on pod restart
+  logs:
+    persistence:
+      enabled: false
+
+  # Stateful components turned off
+  redis:
+    enabled: false
+
+  # Celery workers — KubernetesExecutor doesn't use them; 0 replicas
+  workers:
+    replicas: 0
+    persistence:
+      enabled: false
+
+  # Bundled Postgres — single instance, small storage
+  postgresql:
+    enabled: true
+    primary:
+      persistence:
+        size: 2Gi
+      resources:
+        requests: { cpu: "50m",  memory: "256Mi" }
+        limits:   { cpu: "1",    memory: "512Mi" }
+
+  # Single-replica + smaller resources for each Airflow component
+  apiServer:
+    replicas: 1
+    service:
+      type: ClusterIP
+    resources:
+      requests: { cpu: "100m", memory: "384Mi" }
+      limits:   { cpu: "2",    memory: "1Gi"   }
+
+  scheduler:
+    replicas: 1
+    resources:
+      requests: { cpu: "100m", memory: "384Mi" }
+      limits:   { cpu: "2",    memory: "1Gi"   }
+
+  dagProcessor:
+    enabled: true
+    replicas: 1
+    resources:
+      requests: { cpu: "50m",  memory: "256Mi" }
+      limits:   { cpu: "1",    memory: "512Mi" }
+
+  triggerer:
+    enabled: true
+    replicas: 1
+    persistence:
+      enabled: false
+    resources:
+      requests: { cpu: "50m",  memory: "256Mi" }
+      limits:   { cpu: "1",    memory: "512Mi" }
+
+  # Static admin user for the dev environment. Same convention as the
+  # static-dev-user in Nova: no real auth in MVP.
+  webserverSecretKey: "stardelt-mvp-webserver-key"
+
+  # Plain-value envs on every Airflow container (including spawned K8s task pods).
+  env:
+    - name: CATALOG_URI
+      value: http://lakekeeper:8181/catalog
+    - name: CATALOG_WAREHOUSE
+      value: warehouse
+    - name: YEARS
+      value: "2023"
+
+  # Secret-backed envs use extraEnv (templated string accepting valueFrom).
+  extraEnv: |
+    - name: S3_ENDPOINT
+      valueFrom:
+        secretKeyRef:
+          name: stardelt-s3-creds
+          key: endpoint
+    - name: S3_ACCESS_KEY
+      valueFrom:
+        secretKeyRef:
+          name: stardelt-s3-creds
+          key: access-key
+    - name: S3_SECRET_KEY
+      valueFrom:
+        secretKeyRef:
+          name: stardelt-s3-creds
+          key: secret-key
+    - name: S3_REGION
+      valueFrom:
+        secretKeyRef:
+          name: stardelt-s3-creds
+          key: region
+
+jupyterhub:
+  # Multi-user notebooks (chart: jupyterhub 4.4.3, appVersion 5.5.3).
+  #
+  # Dev shape: DummyAuthenticator (no IdP yet), ephemeral per-user storage, small
+  # resources so it fits the cheap single node next to the core stack. Phase 1
+  # replaces the dummy auth with Keycloak OIDC and adds persistent volumes.
+  #
+  # Names come from JupyterHub's own default `fullnameOverride: ""`, which
+  # produces unprefixed objects (`hub`, `proxy-public`) — the same names a
+  # `make install` deployment creates, so the playground ingress keeps working.
+  # Do not set fullnameOverride here: the chart prefixes everything with it.
+  enabled: false
+
+  hub:
+    config:
+      JupyterHub:
+        authenticator_class: dummy
+      DummyAuthenticator:
+        # DEV ONLY. Replace with Keycloak OIDC before anything real.
+        password: stardelt
+    resources:
+      requests: { cpu: "50m", memory: "256Mi" }
+      limits:   { cpu: "500m", memory: "512Mi" }
+
+  proxy:
+    service:
+      type: ClusterIP
+    chp:
+      resources:
+        requests: { cpu: "50m", memory: "128Mi" }
+        limits:   { cpu: "500m", memory: "256Mi" }
+    traefik:
+      resources:
+        requests: { cpu: "50m", memory: "128Mi" }
+        limits:   { cpu: "500m", memory: "256Mi" }
+
+  singleuser:
+    image:
+      name: quay.io/jupyter/scipy-notebook
+      tag: "2024-10-07"
+    defaultUrl: /lab
+    startTimeout: 300
+    memory:
+      limit: 1G
+      guarantee: 256M
+    cpu:
+      limit: 1
+      guarantee: 0.1
+    storage:
+      type: none
