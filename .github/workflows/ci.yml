@@ -49,7 +49,10 @@ jobs:
       - name: Install Helm
         uses: azure/setup-helm@v4
         with:
-          version: "3.18.x"
+          # Exact version: a partial pin like "3.18.x" makes setup-helm resolve a
+          # version through get.helm.sh metadata, which has been returning a
+          # literal `helm-v3.18.x-…` URL and failing the whole job.
+          version: "3.18.5"
 
       - name: Add helm repos
         run: |
