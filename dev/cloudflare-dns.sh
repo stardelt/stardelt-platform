@@ -10,9 +10,9 @@
 set -euo pipefail
 
 CF_ENV="${CF_ENV:-$HOME/.config/stardelt/cloudflare.env}"
-if [ -f "$CF_ENV" ]; then
-  set -a; . "$CF_ENV"; set +a
-fi
+# Runtime path, resolved via CF_ENV.
+# shellcheck source=/dev/null
+[ -f "$CF_ENV" ] && { set -a; . "$CF_ENV"; set +a; }
 
 : "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN (or create $CF_ENV)}"
 ZONE_NAME="${CLOUDFLARE_ZONE_NAME:-stardelt.io}"
@@ -29,7 +29,10 @@ zone_id() {
 }
 
 ZID="$(zone_id)"
-[ -n "$ZID" ] && [ "$ZID" != "null" ] || { echo "zone not found: $ZONE_NAME" >&2; exit 1; }
+if [ -z "$ZID" ] || [ "$ZID" = "null" ]; then
+  echo "zone not found: $ZONE_NAME" >&2
+  exit 1
+fi
 
 record_id() {
   curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \

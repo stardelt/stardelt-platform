@@ -22,7 +22,7 @@ SUPERSET_IMAGE := ghcr.io/stardelt/superset:dev
 # SLIM=1 applies the small-node overrides in helm-values/slim/ (for cx33 / 8 GB).
 TRINO_EXTRA := $(if $(filter 1,$(SLIM)),-f helm-values/slim/trino.yaml,)
 
-.PHONY: help deps install install-core upgrade uninstall build-superset-image push-superset-image pf dev-up dev-down dev-dns dev-dns-down
+.PHONY: help deps lint install install-core upgrade uninstall build-superset-image push-superset-image pf dev-up dev-down dev-dns dev-dns-down
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | \
@@ -30,6 +30,9 @@ help: ## Show this help
 
 deps: ## Check required CLI tools
 	@bash scripts/check-deps.sh
+
+lint: ## Syntax-check (bash -n) + ShellCheck the scripts under scripts/ and dev/
+	@bash scripts/lint.sh
 
 # ---------------------------------------------------------------------------
 # Helm repo setup

@@ -4,8 +4,11 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 CF_ENV="${CF_ENV:-$HOME/.config/stardelt/cloudflare.env}"
+# Runtime paths, resolved via CF_ENV / HETZNER_ENV.
+# shellcheck source=/dev/null
 [ -f "$CF_ENV" ] && { set -a; . "$CF_ENV"; set +a; }
 HETZNER_ENV="${HETZNER_ENV:-$HOME/.config/stardelt/hetzner.env}"
+# shellcheck source=/dev/null
 [ -f "$HETZNER_ENV" ] && { set -a; . "$HETZNER_ENV"; set +a; }
 INGRESS_HOST="${INGRESS_HOST:-alpha.dev.stardelt.io}"
 
