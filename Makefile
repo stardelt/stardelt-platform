@@ -27,7 +27,7 @@ TRINO_EXTRA := $(if $(filter 1,$(SLIM)),-f helm-values/slim/trino.yaml,)
 #   make chart-template CHART_EXTRA="-f chart/values-slim.yaml"
 CHART_EXTRA ?=
 
-.PHONY: help deps lint install install-core install-notebooks upgrade uninstall build-superset-image push-superset-image pf dev-up dev-down dev-dns dev-dns-down
+.PHONY: help deps lint install install-core install-notebooks install-operator upgrade uninstall build-superset-image push-superset-image pf dev-up dev-down dev-dns dev-dns-down
 .PHONY: chart-deps chart-template chart-install
 
 help: ## Show this help
@@ -159,6 +159,18 @@ install-notebooks: deps _helm-repos ## Install JupyterHub (notebooks)
 	  -f helm-values/jupyterhub.yaml
 	@kubectl -n $(NAMESPACE) rollout status deploy/hub --timeout=5m
 	@echo "JupyterHub installed. Public service: proxy-public:80."
+
+# ---------------------------------------------------------------------------
+# Control plane — the stardelt Operator (dev: from the sibling checkout).
+# ---------------------------------------------------------------------------
+OPERATOR_DIR ?= ../stardelt-operator
+install-operator: ## Install the stardelt Operator (needs ../stardelt-operator)
+	@test -f $(OPERATOR_DIR)/chart/Chart.yaml || { \
+	  echo "operator chart not found at $(OPERATOR_DIR)/chart — set OPERATOR_DIR"; exit 1; }
+	@helm upgrade --install stardelt-operator $(OPERATOR_DIR)/chart \
+	  --namespace $(NAMESPACE) --create-namespace --wait --timeout 5m \
+	  --set 'imagePullSecrets[0].name=ghcr-creds'
+	@echo "Operator installed. CRDs: PlatformInstance, Tenant, Lakehouse, IngestionSource, Pipeline."
 
 # ---------------------------------------------------------------------------
 # Upgrade (helm upgrade is idempotent — same as install)
