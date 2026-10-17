@@ -1,0 +1,50 @@
+# Playground ingresses. The wildcard A record (*.alpha.dev.stardelt.io) points at
+# the node, and ingress-nginx binds :80/:443 there, so each host only needs a
+# certificate.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nova
+  namespace: stardelt
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [alpha.dev.stardelt.io]
+      secretName: nova-tls
+  rules:
+    - host: alpha.dev.stardelt.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: nova
+                port:
+                  number: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: superset
+  namespace: stardelt
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [superset.alpha.dev.stardelt.io]
+      secretName: superset-tls
+  rules:
+    - host: superset.alpha.dev.stardelt.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: superset
+                port:
+                  number: 8088

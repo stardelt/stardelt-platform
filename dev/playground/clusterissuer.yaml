@@ -1,0 +1,16 @@
+# Let's Encrypt issuer using HTTP-01 (works with Traefik's default ingress class).
+# Requires cert-manager (see dev/playground/README.md).
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: me@mstoecker.de
+    privateKeySecretRef:
+      name: letsencrypt-prod
+    solvers:
+      - http01:
+          ingress:
+            class: nginx
