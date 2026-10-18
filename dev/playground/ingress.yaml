@@ -129,11 +129,14 @@ spec:
 # Platform IdP (Keycloak, `make install-identity`). Keycloak's login responses
 # carry large cookies/headers, so the proxy buffer is raised from nginx's 4k.
 #
-# Publish the realm's public surface only. /admin, /realms/master, /health and
-# /metrics fall through to ingress-nginx's default 404, so the master realm
-# (which controls every other realm) is not on the internet. Administer Keycloak
-# through a port-forward — `kubectl -n stardelt port-forward svc/keycloak 8080:8080`
-# — the same three paths are hard-coded in chart/templates/ingress.yaml.
+# Publish the realm's public surface and the `stardelt` realm's admin console —
+# never the master realm, which controls every other realm. The paths are
+# ingress-nginx regexes (`use-regex`; the Kubernetes API requires them to start
+# with `/`, so the `(/|$)` group is what keeps a match to the exact segment):
+# `/admin/realms/stardelt` matches that realm and its children only, while
+# `/admin/realms/master`, `/admin/master/console/`, `/realms/master`, `/health`
+# and `/metrics` fall through to ingress-nginx's default 404. The same set is
+# hard-coded in chart/templates/ingress.yaml.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -142,6 +145,10 @@ metadata:
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-prod
     nginx.ingress.kubernetes.io/proxy-buffer-size: "16k"
+    # The paths below are ingress-nginx regexes; the `(/|$)` group is what keeps
+    # each one to its exact segment (Kubernetes requires the path to start with a
+    # `/`, so a leading `^` cannot be written here).
+    nginx.ingress.kubernetes.io/use-regex: "true"
 spec:
   ingressClassName: nginx
   tls:
@@ -153,22 +160,50 @@ spec:
         paths:
           # Sign-in and token endpoints for realm `stardelt`, plus the account
           # console. Without /resources the sign-in page renders unstyled.
-          - path: /realms/stardelt
-            pathType: Prefix
+          - path: '/realms/stardelt(/|$)'
+            pathType: ImplementationSpecific
             backend:
               service:
                 name: keycloak
                 port:
                   number: 8080
-          - path: /resources
-            pathType: Prefix
+          - path: '/resources(/|$)'
+            pathType: ImplementationSpecific
             backend:
               service:
                 name: keycloak
                 port:
                   number: 8080
-          - path: /robots.txt
-            pathType: Prefix
+          - path: '/robots\.txt$'
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: keycloak
+                port:
+                  number: 8080
+          # The `stardelt` realm's admin console: the app under /admin/<realm>/…
+          # and the REST API it calls under /admin/realms/<realm>/… . This is how
+          # platform admins reach the Users page (Nova links here). The master
+          # realm is not matched: `/admin/realms/master` is a different segment.
+          - path: '/admin/stardelt(/|$)'
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: keycloak
+                port:
+                  number: 8080
+          - path: '/admin/realms/stardelt(/|$)'
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: keycloak
+                port:
+                  number: 8080
+          # The console asks for the server profile on load (Keycloak 26) and shows
+          # an error alert without it. Keycloak authorises the call itself: a realm
+          # admin gets 200, `analyst` 403 — it is not master-realm information.
+          - path: '/admin/serverinfo$'
+            pathType: ImplementationSpecific
             backend:
               service:
                 name: keycloak

@@ -313,9 +313,9 @@ JupyterHub is behind that same login: `helm-values/jupyterhub.yaml` (and the cha
 reads the issuer from `stardelt-identity` and the client secret from `stardelt-oidc-clients`
 (key `jupyterhub`), and admits the admin group (`allowed_groups`/`admin_groups`,
 `stardelt-admins`) only. No password is in the values files; without an issuer the hub starts
-but signs nobody in. Keycloak's own admin console is not published — the `id.` Ingress (and the
-chart's keycloak Ingress) carries just `/realms/stardelt`, `/resources` and `/robots.txt`, so
-use `kubectl -n stardelt port-forward svc/keycloak 8080:8080` to administer the realm.
+but signs nobody in. Keycloak's realm `stardelt` admin console is published at
+`https://id.<baseDomain>/admin/stardelt/console/` for platform admins (Nova links to it, see
+[Managing users](#managing-users)); the master realm stays unreachable.
 
 Superset and Airflow sign in through the same realm, via Flask-AppBuilder's OAuth provider
 (`helm-values/superset.yaml`, `helm-values/airflow.yaml`): the issuer and admin group come
@@ -346,7 +346,8 @@ Rotating the session secret logs everyone out: delete the Secret and re-run the 
 (the chart regenerates it and keeps it across upgrades — `helm.sh/resource-policy: keep`).
 
 The realm import (`chart/files/keycloak-realm.json`, shared by both paths) defines group
-`stardelt-admins`, user `admin` in it, a `groups` claim (group names, full path off) and these clients:
+`stardelt-admins` (with the `realm-management` user-management roles), user `admin` in it, a
+`groups` claim (group names, full path off) and these clients:
 
 | Client | Type | Redirect URI |
 |---|---|---|
@@ -378,8 +379,20 @@ The documented way into realm `stardelt` is the generated Secret:
 
 ```sh
 kubectl -n stardelt get secret stardelt-realm-admin -o jsonpath='{.data.password}' | base64 -d
-kubectl -n stardelt port-forward svc/keycloak 8080:8080   # /admin is deliberately not published (#53)
 ```
+
+Sign in with it at the realm's admin console — also linked from Nova's **Users** item
+under *Platform*, visible to platform admins only:
+
+```text
+https://id.<baseDomain>/admin/stardelt/console/
+```
+
+Only realm `stardelt` is published (#53, reopened narrowly for this console): the master
+realm, `/admin/master/console/` and `/realms/master` stay 404. `make sync-realm-user-management`
+grants `stardelt-admins` the roles the Users page needs on a **live** realm (the import only runs
+when the realm is created) and enforces the realm's brute-force protection; see
+[Managing users](#managing-users).
 
 `--import-realm` substitutes `${STARDELT_REALM_ADMIN_PASSWORD}` **once**, on the first start that
 creates the realm, and never looks at it again. Regenerating the Secret — deleting it to rotate, or
@@ -401,6 +414,43 @@ the existing password first and does nothing when the Secret already works. The 
 `verify-realm-admin` both use client `admin-cli`, Keycloak's per-realm default that allows direct
 access grants (the app clients genuinely need them off), and reach Keycloak through `svc/keycloak`
 — never the public `id.` host. Neither script prints a secret.
+
+### Managing users
+
+Platform admins manage people in the Keycloak admin console for realm `stardelt`, not in a Nova
+screen of its own. Nova's **Users** item (Platform group, administrators only) opens
+`https://id.<baseDomain>/admin/stardelt/console/` in a new tab; the backend derives that URL
+from `NOVA_OIDC_ISSUER` (`…/realms/<realm>` → `/admin/<realm>/console/`) and returns it as
+`admin_console_url` on `/api/me`, so no host is hard-coded in the frontend and any
+Keycloak-compatible issuer works. `admin_console_url` is `null` in `dev` mode, for a non-Keycloak
+issuer, and for the master realm — Nova never links to a console it cannot address.
+
+What makes the console usable is a narrow grant. Group `stardelt-admins` holds four
+`realm-management` client roles — `view-users`, `query-users`, `query-groups`, `manage-users` —
+and nothing else: members manage users, non-members get `403` from the admin API. It deliberately
+does **not** hold `realm-admin`, `manage-clients` or `manage-realm`; those are realm ownership,
+not user management. The same grant is in the realm import and applied to a live realm by an
+idempotent script, because `--import-realm` skips an existing realm:
+
+```sh
+make sync-realm-user-management   # roles above + brute-force thresholds; prints what it read back
+```
+
+The script also sets `bruteForceProtected` with explicit thresholds (ten failures, 60 s increments,
+15 min maximum wait, 12 h window) — the console login is internet-facing. Both install paths run
+it: `make install-identity` after the realm-admin guard, and `make chart-install` whenever the
+release ships Keycloak.
+
+The `id.` Ingress publishes exactly the realm console and its API, as
+ingress-nginx regexes: `/admin/stardelt(/|$)` (the console app) and
+`/admin/realms/stardelt(/|$)` (the REST calls the console makes), plus the realm's existing
+`/realms/stardelt`, `/resources` and `/robots.txt`. The `(/|$)` group keeps each match on its
+exact path segment (Kubernetes requires the path to start with `/`, so a leading `^` cannot be
+written), so `/admin/master/console/`, `/realms/master` and `/admin/realms/master/...` stay
+`404`. The umbrella chart carries the same list in `chart/templates/ingress.yaml`.
+
+If a future Keycloak version needs another endpoint for the console (an extra `/admin/...` call),
+add the narrowest regex path — never `/admin`.
 
 Sizing (single node): Keycloak 100m / 512Mi request, 1 CPU / 1Gi limit, one replica,
 `KC_CACHE=local`; its Postgres 50m / 128Mi request, 256Mi limit, 1Gi volume. The Keycloak image is
@@ -424,9 +474,10 @@ login responses outgrow nginx's default 4k header buffer.
 | `verify-backup-config` | Post-apply guard (also run by both install targets): the live `lakekeeper-pg` Cluster must still declare `spec.backup`, or the command fails loudly |
 | `verify-backups` | Full WAL check: `spec.backup` + the newest object in `s3://backups/lakekeeper-pg/wals/` is younger than `MAX_AGE_SECONDS` (900) + it matches `pg_stat_archiver.last_archived_wal`. `SKIP_OBJECTS=1` skips the S3 half |
 | `install-notebooks` | JupyterHub (notebooks) |
-| `install-identity` | Platform IdP: Keycloak + CNPG Postgres + realm `stardelt`, then the realm-admin sync + guard, the live-realm Trino client and the Trino OAuth2 overlay (`BASE_DOMAIN=…`, see [Identity](#identity-optional-platform-idp)) |
+| `install-identity` | Platform IdP: Keycloak + CNPG Postgres + realm `stardelt`, then the realm-admin sync + guard, the user-management roles/brute-force sync, the live-realm Trino client and the Trino OAuth2 overlay (`BASE_DOMAIN=…`, see [Identity](#identity-optional-platform-idp)) |
 | `sync-realm-admin` | Point realm `stardelt`'s `admin` at Secret `stardelt-realm-admin` through the master-realm API; idempotent, runs as part of `install-identity`/`chart-install` (#81) |
 | `verify-realm-admin` | Prove the realm-admin Secret still signs in — a real password grant as that user through `svc/keycloak`; fails with the fix in the message |
+| `sync-realm-user-management` | Grant `stardelt-admins` the four `realm-management` user-management roles and enforce brute-force protection on the live realm; idempotent, runs with both install paths |
 | `trino` | Install/upgrade Trino; adds `helm-values/trino-identity.yaml` (Keycloak OAuth2 + service-account password) when `stardelt-identity` exists |
 | `install-operator` | Install the stardelt Operator from `../stardelt-operator/chart` (dev path) |
 | `pin` | Pin a deployment to the newest published digest **and write it back into `manifests/nova-deployment.yaml`** (`make pin APP=nova`), so a later `kubectl apply` cannot put the mutable tag back |
@@ -487,6 +538,7 @@ scripts/
   port-forwards.sh      Background port-forwards to all services
   protect-branches.sh   Apply `main` branch protection in all five stardelt repos
   sync-realm-admin.sh   Re-apply Secret stardelt-realm-admin to the live realm's admin (import skips an existing realm)
+  sync-realm-user-management.sh  Grant stardelt-admins the user-management roles + enforce brute force on the live realm
   verify-backups.sh     Backup guards: post-apply spec.backup assert + bucket-vs-database WAL check
   verify-notebook-identity.py  Headless hub login + run the quickstart in the pod (positive and 401 negative)
   verify-realm-admin.sh Assert the realm-admin Secret still signs in to realm `stardelt`
