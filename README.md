@@ -205,6 +205,7 @@ login responses outgrow nginx's default 4k header buffer.
 | `install-identity` | Platform IdP: Keycloak + CNPG Postgres + realm `stardelt` (`BASE_DOMAIN=…`, see [Identity](#identity-optional-platform-idp)) |
 | `install-operator` | Install the stardelt Operator from `../stardelt-operator/chart` (dev path) |
 | `pin` | Pin a deployment to the newest published digest (`make pin APP=nova`) |
+| `pin-images` | Pin Nova and the operator to their digests (the install targets do this themselves) |
 | `upgrade` | Re-run `install` (helm upgrade is idempotent) |
 | `uninstall` | Remove all helm releases and manifests in reverse order |
 | `chart-deps` | `helm dependency update chart` — fetch/refresh the umbrella chart's sub-charts |
