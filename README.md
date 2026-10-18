@@ -254,9 +254,23 @@ scripts/
   identity-bootstrap.sh Generate the IdP Secrets + render realm/identity ConfigMaps
   lint.sh               bash -n + ShellCheck the shell scripts (make lint)
   port-forwards.sh      Background port-forwards to all services
+  protect-branches.sh   Apply `main` branch protection in all five stardelt repos
   helm-plugins/
     stardelt-dedupe/    Helm v4 post-renderer: deduplicates env lists
 ```
+
+---
+
+## Branch protection
+
+`main` is protected in every stardelt repo (`stardelt-docs`, `stardelt-platform`, `stardelt-nova`,
+`stardelt-operator`, `stardelt-demos`) by [`scripts/protect-branches.sh`](scripts/protect-branches.sh)
+(`bash scripts/protect-branches.sh`, `--dry-run` to preview). Each repo requires the CI job names its
+pull requests report — validated against checks actually seen on recent PRs, because a wrong name would
+silently block every merge — plus no force pushes, no deletions and linear history. Pull requests are
+required but no approvals: the maintainer and AI agents merge under one owner account, so CI is the gate;
+`enforce_admins` stays off for emergencies. Re-run it after a workflow job name changes.
+Collaboration/release branches are planned later (issue #38).
 
 ---
 
