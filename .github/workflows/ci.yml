@@ -120,6 +120,17 @@ jobs:
           helm template stardelt chart -n stardelt > /dev/null
           helm template stardelt chart -n stardelt --set superset.enabled=true > /dev/null
           helm template stardelt chart -n stardelt -f chart/values-slim.yaml > /dev/null
+          # chart-path catalog backups (#51): the Cluster declares the
+          # barmanObjectStore config, exactly one ScheduledBackup renders, and
+          # both follow the configured bucket and the enabled switch.
+          # (Count `destinationPath: s3://` rather than `barmanObjectStore`:
+          # the CNPG sub-chart renders CRD schemas that mention the latter.)
+          helm template stardelt chart -n stardelt | grep -q 'destinationPath: s3://backups/'
+          test "$(helm template stardelt chart -n stardelt | grep -c '^kind: ScheduledBackup' || true)" = 1
+          test "$(helm template stardelt chart -n stardelt --set postgres.backup.enabled=false \
+                    | grep -c -e '^kind: ScheduledBackup' -e 'destinationPath: s3://' || true)" = 0
+          helm template stardelt chart -n stardelt --set postgres.backup.bucket=my-backups \
+            | grep -q 'destinationPath: s3://my-backups/'
           # identity.mode: none (default above), platform (Keycloak), external (issuer only)
           helm template stardelt chart -n stardelt -f chart/values-slim.yaml \
             --set identity.mode=platform --set platform.baseDomain=example.com --set ingress.enabled=true > /dev/null

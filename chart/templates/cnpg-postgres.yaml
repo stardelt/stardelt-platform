@@ -17,10 +17,61 @@ spec:
     {{- with .Values.storage.className }}
     storageClass: {{ . }}
     {{- end }}
+  {{- if .Values.postgres.backup.enabled }}
+  # Continuous backup into the platform's own object store: barman-cloud streams
+  # the WAL and the ScheduledBackup below adds base backups, so a lost volume is
+  # recoverable to a point in time without any external service. Equivalent to
+  # manifests/cnpg-postgres.yaml — the destination bucket must exist (see the
+  # `postgres.backup` comment in values.yaml).
+  backup:
+    retentionPolicy: {{ .Values.postgres.backup.retentionPolicy | quote }}
+    barmanObjectStore:
+      destinationPath: s3://{{ .Values.postgres.backup.bucket }}/
+      endpointURL: {{ tpl .Values.s3Credentials.endpoint . | quote }}
+      s3Credentials:
+        accessKeyId:
+          name: {{ .Values.s3Credentials.name }}
+          key: access-key
+        secretAccessKey:
+          name: {{ .Values.s3Credentials.name }}
+          key: secret-key
+        region:
+          name: {{ .Values.s3Credentials.name }}
+          key: region
+      wal:
+        compression: gzip
+        maxParallel: 2
+      data:
+        compression: gzip
+  {{- end }}
   bootstrap:
     initdb:
       database: lakekeeper
       owner: lakekeeper
   resources:
     {{- toYaml .Values.postgres.resources | nindent 4 }}
+{{- if .Values.postgres.backup.enabled }}
+---
+# Daily base backup on top of the continuous WAL archiving above. WAL alone
+# recovers to a point in time; a base backup makes the restore fast instead of
+# replaying every segment since the volume was created. Equivalent to
+# manifests/cnpg-backup-schedule.yaml.
+#
+# `immediate: true` takes a first backup right away, which is what makes a fresh
+# install verifiable — `kubectl -n <namespace> get backups` shows one completed.
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: lakekeeper-pg-daily
+  namespace: {{ .Release.Namespace }}
+spec:
+  schedule: {{ .Values.postgres.backup.schedule | quote }}
+  immediate: true
+  # Keep the Backup objects after the schedule is deleted, so deleting this CR
+  # cannot delete the only record of what was taken.
+  backupOwnerReference: self
+  method: barmanObjectStore
+  cluster:
+    name: lakekeeper-pg
+{{- end }}
 {{- end }}

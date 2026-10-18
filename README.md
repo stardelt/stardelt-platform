@@ -100,6 +100,15 @@ SeaweedFS sub-chart (as `make install-core` does). For a real install override
 `s3Credentials.accessKey` / `secretKey`, or set `s3Credentials.create=false` and
 create the Secret yourself from `manifests/s3-credentials.example.yaml`.
 
+A chart install also gets the catalog's continuous backups (`postgres.backup`,
+on by default): the `lakekeeper-pg` Cluster declares `spec.backup.barmanObjectStore`
+writing to `s3://<postgres.backup.bucket>/` on `s3Credentials.endpoint`, and the
+daily `ScheduledBackup` `lakekeeper-pg-daily` (`immediate: true`) adds base
+backups. The destination bucket must exist — the SeaweedFS sub-chart creates
+`backups`, but with `s3Credentials.create=false` create it in your own store
+first. The #59 backup guards describe a chart install as well; point them at the
+release namespace: `NAMESPACE=<release ns> make verify-backup-config` / `verify-backups`.
+
 ---
 
 ## Identity (optional platform IdP)
@@ -228,7 +237,7 @@ chart/                Umbrella Helm chart (see "Helm chart (baseline)")
   Chart.yaml            Dependencies + conditions; versions mirror the Makefile pins
   values.yaml           Per-sub-chart values, mirrored from helm-values/
   values-slim.yaml      Small-node Trino overrides (mirrors helm-values/slim/)
-  templates/            Nova, CNPG Cluster, S3 Secret, Lakekeeper bootstrap Job, Keycloak/identity
+  templates/            Nova, CNPG Cluster + ScheduledBackup, S3 Secret, Lakekeeper bootstrap Job, Keycloak/identity
   files/                keycloak-realm.json — realm import shared with make install-identity
   charts/               Sub-charts, fetched by `make chart-deps` (not committed)
 
