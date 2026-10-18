@@ -69,13 +69,16 @@ echo "› $NS/$DEPLOY $CONTAINER"
 echo "    now:  $current"
 echo "    new:  $REGISTRY/$REPO@$digest"
 
+# The deployment and the manifest are updated independently: skipping the first because the
+# cluster already matches must not skip the second, or the manifest keeps the old digest and
+# the next `kubectl apply` puts it back. (That hole shipped once — the early exit said
+# "already pinned" and left the file alone.)
 if [ "$current" = "$REGISTRY/$REPO@$digest" ]; then
   echo "already pinned"
-  exit 0
+else
+  kubectl -n "$NS" set image "deploy/$DEPLOY" "$CONTAINER=$REGISTRY/$REPO@$digest" >/dev/null
+  kubectl -n "$NS" rollout status "deploy/$DEPLOY" --timeout="${TIMEOUT:-300s}"
 fi
-
-kubectl -n "$NS" set image "deploy/$DEPLOY" "$CONTAINER=$REGISTRY/$REPO@$digest" >/dev/null
-kubectl -n "$NS" rollout status "deploy/$DEPLOY" --timeout="${TIMEOUT:-300s}"
 
 # Keep the manifest in step, or the next `kubectl apply` puts the mutable tag back and a
 # stale cached layer can serve an older image (that happened four times in one day, twice
