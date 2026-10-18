@@ -296,9 +296,22 @@
       "redirectUris": ["https://__JUPYTER_HOST__/hub/oauth_callback"],
       "webOrigins": ["https://__JUPYTER_HOST__"],
       "attributes": {
-        "post.logout.redirect.uris": "https://__JUPYTER_HOST__/*"
+        "post.logout.redirect.uris": "https://__JUPYTER_HOST__/*",
+        "access.token.lifespan": "28800"
       },
       "protocolMappers": [
+        {
+          "name": "aud-trino",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "trino",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
         {
           "name": "aud-jupyterhub",
           "protocol": "openid-connect",

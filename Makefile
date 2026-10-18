@@ -29,6 +29,7 @@ KEYCLOAK_VERSION   := 26.8.1
 HELM_FLAGS := --namespace $(NAMESPACE) --create-namespace --wait --timeout 10m
 
 SUPERSET_IMAGE := ghcr.io/stardelt/superset:dev
+JUPYTER_IMAGE  := ghcr.io/stardelt/jupyter-singleuser:dev
 
 # SLIM=1 applies the small-node overrides in helm-values/slim/ (for cx33 / 8 GB).
 TRINO_EXTRA := $(if $(filter 1,$(SLIM)),-f helm-values/slim/trino.yaml,)
@@ -41,7 +42,7 @@ CHART_EXTRA ?=
 # client redirect URIs on the app subdomains. Same default as `dev-dns`.
 BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 
-.PHONY: _context help deps lint install install-core install-notebooks install-identity install-operator trino upgrade uninstall build-superset-image push-superset-image pf pin pin-images dev-up dev-down dev-dns dev-dns-down
+.PHONY: _context help deps lint install install-core install-notebooks install-identity install-operator trino upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-up dev-down dev-dns dev-dns-down
 .PHONY: chart-deps chart-template chart-install
 .PHONY: verify-backups verify-backup-config verify-realm-admin sync-realm-admin
 
@@ -383,6 +384,14 @@ build-superset-image: ## Build the Superset image (ghcr.io/stardelt/superset:dev
 push-superset-image: ## Push the Superset image to ghcr.io
 	@echo "› pushing $(SUPERSET_IMAGE)"
 	@docker push $(SUPERSET_IMAGE)
+
+build-jupyter-image: ## Build the Jupyter single-user image (ghcr.io/stardelt/jupyter-singleuser:dev)
+	@echo "› building $(JUPYTER_IMAGE)"
+	@docker build -t $(JUPYTER_IMAGE) -f images/jupyter/Dockerfile images/jupyter
+
+push-jupyter-image: ## Push the Jupyter single-user image to ghcr.io
+	@echo "› pushing $(JUPYTER_IMAGE)"
+	@docker push $(JUPYTER_IMAGE)
 
 # ---------------------------------------------------------------------------
 # Port-forwards
