@@ -122,6 +122,36 @@ make install-identity BASE_DOMAIN=alpha.dev.stardelt.io     # Keycloak at https:
 # or: make chart-install CHART_EXTRA="--set identity.mode=platform --set platform.baseDomain=example.com"
 ```
 
+### Turning on sign-in
+
+Deploying the IdP does not put anything behind a login: that is Nova's decision
+(`nova.auth.mode`) plus, later, the other building blocks' own clients.
+
+```sh
+# chart path — the IdP and the login in one install
+helm upgrade --install stardelt chart -n stardelt \
+  --set identity.mode=platform --set platform.baseDomain=example.com \
+  --set nova.auth.mode=oidc
+
+# manifest path — set two values on the Deployment after `make install-identity`
+kubectl -n stardelt set env deploy/nova \
+  NOVA_AUTH_MODE=oidc NOVA_PUBLIC_URL=https://example.com
+```
+
+The issuer, client secret and session secret are read from `stardelt-identity`,
+`stardelt-oidc-clients` (key `nova`) and `stardelt-nova-session` — all created by
+`scripts/identity-bootstrap.sh` (manifest path) or by the chart (identity mode ≠ none), so
+the only thing an operator supplies is the mode and Nova's public URL. The redirect URI
+`<publicUrl>/api/auth/callback` must be registered at the IdP; the realm import does that
+for the `nova` client already.
+
+Two deliberate behaviours: the render **fails** when `nova.auth.mode=oidc` is set without
+an issuer (rather than shipping a pod that crash-loops), and `dev` stays the default
+everywhere, because CI, `make demo` and the kind gate have no IdP.
+
+Rotating the session secret logs everyone out: delete the Secret and re-run the installer
+(the chart regenerates it and keeps it across upgrades — `helm.sh/resource-policy: keep`).
+
 The realm import (`chart/files/keycloak-realm.json`, shared by both paths) defines group
 `stardelt-admins`, user `admin` in it, a `groups` claim (group names, full path off) and these clients:
 

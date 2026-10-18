@@ -75,6 +75,31 @@ spec:
               value: warehouse
             - name: NOVA_DEV_USER
               value: stardelt-dev
+            # ---- Sign-in (contract: docs/architecture/identity) --------------
+            # `dev` keeps the no-login behaviour (CI, `make demo`, the kind gate).
+            # To turn on SSO on a manifest install: run scripts/identity-bootstrap.sh
+            # once (it creates the realm + the two Secrets below), then set
+            # NOVA_AUTH_MODE=oidc and NOVA_PUBLIC_URL=https://<nova host> here or with
+            # `kubectl -n stardelt set env`. The other values come from the identity
+            # ConfigMap/Secret and are optional, so a dev install is unaffected.
+            - name: NOVA_AUTH_MODE
+              value: "dev"
+            - name: NOVA_PUBLIC_URL
+              value: ""
+            - name: NOVA_OIDC_ISSUER
+              valueFrom:
+                configMapKeyRef: { name: stardelt-identity, key: issuerUrl, optional: true }
+            - name: NOVA_OIDC_CLIENT_ID
+              value: "nova"
+            - name: NOVA_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: { name: stardelt-oidc-clients, key: nova, optional: true }
+            - name: NOVA_SESSION_SECRET
+              valueFrom:
+                secretKeyRef: { name: stardelt-nova-session, key: session, optional: true }
+            - name: NOVA_OIDC_ADMIN_GROUP
+              valueFrom:
+                configMapKeyRef: { name: stardelt-identity, key: adminGroup, optional: true }
             # Namespace whose workloads Nova reports (downward API).
             - name: POD_NAMESPACE
               valueFrom:
