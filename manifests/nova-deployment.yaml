@@ -80,9 +80,16 @@ spec:
               valueFrom:
                 fieldRef: { fieldPath: metadata.namespace }
             # External base domain for deep-linking platform apps in Nova.
-            # Empty = no links. The dev playground sets this to alpha.dev.stardelt.io.
+            # Comes from a ConfigMap so re-applying this manifest cannot wipe the
+            # domain the way an inline env value can; the dev playground creates
+            # it (dev/playground/README.md), and the umbrella chart sets the value
+            # directly from platform.baseDomain. Absent = Nova shows no links.
             - name: NOVA_BASE_DOMAIN
-              value: ""
+              valueFrom:
+                configMapKeyRef:
+                  name: stardelt-platform-config
+                  key: baseDomain
+                  optional: true
             - name: RUST_LOG
               value: info,tower_http=info
           readinessProbe:

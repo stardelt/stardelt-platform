@@ -45,6 +45,22 @@ kubectl apply -f dev/playground/ingress.yaml
 Port 80 is open (firewall + ACME HTTP-01). Certificates are issued within a minute or two;
 then open **https://alpha.dev.stardelt.io**.
 
+## 5. Tell Nova where it is
+
+Nova builds its app deep-links from `NOVA_BASE_DOMAIN`. The manifest reads it from a ConfigMap
+rather than an inline value, so re-applying `manifests/nova-deployment.yaml` cannot wipe it:
+
+```sh
+kubectl -n stardelt create configmap stardelt-platform-config \
+  --from-literal=baseDomain="${INGRESS_HOST:-alpha.dev.stardelt.io}" \
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n stardelt rollout restart deploy/nova
+```
+
+Without it Nova still reports live status, but every deep-link (`trino.`, `jupyter.`, …) is empty.
+The umbrella chart does the same thing through `platform.baseDomain`, so a chart install needs this
+step only when you use the plain manifests.
+
 ## Tear down
 
 ```sh
