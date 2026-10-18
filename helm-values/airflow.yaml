@@ -126,3 +126,16 @@ extraEnv: |
       secretKeyRef:
         name: stardelt-s3-creds
         key: region
+
+# helm does not run post-install hooks until every resource of the release is
+# ready, and the Airflow pods wait for the migrations — so on a fresh database,
+# installing with `--wait` (what `make install` and a GitOps toolkit do) deadlocks
+# against these two Jobs as hooks. Upstream requires them off for waiters, and
+# Job specs are immutable anyway, which makes the release un-reinstallable.
+#   https://airflow.apache.org/docs/helm-chart/1.21.0/index.html
+migrateDatabaseJob:
+  useHelmHooks: false
+  applyCustomEnv: false
+createUserJob:
+  useHelmHooks: false
+  applyCustomEnv: false
