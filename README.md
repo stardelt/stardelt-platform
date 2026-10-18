@@ -30,17 +30,14 @@ EXPECT_CONTEXT=stardelt-dev make install-core
 
 ---
 
-## S3 credentials (required before install)
+## S3 credentials (generated)
 
-All components that touch object storage read credentials from the `stardelt-s3-creds` Secret. Copy the example, fill it in, and apply it **before** running `make install`:
-
-```sh
-cp manifests/s3-credentials.example.yaml manifests/s3-credentials.yaml
-# Edit manifests/s3-credentials.yaml — fill in access-key, secret-key, endpoint, bucket, region
-kubectl apply -f manifests/s3-credentials.yaml
-```
-
-`make install-core` creates the dev Secret only when no `stardelt-s3-creds` Secret exists, so a Secret applied beforehand is kept.
+All components that touch object storage read credentials from the `stardelt-s3-creds` Secret.
+`make install` and `make install-core` generate it on the first run (`scripts/s3-secrets.sh`:
+a random key pair, also written to `seaweedfs-s3-config` for the SeaweedFS gateway) and never
+overwrite an existing one. To bring your own, create **both** Secrets before installing;
+`manifests/s3-credentials.example.yaml` shows the first, and `seaweedfs_s3_config` is
+`{"identities":[{"name":"stardelt","credentials":[{"accessKey":"…","secretKey":"…"}],"actions":["Admin","Read","Write"]}]}`.
 
 ---
 

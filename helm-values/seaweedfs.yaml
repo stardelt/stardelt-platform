@@ -47,14 +47,9 @@ s3:
   replicas: 1
   port: 8333
   enableAuth: true
-  # Pin credentials so they match the existing s3-creds Secret instead of
-  # auto-generating random ones. DEV ONLY: these values are committed to a public repo
-  # (and duplicated in manifests/s3-credentials.dev.yaml) — rotate both before any
-  # environment holds data you care about.
-  credentials:
-    admin:
-      accessKey: stardelt-access-key
-      secretKey: stardelt-secret-key
+  # The S3 identities come from Secret `seaweedfs-s3-config`, written by
+  # scripts/s3-secrets.sh from the same key pair as `stardelt-s3-creds`.
+  existingConfigSecret: seaweedfs-s3-config
   createBuckets:
     - name: lakehouse
       anonymousRead: false
