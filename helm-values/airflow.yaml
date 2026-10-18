@@ -23,7 +23,7 @@ images:
     # would silently redeploy a different DAG image.
     repository: ghcr.io/stardelt/airflow
     tag: demo
-    digest: sha256:7691c902240ebdd377914f7e7718409a337f1c27b1ea35961dc11677b08a512b
+    digest: sha256:dc61a4e7075cfdee52b9adcfb9cddec20f29857557ca0267ab8e27f48d5d9874
     pullPolicy: IfNotPresent
 
 # No secrets in this file: scripts/app-secrets.sh generates them per cluster
