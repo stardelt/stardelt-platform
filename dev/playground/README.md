@@ -78,17 +78,21 @@ kubectl -n stardelt get secret stardelt-realm-admin -o jsonpath='{.data.password
 
 The Ingress publishes only what a browser needs for that sign-in: `/realms/stardelt`
 (sign-in, token and account endpoints), `/resources` (the theme's static assets) and
-`/robots.txt`. Everything else — `/admin`, `/realms/master`, `/health`, `/metrics` — is
-**not** on the public host and returns ingress-nginx's default 404, so the master realm,
-which controls every other realm, is not reachable from the internet. Administer Keycloak
-through a port-forward:
+`/robots.txt` — plus, for platform admins, the realm's admin console and its REST API:
+`/admin/stardelt/...` and `/admin/realms/stardelt/...`. Those two are segment-exact
+ingress-nginx regexes (`(/|$)`), so the master realm (`/admin/master/console/`,
+`/realms/master`, `/admin/realms/master/...`) is **not** on the public host and returns
+ingress-nginx's default 404 — it controls every other realm. Open the console at:
 
-```sh
-kubectl -n stardelt port-forward svc/keycloak 8080:8080
-# then browse http://localhost:8080/admin/master/console/
+```text
+https://id.alpha.dev.stardelt.io/admin/stardelt/console/
 ```
 
-The same three paths are what the umbrella chart publishes (`chart/templates/ingress.yaml`).
+Nova links there from **Users** (Platform group, admins only), and the group
+`stardelt-admins` carries the `realm-management` roles the Users page needs. On a live
+realm those roles and the realm's brute-force protection are applied by
+`make sync-realm-user-management`; the umbrella chart publishes the same narrow paths
+(`chart/templates/ingress.yaml`).
 
 ## 7. Notebooks (optional)
 
