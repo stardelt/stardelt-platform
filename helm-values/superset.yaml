@@ -42,12 +42,69 @@ configOverrides:
     # ENABLE_PROXY_FIX so x-forwarded headers are honored when iframed.
     ENABLE_PROXY_FIX = True
 
+  # Sign-in through Keycloak (Flask-AppBuilder's OAuth provider). One platform
+  # identity, no local Superset account for people. APPENDED to the generated
+  # superset_config.py, so these assignments win over the defaults.
+  #
+  # FAB registers exactly one login view, selected by AUTH_TYPE, so OAuth and the
+  # local username/password form cannot both be on at once. The lockout guard is
+  # therefore: the local `admin` row (and the superset-admin Secret) is never
+  # removed, and AUTH_TYPE falls back to AUTH_DB whenever the identity contract
+  # is not there (`make install-identity` not run) or when the break-glass flag
+  # STARDELT_AUTH_LOCAL_ONLY=1 is set on the deployment:
+  #   kubectl -n stardelt set env deploy/superset STARDELT_AUTH_LOCAL_ONLY=1
+  # (rolls the pod; `set env ... STARDELT_AUTH_LOCAL_ONLY-` undoes it).
+  oauth: |
+    import os
+    from flask_appbuilder.const import AUTH_DB, AUTH_OAUTH
+
+    # From the stardelt-identity ConfigMap and stardelt-oidc-clients Secret,
+    # injected as env by extraEnvRaw above. Never literals in this file.
+    _issuer = os.environ.get("STARDELT_OIDC_ISSUER", "").rstrip("/")
+    _secret = os.environ.get("STARDELT_SUPERSET_CLIENT_SECRET", "")
+    _local_only = os.environ.get("STARDELT_AUTH_LOCAL_ONLY") == "1"
+
+    if _issuer and _secret and not _local_only:
+        AUTH_TYPE = AUTH_OAUTH
+        OAUTH_PROVIDERS = [
+            {
+                "name": "keycloak",
+                "token_key": "access_token",
+                "icon": "fa-key",
+                "remote_app": {
+                    "client_id": "superset",
+                    "client_secret": _secret,
+                    # Discovery carries the token/auth endpoints; api_base_url is
+                    # what FAB's Keycloak branch joins "openid-connect/userinfo"
+                    # onto to read groups.
+                    "server_metadata_url": _issuer + "/.well-known/openid-configuration",
+                    "api_base_url": _issuer + "/protocol/",
+                    "client_kwargs": {"scope": "openid email profile"},
+                },
+            }
+        ]
+        # Anyone in the realm may sign in (Gamma: read shared dashboards);
+        # members of stardelt-admins are synced to Admin on every login.
+        AUTH_USER_REGISTRATION = True
+        AUTH_USER_REGISTRATION_ROLE = "Gamma"
+        AUTH_ROLES_MAPPING = {
+            os.environ.get("STARDELT_ADMIN_GROUP", "stardelt-admins"): ["Admin"]
+        }
+        AUTH_ROLES_SYNC_AT_LOGIN = True
+    else:
+        AUTH_TYPE = AUTH_DB
+
 # No secrets in this file: scripts/app-secrets.sh generates them per cluster
 # (the install targets run it before this chart) and keeps them across installs
 # and uninstalls. `superset 0.15.5` has no `supersetSecretKeySecretName` field,
 # and `extraSecretEnv` writes its values into a Secret as literals (a `valueFrom`
 # map would render as garbage), so the key is passed as a raw env entry instead:
 # `extraEnvRaw` reaches every Superset pod and the init Job.
+#
+# The Keycloak OAuth client secret is the same pattern: an env entry read from
+# stardelt-oidc-clients (generated per cluster by scripts/identity-bootstrap.sh).
+# The Python config below only ever sees it through os.environ, so no rendered
+# object — Secret or ConfigMap — contains the value.
 extraEnvRaw:
   - name: SUPERSET_SECRET_KEY
     valueFrom:
@@ -59,6 +116,27 @@ extraEnvRaw:
       secretKeyRef:
         name: superset-admin
         key: password
+  # Identity contract (same keys Nova reads): issuer + admin group, optional so a
+  # platform installed without `make install-identity` still starts and keeps the
+  # local admin login (see the oauth override below).
+  - name: STARDELT_OIDC_ISSUER
+    valueFrom:
+      configMapKeyRef:
+        name: stardelt-identity
+        key: issuerUrl
+        optional: true
+  - name: STARDELT_ADMIN_GROUP
+    valueFrom:
+      configMapKeyRef:
+        name: stardelt-identity
+        key: adminGroup
+        optional: true
+  - name: STARDELT_SUPERSET_CLIENT_SECRET
+    valueFrom:
+      secretKeyRef:
+        name: stardelt-oidc-clients
+        key: superset
+        optional: true
 
 # Pre-import the Trino database connection on init.
 extraConfigs:
