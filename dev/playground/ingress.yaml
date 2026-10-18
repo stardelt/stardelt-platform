@@ -128,6 +128,12 @@ spec:
 ---
 # Platform IdP (Keycloak, `make install-identity`). Keycloak's login responses
 # carry large cookies/headers, so the proxy buffer is raised from nginx's 4k.
+#
+# Publish the realm's public surface only. /admin, /realms/master, /health and
+# /metrics fall through to ingress-nginx's default 404, so the master realm
+# (which controls every other realm) is not on the internet. Administer Keycloak
+# through a port-forward — `kubectl -n stardelt port-forward svc/keycloak 8080:8080`
+# — the same three paths are hard-coded in chart/templates/ingress.yaml.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -145,7 +151,23 @@ spec:
     - host: id.alpha.dev.stardelt.io
       http:
         paths:
-          - path: /
+          # Sign-in and token endpoints for realm `stardelt`, plus the account
+          # console. Without /resources the sign-in page renders unstyled.
+          - path: /realms/stardelt
+            pathType: Prefix
+            backend:
+              service:
+                name: keycloak
+                port:
+                  number: 8080
+          - path: /resources
+            pathType: Prefix
+            backend:
+              service:
+                name: keycloak
+                port:
+                  number: 8080
+          - path: /robots.txt
             pathType: Prefix
             backend:
               service:

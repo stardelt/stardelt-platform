@@ -76,6 +76,32 @@ and is never printed by the install:
 kubectl -n stardelt get secret stardelt-realm-admin -o jsonpath='{.data.password}' | base64 -d
 ```
 
+The Ingress publishes only what a browser needs for that sign-in: `/realms/stardelt`
+(sign-in, token and account endpoints), `/resources` (the theme's static assets) and
+`/robots.txt`. Everything else — `/admin`, `/realms/master`, `/health`, `/metrics` — is
+**not** on the public host and returns ingress-nginx's default 404, so the master realm,
+which controls every other realm, is not reachable from the internet. Administer Keycloak
+through a port-forward:
+
+```sh
+kubectl -n stardelt port-forward svc/keycloak 8080:8080
+# then browse http://localhost:8080/admin/master/console/
+```
+
+The same three paths are what the umbrella chart publishes (`chart/templates/ingress.yaml`).
+
+## 7. Notebooks (optional)
+
+```sh
+make install-notebooks
+```
+
+JupyterHub signs in through Keycloak (`helm-values/jupyterhub.yaml`): client `jupyterhub`,
+group `stardelt-admins` for sign-in and for Hub admin. It reads the issuer from ConfigMap
+`stardelt-identity` and the client secret from Secret `stardelt-oidc-clients` (key
+`jupyterhub`), so §6 must have run first — there is no password in the values file and
+`/hub/login` only offers "Sign in with Keycloak".
+
 ## Tear down
 
 ```sh

@@ -215,6 +215,15 @@ Two deliberate behaviours: the render **fails** when `nova.auth.mode=oidc` is se
 an issuer (rather than shipping a pod that crash-loops), and `dev` stays the default
 everywhere, because CI, `make demo` and the kind gate have no IdP.
 
+JupyterHub is behind that same login: `helm-values/jupyterhub.yaml` (and the chart's
+`jupyterhub:` block) uses `GenericOAuthenticator` with the realm's `jupyterhub` client,
+reads the issuer from `stardelt-identity` and the client secret from `stardelt-oidc-clients`
+(key `jupyterhub`), and admits the admin group (`allowed_groups`/`admin_groups`,
+`stardelt-admins`) only. No password is in the values files; without an issuer the hub starts
+but signs nobody in. Keycloak's own admin console is not published — the `id.` Ingress (and the
+chart's keycloak Ingress) carries just `/realms/stardelt`, `/resources` and `/robots.txt`, so
+use `kubectl -n stardelt port-forward svc/keycloak 8080:8080` to administer the realm.
+
 Rotating the session secret logs everyone out: delete the Secret and re-run the installer
 (the chart regenerates it and keeps it across upgrades — `helm.sh/resource-policy: keep`).
 
