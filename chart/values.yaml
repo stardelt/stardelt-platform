@@ -624,12 +624,6 @@ jupyterhub:
   # Do not set fullnameOverride here: the chart prefixes everything with it.
   enabled: false
 
-  # Per-user notebook volumes. Empty = the cluster's default StorageClass.
-  singleuser:
-    storage:
-      dynamic:
-        storageClass: ""
-
   hub:
     config:
       JupyterHub:
@@ -665,5 +659,7 @@ jupyterhub:
     cpu:
       limit: 1
       guarantee: 0.1
+    # Ephemeral per-user storage (dev). For persistent volumes set `type: dynamic`
+    # and, to pick a class, `dynamic.storageClass` (empty = the default StorageClass).
     storage:
       type: none
