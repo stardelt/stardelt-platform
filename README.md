@@ -106,6 +106,7 @@ create the Secret yourself from `manifests/s3-credentials.example.yaml`.
 | `install-core` | Core only (storage + catalog + query + Nova) — fits a small node; `SLIM=1` for 8 GB |
 | `install-notebooks` | JupyterHub (notebooks) |
 | `install-operator` | Install the stardelt Operator from `../stardelt-operator/chart` (dev path) |
+| `pin` | Pin a deployment to the newest published digest (`make pin APP=nova`) |
 | `upgrade` | Re-run `install` (helm upgrade is idempotent) |
 | `uninstall` | Remove all helm releases and manifests in reverse order |
 | `chart-deps` | `helm dependency update chart` — fetch/refresh the umbrella chart's sub-charts |
