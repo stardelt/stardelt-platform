@@ -76,3 +76,25 @@ fi
 
 kubectl -n "$NS" set image "deploy/$DEPLOY" "$CONTAINER=$REGISTRY/$REPO@$digest" >/dev/null
 kubectl -n "$NS" rollout status "deploy/$DEPLOY" --timeout="${TIMEOUT:-300s}"
+
+# Keep the manifest in step, or the next `kubectl apply` puts the mutable tag back and a
+# stale cached layer can serve an older image (that happened four times in one day, twice
+# during an apply that looked like a no-op). The reference keeps the tag for readability
+# and adds the digest the kubelet actually resolves: `:dev@sha256:…`.
+manifest="${MANIFEST:-manifests/nova-deployment.yaml}"
+if [ "$APP" = "nova" ] && [ -f "$manifest" ] && grep -qE "^\s+image: $REGISTRY/$REPO:" "$manifest"; then
+  python3 - "$manifest" "$REGISTRY/$REPO" "$digest" <<'PYEOF'
+import re, sys
+path, repo, digest = sys.argv[1], sys.argv[2], sys.argv[3]
+text = open(path).read()
+new, n = re.subn(
+    rf"(^\s+image: ){re.escape(repo)}:[^\s@]+(?:@sha256:[0-9a-f]+)?$",
+    lambda m: f"{m.group(1)}{repo}:dev@{digest}",
+    text,
+    flags=re.M,
+)
+if n:
+    open(path, "w").write(new)
+    print(f"› {path}: image pinned to {repo}:dev@{digest[:19]}…")
+PYEOF
+fi
