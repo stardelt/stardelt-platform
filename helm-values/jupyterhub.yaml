@@ -298,18 +298,18 @@ singleuser:
         readOnly: true
   # The chart's default denies egress to every private address
   # (`egressAllowRules.privateIPs: false`), and that default is right: a user pod
-  # has no business reaching arbitrary cluster-internal services. One private
-  # destination is part of the notebook experience — Spark Connect, the second
-  # engine over the same Iceberg catalog (`manifests/spark.yaml`, ClusterIP-only
-  # because Spark Connect has no authentication of its own). The grant is by pod
-  # label and port, so it follows the Service wherever it moves and opens nothing
+  # has no business reaching arbitrary cluster-internal services. Two private
+  # destinations are part of the notebook experience, each granted by pod label
+  # and port so the rule follows the Service wherever it moves and opens nothing
   # else:
   #
-  #   egress rule            reaches
-  #   podSelector+15002      the spark-connect driver, and nothing else below 15002
-  #   privateIPs: true       Trino, Lakekeeper, S3, the Kubernetes API — everything
+  #   egress rule                              reaches
+  #   podSelector spark-connect + 15002        Spark Connect, and nothing else on that port
+  #   podSelector trino coordinator + 8443     the warehouse's TLS endpoint, nothing else
   #
-  # (was: ConnectionRefusedError in the quickstart's Spark cell, stardelt-platform#90)
+  # (was: ConnectionRefusedError in the quickstart's Spark cell, stardelt-platform#90;
+  # the Trino rule arrived with the in-cluster TLS listener, platform#80 — before it,
+  # the notebook talked to the public hostname, which is a non-private address.)
   networkPolicy:
     egress:
       - to:
@@ -318,4 +318,12 @@ singleuser:
                 app.kubernetes.io/name: spark-connect
         ports:
           - port: 15002
+            protocol: TCP
+      - to:
+          - podSelector:
+              matchLabels:
+                app.kubernetes.io/name: trino
+                app.kubernetes.io/component: coordinator
+        ports:
+          - port: 8443
             protocol: TCP

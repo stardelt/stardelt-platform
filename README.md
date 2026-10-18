@@ -246,8 +246,9 @@ and, with it, a way to query the warehouse **as themselves**.
   (`refresh_pre_spawn`); after the 10 h SSO session the user signs in again.
 * **Spark.** The quickstart's Spark cell reads `warehouse.demo.trips` through Spark Connect, the
   second engine over the same catalog. Spark is optional (`make install-spark`); the cell reports
-  what it found when the endpoint is absent. The singleuser NetworkPolicy grants egress to
-  exactly the `spark-connect` pods on port 15002 — see "Spark".
+  what it found when the endpoint is absent. The singleuser NetworkPolicy grants egress to exactly
+  two private destinations — the `spark-connect` pods on 15002 (see "Spark") and the Trino
+  coordinator on 8443 (the in-cluster TLS endpoint above) — everything else private stays denied.
 
 `scripts/verify-notebook-identity.py` is the acceptance test for all of this: it signs in at the
 hub headlessly, restarts the server, runs the quickstart inside the pod and then runs it again
