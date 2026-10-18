@@ -11,16 +11,16 @@ done
 if (( ${#missing[@]} > 0 )); then
   echo "Missing required tools: ${missing[*]}" >&2
   echo >&2
-  echo "Install hints (Ubuntu/Debian/WSL):" >&2
+  echo "Install hints:" >&2
   for cmd in "${missing[@]}"; do
     case "$cmd" in
       kubectl)
-        echo "  kubectl: https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/" >&2
+        echo "  kubectl: ./dev/install-tools.sh (SHA-256 verified, ~/.local/bin, no sudo)" >&2
+        echo "           or https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/" >&2
         ;;
       helm)
-        echo "  helm:    curl https://baltocdn.com/helm/signing.asc | sudo gpg --dearmor -o /usr/share/keyrings/helm.gpg" >&2
-        echo "           echo 'deb [signed-by=/usr/share/keyrings/helm.gpg] https://baltocdn.com/helm/stable/debian/ all main' | sudo tee /etc/apt/sources.list.d/helm-stable-debian.list" >&2
-        echo "           sudo apt-get update && sudo apt-get install -y helm" >&2
+        echo "  helm:    ./dev/install-tools.sh (SHA-256 verified, ~/.local/bin, no sudo)" >&2
+        echo "           or https://helm.sh/docs/intro/install/" >&2
         ;;
       docker)
         echo "  docker:  https://docs.docker.com/engine/install/" >&2
