@@ -885,6 +885,14 @@ jupyterhub:
         # A fresh token before every (re)spawn, so a server restarted after the
         # token aged out starts with the refresh token's new access token.
         c.OAuthenticator.refresh_pre_spawn = True
+
+        # A hub user row that no longer validates — a username removed from
+        # Keycloak, or a NULL name left behind by the hub's SQLite database
+        # under concurrent writes — otherwise crashes the hub on *every* start
+        # (init_spawners iterates the row and dies on the missing name). This is
+        # JupyterHub's documented remedy: drop the invalid row and let the user
+        # sign in again.
+        c.Authenticator.delete_invalid_users = True
     config:
       JupyterHub:
         authenticator_class: generic-oauth
@@ -927,10 +935,11 @@ jupyterhub:
     # in the namespace.
     image:
       name: ghcr.io/stardelt/jupyter-singleuser
-      # Moving tag on purpose: the image is first published by the merge to main,
-      # so a digest cannot be committed before it exists. Pin `tag: dev@sha256:…`
-      # here when rolling a release.
-      tag: "dev"
+      # The tag stays for readability; the digest is what the kubelet actually
+      # pulls. `make pin-images` only covers Deployments, so spawned single-user
+      # pods are pinned here by hand: after a merge publishes a new image,
+      # resolve `dev` again and bump the digest.
+      tag: "dev@sha256:bedf8973b9940698ff98a35c1074ce0aa7caa4b4137100424da9971635373c05"
       pullSecrets:
         - name: ghcr-creds
     defaultUrl: /lab

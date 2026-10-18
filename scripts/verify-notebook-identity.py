@@ -28,6 +28,8 @@ Environment:
   NAMESPACE          Kubernetes namespace (default stardelt)
   NOTEBOOK           path inside the pod (default /home/jovyan/warehouse-quickstart.ipynb)
   NOTEBOOK_RESTART   stop/start before checking (default 1)
+  NOTEBOOK_TIMEOUT   seconds to wait for the server (default 600; the first
+                     spawn may pull a new image)
   NOTEBOOK_POD       pod name override; by default the pod is found through the
                      `hub.jupyter.org/username` label
   KUBECONFIG         inherited by kubectl
@@ -49,6 +51,7 @@ PASSWORD = os.environ.get("NOTEBOOK_PASSWORD", "")
 NAMESPACE = os.environ.get("NAMESPACE", "stardelt")
 NOTEBOOK = os.environ.get("NOTEBOOK", "/home/jovyan/warehouse-quickstart.ipynb")
 RESTART = os.environ.get("NOTEBOOK_RESTART", "1") not in ("0", "false", "no")
+TIMEOUT = int(os.environ.get("NOTEBOOK_TIMEOUT", "600"))
 
 if not PASSWORD:
     sys.exit("verify-notebook-identity: set NOTEBOOK_PASSWORD (the user's realm password)")
@@ -101,8 +104,8 @@ def server_ready():
     return any(s.get("ready") for s in servers.values())
 
 
-def wait_for(predicate, what, timeout=300):
-    deadline = time.time() + timeout
+def wait_for(predicate, what, timeout=None):
+    deadline = time.time() + (TIMEOUT if timeout is None else timeout)
     while time.time() < deadline:
         if predicate():
             return True
@@ -161,7 +164,7 @@ if not pod:
     if not pods:
         sys.exit(f"verify-notebook-identity: no single-user pod for {USER} in {NAMESPACE}")
     pod = pods[-1]
-kubectl("wait", "--for=condition=Ready", f"pod/{pod}", "--timeout=300s")
+kubectl("wait", "--for=condition=Ready", f"pod/{pod}", f"--timeout={TIMEOUT}s")
 print(f"    pod: {pod}")
 
 nbconvert = ["jupyter", "nbconvert", "--to", "markdown", "--execute", "--stdout",
