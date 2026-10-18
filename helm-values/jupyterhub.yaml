@@ -224,7 +224,7 @@ singleuser:
     # only covers Deployments, and spawned single-user pods are not Deployments,
     # so this pin is by hand: after a merge publishes a new image, resolve `dev`
     # again and bump the digest here.
-    tag: "dev@sha256:bedf8973b9940698ff98a35c1074ce0aa7caa4b4137100424da9971635373c05"
+    tag: "dev@sha256:e1d8c4537eb5c52104dbdacb20fee9fdca3c11f28317d168eb730bdc9ed7d529"
     pullSecrets:
       - name: ghcr-creds
   defaultUrl: /lab
