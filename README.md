@@ -13,7 +13,7 @@ Production-shape deployment artifacts. Helm values, manifests, and scripts to in
 |------|----------------|-------|
 | `kubectl` | 1.28+ | Must be configured with a valid kubeconfig pointing at your cluster |
 | `helm` | 3.18+ | The `stardelt-dedupe` post-renderer plugin is installed automatically |
-| `docker` | any recent | Required only for `make build-superset-image` / `make push-superset-image` |
+| `docker` | any recent | Required only for the local image targets (`make build-superset-image`, `make build-jupyter-image`) |
 
 Your `kubectl` current-context determines the target cluster. Verify with:
 
@@ -190,6 +190,47 @@ carries the narrow override that allows **only** Nova's origin, and the umbrella
 under `jupyterhub:` for admins who want the same. Without it, nothing breaks: the page explains
 itself and the hub stays unembeddable.
 
+### Notebooks: the user's own identity, inside the pod
+
+Spawning a server is more than starting JupyterLab: the single-user pod gets the user's workspace
+and, with it, a way to query the warehouse **as themselves**.
+
+* **Image.** `helm-values/jupyterhub.yaml` points the single-user pods at
+  `ghcr.io/stardelt/jupyter-singleuser:dev` (built by the `Image` workflow from
+  `images/jupyter/Dockerfile`): `scipy-notebook` plus the `trino` Python client,
+  `pyspark[connect]`, `pandas` and `pyarrow`, and the `warehouse-quickstart` notebook under
+  `/opt/stardelt/notebooks/`. `jupyterlab-sql` is deliberately absent — its last release predates
+  JupyterLab 4 and it cannot carry the per-user token. The package is private, like Superset, so
+  the pod pulls with the `ghcr-creds` secret.
+* **Token.** The hub enables `enable_auth_state` and an `auth_state_hook` copies the user's
+  Keycloak access token into the pod's environment as `TRINO_TOKEN` at spawn
+  (`20-notebook-identity` in `hub.extraConfig`). Nothing is shared between users and nothing is
+  baked into the image; Trino sees the hub user, not a service account.
+* **Notebook.** A `postStart` hook copies `/opt/stardelt/notebooks/*.ipynb` into the home
+  directory the first time only (`cp -n`), so a user's edits survive restarts. The quickstart
+  connects with `trino.auth.JWTAuthentication(os.environ["TRINO_TOKEN"])`, asserts
+  `SELECT current_user` equals the hub user, lists schemas and queries `warehouse.demo.trips`.
+* **Endpoint.** `singleuser.extraEnv.TRINO_URL` is the *public HTTPS* origin
+  (`https://trino.<baseDomain>:443`), not the in-cluster Service: over plain HTTP Trino only
+  accepts its password authenticator (`http-server.authentication.allow-insecure-over-http`), so a
+  bearer token needs TLS. Issue #80 adds TLS to the coordinator; until then notebooks need the
+  ingress path. The values are not templated, so another domain overrides `TRINO_URL`.
+* **Lifetime.** The realm's `jupyterhub` client gets `access.token.lifespan=28800` (8 h) — a
+  notebook holds the token in its environment for a whole session, where the realm's 5-minute
+  default would mean 401s minutes after spawn. Restarting the server re-mints it
+  (`refresh_pre_spawn`); after the 10 h SSO session the user signs in again.
+* **Spark.** `pyspark[connect]` is installed and the notebook has a Spark Connect cell that probes
+  the endpoint and reports that it is not deployed yet — the hookup for roadmap step 3.
+
+`scripts/verify-notebook-identity.py` is the acceptance test for all of this: it signs in at the
+hub headlessly, restarts the server, runs the quickstart inside the pod and then runs it again
+with `TRINO_TOKEN` unset to prove the 401.
+
+```sh
+HUB_URL=https://jupyter.alpha.dev.stardelt.io NOTEBOOK_USER=analyst NOTEBOOK_PASSWORD=... \
+  python3 scripts/verify-notebook-identity.py
+```
+
 ### Trino: the query engine behind the identity
 
 Trino is the one building block whose authentication state is derived from the platform:
@@ -272,9 +313,9 @@ JupyterHub is behind that same login: `helm-values/jupyterhub.yaml` (and the cha
 reads the issuer from `stardelt-identity` and the client secret from `stardelt-oidc-clients`
 (key `jupyterhub`), and admits the admin group (`allowed_groups`/`admin_groups`,
 `stardelt-admins`) only. No password is in the values files; without an issuer the hub starts
-but signs nobody in. Keycloak's own admin console is not published — the `id.` Ingress (and the
-chart's keycloak Ingress) carries just `/realms/stardelt`, `/resources` and `/robots.txt`, so
-use `kubectl -n stardelt port-forward svc/keycloak 8080:8080` to administer the realm.
+but signs nobody in. Keycloak's realm `stardelt` admin console is published at
+`https://id.<baseDomain>/admin/stardelt/console/` for platform admins (Nova links to it, see
+[Managing users](#managing-users)); the master realm stays unreachable.
 
 Superset and Airflow sign in through the same realm, via Flask-AppBuilder's OAuth provider
 (`helm-values/superset.yaml`, `helm-values/airflow.yaml`): the issuer and admin group come
@@ -305,7 +346,8 @@ Rotating the session secret logs everyone out: delete the Secret and re-run the 
 (the chart regenerates it and keeps it across upgrades — `helm.sh/resource-policy: keep`).
 
 The realm import (`chart/files/keycloak-realm.json`, shared by both paths) defines group
-`stardelt-admins`, user `admin` in it, a `groups` claim (group names, full path off) and these clients:
+`stardelt-admins` (with the `realm-management` user-management roles), user `admin` in it, a
+`groups` claim (group names, full path off) and these clients:
 
 | Client | Type | Redirect URI |
 |---|---|---|
@@ -316,14 +358,99 @@ The realm import (`chart/files/keycloak-realm.json`, shared by both paths) defin
 | `airflow` | confidential | `https://airflow.<baseDomain>/auth/oauth-authorized/keycloak` |
 | `jupyterhub` | confidential | `https://jupyter.<baseDomain>/hub/oauth_callback` |
 
+Trino only accepts tokens whose audience contains `trino`, so the `nova` and `jupyterhub` clients
+carry an `aud-trino` audience mapper; `jupyterhub` also gets `access.token.lifespan=28800`
+(8 hours) because a spawned notebook keeps its token in the pod environment for a whole session
+(Nova refreshes its own token and keeps the realm default). On a fresh realm the import applies
+both; `scripts/keycloak-sync-trino-client.sh` applies them to a running one.
+
 **No committed credentials.** On first install the Keycloak bootstrap-admin password, the realm
 `admin` password and the six client secrets are generated (`openssl rand` in
 `scripts/identity-bootstrap.sh`; `randAlphaNum` + `lookup` in the chart) into the Secrets
 `keycloak-admin`, `stardelt-realm-admin` and `stardelt-oidc-clients` (one key per client). They are
 never printed, the realm ConfigMap only holds `${ENV}` placeholders, and re-runs keep existing
-values. `make uninstall` (and `helm uninstall`) leave the Secrets in place; delete them to rotate
-before a fresh install. The realm is imported only when it does not exist yet, so later edits to the
-realm file are not applied to a running realm.
+values. `make uninstall` (and `helm uninstall`) leave the Secrets in place. The realm is imported
+only when it does not exist yet, so later edits to the realm file are not applied to a running
+realm.
+
+### The realm-admin Secret is the source of truth
+
+The documented way into realm `stardelt` is the generated Secret:
+
+```sh
+kubectl -n stardelt get secret stardelt-realm-admin -o jsonpath='{.data.password}' | base64 -d
+```
+
+Sign in with it at the realm's admin console — also linked from Nova's **Users** item
+under *Platform*, visible to platform admins only:
+
+```text
+https://id.<baseDomain>/admin/stardelt/console/
+```
+
+Only realm `stardelt` is published (#53, reopened narrowly for this console): the master
+realm, `/admin/master/console/` and `/realms/master` stay 404. `make sync-realm-user-management`
+grants `stardelt-admins` the roles the Users page needs on a **live** realm (the import only runs
+when the realm is created) and enforces the realm's brute-force protection; see
+[Managing users](#managing-users).
+
+`--import-realm` substitutes `${STARDELT_REALM_ADMIN_PASSWORD}` **once**, on the first start that
+creates the realm, and never looks at it again. Regenerating the Secret — deleting it to rotate, or
+re-running `scripts/identity-bootstrap.sh` after a re-provision — therefore used to leave the realm
+on the old password: the command above failed with **"Invalid username or password"** while
+`analyst` and every app sign-in stayed healthy (#81). The installer now heals that drift instead of
+leaving it for a failed login to reveal:
+
+```sh
+make sync-realm-admin     # re-apply the Secret's current value through the master-realm API
+make verify-realm-admin   # real password grant as the realm admin, from inside the cluster
+```
+
+`make install-identity` runs both after Keycloak is up (and `make chart-install` does whenever the
+release ships Keycloak), so the Secret wins on every install and rotation is a supported operation:
+change `stardelt-realm-admin` (or delete it and re-run `scripts/identity-bootstrap.sh`), then run
+`make sync-realm-admin` — or just re-run the installer. `sync-realm-admin` is idempotent: it probes
+the existing password first and does nothing when the Secret already works. The probe and
+`verify-realm-admin` both use client `admin-cli`, Keycloak's per-realm default that allows direct
+access grants (the app clients genuinely need them off), and reach Keycloak through `svc/keycloak`
+— never the public `id.` host. Neither script prints a secret.
+
+### Managing users
+
+Platform admins manage people in the Keycloak admin console for realm `stardelt`, not in a Nova
+screen of its own. Nova's **Users** item (Platform group, administrators only) opens
+`https://id.<baseDomain>/admin/stardelt/console/` in a new tab; the backend derives that URL
+from `NOVA_OIDC_ISSUER` (`…/realms/<realm>` → `/admin/<realm>/console/`) and returns it as
+`admin_console_url` on `/api/me`, so no host is hard-coded in the frontend and any
+Keycloak-compatible issuer works. `admin_console_url` is `null` in `dev` mode, for a non-Keycloak
+issuer, and for the master realm — Nova never links to a console it cannot address.
+
+What makes the console usable is a narrow grant. Group `stardelt-admins` holds four
+`realm-management` client roles — `view-users`, `query-users`, `query-groups`, `manage-users` —
+and nothing else: members manage users, non-members get `403` from the admin API. It deliberately
+does **not** hold `realm-admin`, `manage-clients` or `manage-realm`; those are realm ownership,
+not user management. The same grant is in the realm import and applied to a live realm by an
+idempotent script, because `--import-realm` skips an existing realm:
+
+```sh
+make sync-realm-user-management   # roles above + brute-force thresholds; prints what it read back
+```
+
+The script also sets `bruteForceProtected` with explicit thresholds (ten failures, 60 s increments,
+15 min maximum wait, 12 h window) — the console login is internet-facing. Both install paths run
+it: `make install-identity` after the realm-admin guard, and `make chart-install` whenever the
+release ships Keycloak.
+
+The `id.` Ingress publishes exactly the realm console and its API, as
+ingress-nginx regexes: `/admin/stardelt(/|$)` (the console app) and
+`/admin/realms/stardelt(/|$)` (the REST calls the console makes), plus the realm's existing
+`/realms/stardelt`, `/resources` and `/robots.txt`. The `(/|$)` group keeps each match on its
+exact path segment (Kubernetes requires the path to start with `/`, so a leading `^` cannot be
+written), so `/admin/master/console/`, `/realms/master` and `/admin/realms/master/...` stay
+`404`. The umbrella chart carries the same list in `chart/templates/ingress.yaml`.
+
+If a future Keycloak version needs another endpoint for the console (an extra `/admin/...` call),
+add the narrowest regex path — never `/admin`.
 
 Sizing (single node): Keycloak 100m / 512Mi request, 1 CPU / 1Gi limit, one replica,
 `KC_CACHE=local`; its Postgres 50m / 128Mi request, 256Mi limit, 1Gi volume. The Keycloak image is
@@ -380,11 +507,14 @@ service), so an idle platform pays for the driver only:
 
 | Part | Request | Limit | Steady state |
 |------|---------|-------|--------------|
-| Driver (`spark-connect`) | 250m / 1 GiB | 1 CPU / 2 GiB | ~0.7–0.9 GiB |
+| Driver (`spark-connect`) | 250m / 1 GiB | 1 CPU / 2 GiB | ~0.5 GiB measured |
 | Executor, each (max 2) | 1 CPU / 1.4 GiB | JVM heap `1g` + `384m` overhead | 0.6–1.4 GiB, only while querying |
 
-On the shared 16 GB dev node that is ~1 GiB idle and ~3.5 GiB peak while a query
-runs, well inside the headroom left by Trino, Airflow, Superset and JupyterHub.
+On the shared 16 GB dev node the driver measured 529 MiB and the node stayed at
+~64–69 % with an executor running, well inside the headroom left by Trino,
+Airflow, Superset and JupyterHub. Executors are released after
+`shuffleTracking.timeout` (180 s) plus the idle timeout, so a query leaves the
+node as it was a few minutes later.
 Change the numbers in `manifests/spark.yaml` (ConfigMap `spark-connect-config` +
 the driver's `resources`) and re-run `make install-spark`; the target restarts the
 driver only when the ConfigMap actually changed.
@@ -406,6 +536,22 @@ requests. Spark gets the credentials from Secret `stardelt-s3-creds` through
 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` on the driver and through
 `spark.kubernetes.executor.secretKeyRef.*` on every executor; nothing is written
 into a config file.
+
+### Verifying the spine
+
+`scripts/verify-spark-iceberg.py` is the repeatable proof: it compares `count(*)`
+and a `GROUP BY` on `warehouse.demo.trips` between Spark and Trino, then runs a
+two-way round trip — Trino writes a table Spark reads, Spark writes a table Trino
+reads — in a scratch namespace it drops again. Run it from any pod that can reach
+both services:
+
+```sh
+kubectl -n stardelt run spark-verify --image=python:3.11-slim --restart=Never --command -- sleep infinity
+kubectl -n stardelt exec spark-verify -- pip install pyspark-client==4.1.3
+kubectl -n stardelt cp scripts/verify-spark-iceberg.py spark-verify:/tmp/verify.py
+kubectl -n stardelt exec spark-verify -- python3 /tmp/verify.py
+kubectl -n stardelt delete pod spark-verify
+```
 
 ### Why a Deployment, not the Spark Kubernetes Operator
 
@@ -446,7 +592,10 @@ kubectl -n stardelt delete pods -l spark-role=executor
 | `verify-backups` | Full WAL check: `spec.backup` + the newest object in `s3://backups/lakekeeper-pg/wals/` is younger than `MAX_AGE_SECONDS` (900) + it matches `pg_stat_archiver.last_archived_wal`. `SKIP_OBJECTS=1` skips the S3 half |
 | `install-notebooks` | JupyterHub (notebooks) |
 | `install-spark` | Spark Connect endpoint (`manifests/spark.yaml`), wired to the same Lakekeeper catalog as Trino; restarts the driver only when its ConfigMap changed |
-| `install-identity` | Platform IdP: Keycloak + CNPG Postgres + realm `stardelt`, then the live-realm Trino client and the Trino OAuth2 overlay (`BASE_DOMAIN=…`, see [Identity](#identity-optional-platform-idp)) |
+| `install-identity` | Platform IdP: Keycloak + CNPG Postgres + realm `stardelt`, then the realm-admin sync + guard, the user-management roles/brute-force sync, the live-realm Trino client and the Trino OAuth2 overlay (`BASE_DOMAIN=…`, see [Identity](#identity-optional-platform-idp)) |
+| `sync-realm-admin` | Point realm `stardelt`'s `admin` at Secret `stardelt-realm-admin` through the master-realm API; idempotent, runs as part of `install-identity`/`chart-install` (#81) |
+| `verify-realm-admin` | Prove the realm-admin Secret still signs in — a real password grant as that user through `svc/keycloak`; fails with the fix in the message |
+| `sync-realm-user-management` | Grant `stardelt-admins` the four `realm-management` user-management roles and enforce brute-force protection on the live realm; idempotent, runs with both install paths |
 | `trino` | Install/upgrade Trino; adds `helm-values/trino-identity.yaml` (Keycloak OAuth2 + service-account password) when `stardelt-identity` exists |
 | `install-operator` | Install the stardelt Operator from `../stardelt-operator/chart` (dev path) |
 | `pin` | Pin a deployment to the newest published digest **and write it back into the manifest** (`make pin APP=nova`, `APP=spark DEPLOY=spark-connect`), so a later `kubectl apply` cannot put the mutable tag back |
@@ -458,6 +607,8 @@ kubectl -n stardelt delete pods -l spark-role=executor
 | `chart-install` | Install/upgrade the umbrella chart as release `stardelt` (see [Helm chart](#helm-chart-baseline)) |
 | `build-superset-image` | Build `ghcr.io/stardelt/superset:dev` locally |
 | `push-superset-image` | Push that image to ghcr.io |
+| `build-jupyter-image` | Build `ghcr.io/stardelt/jupyter-singleuser:dev` locally |
+| `push-jupyter-image` | Push that image to ghcr.io |
 | `pf` | Open port-forwards to Nova, Trino, Lakekeeper, Superset |
 | `dev-up` / `dev-down` | Create / delete the Hetzner k3s development cluster |
 | `dev-dns` / `dev-dns-down` | Point / remove the playground DNS records |
@@ -495,16 +646,22 @@ manifests/            Plain Kubernetes manifests (kubectl apply)
 images/
   spark/Dockerfile      Spark 4.1.3 + Iceberg 1.12 runtime + AWS bundle
   superset/Dockerfile   Superset 5.0.0 + psycopg2 + trino driver
+  jupyter/Dockerfile    scipy-notebook + trino, pyspark, pandas, pyarrow
+  jupyter/notebooks/    warehouse-quickstart.ipynb (seeded into each user's home)
 
 scripts/
   app-secrets.sh        Generate the Airflow/Superset Secrets (idempotent, never printed)
   check-deps.sh         Verify required CLI tools
   identity-bootstrap.sh Generate the IdP Secrets + render realm/identity ConfigMaps
-  keycloak-sync-trino-client.sh  Sync the live realm's Trino client (import skips an existing realm)
+  keycloak-sync-trino-client.sh  Sync the live realm's Trino token settings (import skips an existing realm)
   lint.sh               bash -n + ShellCheck the shell scripts (make lint)
   port-forwards.sh      Background port-forwards to all services
   protect-branches.sh   Apply `main` branch protection in all five stardelt repos
+  sync-realm-admin.sh   Re-apply Secret stardelt-realm-admin to the live realm's admin (import skips an existing realm)
+  sync-realm-user-management.sh  Grant stardelt-admins the user-management roles + enforce brute force on the live realm
   verify-backups.sh     Backup guards: post-apply spec.backup assert + bucket-vs-database WAL check
+  verify-notebook-identity.py  Headless hub login + run the quickstart in the pod (positive and 401 negative)
+  verify-realm-admin.sh Assert the realm-admin Secret still signs in to realm `stardelt`
   verify-trino-auth.sh  Assert Trino refuses anonymous SQL and accepts user tokens + the service account
   helm-plugins/
     stardelt-dedupe/    Helm v4 post-renderer: deduplicates env lists
@@ -607,6 +764,16 @@ publishes `ghcr.io/stardelt/superset:dev` (plus `sha-<short>`) on merge to `main
 `helm-values/superset.yaml` points at it with the `ghcr-creds` pull secret. A local
 `make build-superset-image` + `make push-superset-image` is only for iteration.
 
+### Jupyter single-user image
+
+`images/jupyter/Dockerfile` adds `trino`, `pyspark[connect]`, `pandas` and `pyarrow` to
+`quay.io/jupyter/scipy-notebook` and ships `warehouse-quickstart.ipynb`. Same workflow:
+CI publishes `ghcr.io/stardelt/jupyter-singleuser:dev` on merge to `main`, and
+`helm-values/jupyterhub.yaml` points `singleuser.image` at it with the `ghcr-creds`
+pull secret; `make build-jupyter-image` + `make push-jupyter-image` are for local
+iteration. It never carries credentials — the user's token is copied into the pod at
+spawn (see [Notebooks](#notebooks-the-users-own-identity-inside-the-pod)).
+
 ---
 
 ## Container images
@@ -616,9 +783,9 @@ cluster: merge to `main` publishes `dev` and an immutable `sha-<short>` tag, and
 job summary prints the digest. **Pin deployments by digest** — a moving tag may keep
 serving a cached layer.
 
-`nova` and `stardelt-operator` are public; `superset` and `spark` are internal/private until
-someone flips them in the package settings (the API refuses), so the cluster needs a pull secret
-named `ghcr-creds` in the namespace:
+`nova` is public; `operator`, `superset`, `jupyter-singleuser` and `spark` are internal/private until
+someone flips them in the package settings (the API refuses), so the cluster needs a pull
+secret named `ghcr-creds` in the namespace:
 
 ```sh
 ./dev/ghcr-pull-secret.sh          # uses your `gh auth token`

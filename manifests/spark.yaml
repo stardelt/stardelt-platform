@@ -81,7 +81,9 @@ data:
     spark.kubernetes.namespace                              stardelt
     # Executors are built from the same image as the driver: Spark 4.1 plus the
     # Iceberg runtime and AWS bundle (images/spark/Dockerfile).
-    spark.kubernetes.container.image                        ghcr.io/stardelt/spark:dev
+    # Single space before the digest: the pinned reference is 136 characters,
+    # just inside the 140 the YAML lint allows.
+    spark.kubernetes.container.image ghcr.io/stardelt/spark:dev@sha256:2bfe7b6a5c2f8277cedd067a8e773464353b31012d55d00457256651afa83f78
     spark.kubernetes.container.image.pullPolicy             IfNotPresent
     spark.kubernetes.container.image.pullSecrets            ghcr-creds
     spark.kubernetes.authenticate.executor.serviceAccountName spark-connect
@@ -105,6 +107,11 @@ data:
     spark.dynamicAllocation.initialExecutors                0
     spark.dynamicAllocation.maxExecutors                    2
     spark.dynamicAllocation.executorIdleTimeout             60s
+    # Shuffle tracking (there is no external shuffle service) keeps an executor
+    # until its shuffle data is no longer needed — by default *forever*, so one
+    # GROUP BY would hold ~0.7 GiB on this node for the life of the driver.
+    # Expire it: recomputing a small shuffle is cheaper than a resident executor.
+    spark.dynamicAllocation.shuffleTracking.timeout         180s
     # Small cluster, small tables: Spark's 200-partition default would spend
     # more time scheduling than scanning.
     spark.sql.shuffle.partitions                            8
@@ -162,7 +169,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: spark-connect
-          image: ghcr.io/stardelt/spark:dev
+          image: ghcr.io/stardelt/spark:dev@sha256:2bfe7b6a5c2f8277cedd067a8e773464353b31012d55d00457256651afa83f78
           imagePullPolicy: IfNotPresent
           command: ["/opt/spark/bin/stardelt-connect-server"]
           env:

@@ -68,6 +68,7 @@ jobs:
           helm repo add trino          https://trinodb.github.io/charts
           helm repo add apache-airflow https://airflow.apache.org
           helm repo add superset       https://apache.github.io/superset
+          helm repo add jupyterhub     https://jupyterhub.github.io/helm-chart/
           helm repo update
 
       - name: helm template — cnpg
@@ -110,6 +111,13 @@ jobs:
             --version 0.15.5 \
             --namespace stardelt \
             -f helm-values/superset.yaml > /dev/null
+
+      - name: helm template — jupyterhub
+        run: |
+          helm template jupyterhub jupyterhub/jupyterhub \
+            --version 4.4.3 \
+            --namespace stardelt \
+            -f helm-values/jupyterhub.yaml > /dev/null
 
       - name: helm dependency update — umbrella chart
         run: helm dependency update chart

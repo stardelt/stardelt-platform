@@ -29,6 +29,7 @@ KEYCLOAK_VERSION   := 26.8.1
 HELM_FLAGS := --namespace $(NAMESPACE) --create-namespace --wait --timeout 10m
 
 SUPERSET_IMAGE := ghcr.io/stardelt/superset:dev
+JUPYTER_IMAGE  := ghcr.io/stardelt/jupyter-singleuser:dev
 
 # SLIM=1 applies the small-node overrides in helm-values/slim/ (for cx33 / 8 GB).
 TRINO_EXTRA := $(if $(filter 1,$(SLIM)),-f helm-values/slim/trino.yaml,)
@@ -41,9 +42,9 @@ CHART_EXTRA ?=
 # client redirect URIs on the app subdomains. Same default as `dev-dns`.
 BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 
-.PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator trino upgrade uninstall build-superset-image push-superset-image pf pin pin-images dev-up dev-down dev-dns dev-dns-down
+.PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator trino upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-up dev-down dev-dns dev-dns-down
 .PHONY: chart-deps chart-template chart-install
-.PHONY: verify-backups verify-backup-config
+.PHONY: verify-backups verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | \
@@ -277,24 +278,49 @@ trino: deps _context ## Install/upgrade Trino, with OAuth2 when a platform IdP i
 # Identity — optional platform IdP (Keycloak, realm `stardelt`).
 # Needs the CNPG operator (install-core). Secrets are generated on first run and
 # never printed; see scripts/identity-bootstrap.sh.
+#
+# The realm-admin guard (#81): `--import-realm` substitutes
+# ${STARDELT_REALM_ADMIN_PASSWORD} once and never again, while Secret
+# stardelt-realm-admin can be regenerated later — the two then disagree and the
+# documented login fails while everything else stays green. sync-realm-admin
+# re-applies the Secret's current value through the master-realm API (idempotent,
+# reaches Keycloak through the Service), and verify-realm-admin proves it with a
+# real password grant. install-identity runs both, in that order.
 # ---------------------------------------------------------------------------
+sync-realm-admin: _context ## Point realm `stardelt`'s admin password at Secret stardelt-realm-admin (idempotent)
+	@NAMESPACE=$(NAMESPACE) bash scripts/sync-realm-admin.sh
+
+verify-realm-admin: _context ## Prove the realm-admin Secret still signs in to realm `stardelt` (password grant, in-cluster)
+	@NAMESPACE=$(NAMESPACE) bash scripts/verify-realm-admin.sh
+
+sync-realm-user-management: _context ## Grant realm `stardelt` admins the Users roles and enforce brute-force protection (idempotent)
+	@NAMESPACE=$(NAMESPACE) bash scripts/sync-realm-user-management.sh
+
 install-identity: deps _context ## Install the platform IdP (Keycloak) at id.$(BASE_DOMAIN)
 	@kubectl get crd clusters.postgresql.cnpg.io >/dev/null 2>&1 || { \
 	  echo "CloudNative-PG CRDs not found — run 'make install-core' first" >&2; exit 1; }
-	@echo "› [1/5] Secrets + realm/identity ConfigMaps (base domain $(BASE_DOMAIN))"
+	@echo "› [1/6] Secrets + realm/identity ConfigMaps (base domain $(BASE_DOMAIN))"
 	@NAMESPACE=$(NAMESPACE) BASE_DOMAIN=$(BASE_DOMAIN) bash scripts/identity-bootstrap.sh
-	@echo "› [2/5] CNPG Cluster (Keycloak Postgres)"
+	@echo "› [2/6] CNPG Cluster (Keycloak Postgres)"
 	@kubectl apply -f manifests/keycloak.yaml
 	@kubectl -n $(NAMESPACE) wait --for=condition=Ready --timeout=300s cluster/keycloak-pg
-	@echo "› [3/5] Keycloak $(KEYCLOAK_VERSION)"
+	@echo "› [3/6] Keycloak $(KEYCLOAK_VERSION)"
 	@kubectl -n $(NAMESPACE) rollout status deploy/keycloak --timeout=10m
-	@echo "› [4/5] Sync the live realm's Trino client (import skips an existing realm)"
+	@echo "› [4/7] Heal realm-admin drift: the Secret is the source of truth, not the import"
+	@$(MAKE) --no-print-directory sync-realm-admin
+	@echo "› [4/7] guard: the documented realm admin must still sign in"
+	@$(MAKE) --no-print-directory verify-realm-admin
+	@echo "› [5/7] Realm admins manage users (roles + brute force on a live realm)"
+	@$(MAKE) --no-print-directory sync-realm-user-management
+	@echo "› [6/7] Sync the live realm's Trino client (import skips an existing realm)"
 	@NAMESPACE=$(NAMESPACE) TRINO_PUBLIC_URL=https://trino.$(BASE_DOMAIN) \
 	  bash scripts/keycloak-sync-trino-client.sh
-	@echo "› [5/5] Put the query engine behind the platform identity"
+	@echo "› [7/7] Put the query engine behind the platform identity"
 	@$(MAKE) --no-print-directory trino
 	@echo "Keycloak installed. Issuer: https://id.$(BASE_DOMAIN)/realms/stardelt"
+	@echo "Admin console: https://id.$(BASE_DOMAIN)/admin/stardelt/console/ (sign in as admin, then Users)"
 	@echo "Realm admin password: kubectl -n $(NAMESPACE) get secret stardelt-realm-admin -o jsonpath='{.data.password}' | base64 -d"
+	@echo "  (the install re-applies it: rotate by changing the Secret, then 'make sync-realm-admin')"
 
 # ---------------------------------------------------------------------------
 # Control plane — the stardelt Operator (dev: from the sibling checkout).
@@ -361,6 +387,14 @@ chart-install: _context ## Install/upgrade the umbrella chart as release `starde
 	@helm upgrade --install stardelt chart \
 	  --namespace $(NAMESPACE) --create-namespace \
 	  $(CHART_EXTRA)
+	@# identity.mode=platform ships Keycloak; the same import-time drift applies to
+	@# the chart path, so re-apply the Secret afterwards too (#81), then the
+	@# user-management roles and brute-force settings.
+	@if kubectl -n $(NAMESPACE) get deploy keycloak >/dev/null 2>&1; then \
+	  $(MAKE) --no-print-directory sync-realm-admin; \
+	  $(MAKE) --no-print-directory verify-realm-admin; \
+	  $(MAKE) --no-print-directory sync-realm-user-management; \
+	fi
 	@echo ""
 	@echo "stardelt installed from chart/. Run 'make pf' to open port-forwards."
 
@@ -389,6 +423,14 @@ build-superset-image: ## Build the Superset image (ghcr.io/stardelt/superset:dev
 push-superset-image: ## Push the Superset image to ghcr.io
 	@echo "› pushing $(SUPERSET_IMAGE)"
 	@docker push $(SUPERSET_IMAGE)
+
+build-jupyter-image: ## Build the Jupyter single-user image (ghcr.io/stardelt/jupyter-singleuser:dev)
+	@echo "› building $(JUPYTER_IMAGE)"
+	@docker build -t $(JUPYTER_IMAGE) -f images/jupyter/Dockerfile images/jupyter
+
+push-jupyter-image: ## Push the Jupyter single-user image to ghcr.io
+	@echo "› pushing $(JUPYTER_IMAGE)"
+	@docker push $(JUPYTER_IMAGE)
 
 # ---------------------------------------------------------------------------
 # Port-forwards

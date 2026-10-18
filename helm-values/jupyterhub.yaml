@@ -8,6 +8,12 @@
 # both published by `make install-identity` / `scripts/identity-bootstrap.sh`.
 # Without an IdP the hub still starts but signs nobody in.
 #
+# Single-user pods run stardelt's own image (images/jupyter/Dockerfile) and get
+# the signed-in user's Keycloak token in their environment as `TRINO_TOKEN`
+# (hub.extraConfig `20-notebook-identity`), so the shipped quickstart queries the
+# warehouse as that user. See the README, "Notebooks: the user's own identity,
+# inside the pod".
+#
 # Ephemeral per-user storage, small resources so it fits the cheap single node.
 #
 # The public service is `proxy-public` on port 80 (used by the playground ingress).
@@ -45,6 +51,29 @@ hub:
       _secret = os.environ.get("STARDELT_OIDC_CLIENT_SECRET", "").strip()
       if _secret:
           c.GenericOAuthenticator.client_secret = _secret
+
+    # The signed-in user's own token, inside the spawned notebook. JupyterHub
+    # only keeps the OAuth access token when auth_state is enabled; the hook
+    # copies it into the single-user pod's environment, where the quickstart
+    # reads it (`TRINO_TOKEN`). Nothing is shared or baked into the image, so
+    # Trino sees the hub user, not a service account.
+    #
+    # The token's lifetime is a property of the realm's `jupyterhub` client
+    # (8 h, set by chart/files/keycloak-realm.json and
+    # scripts/keycloak-sync-trino-client.sh), not of this hook: a notebook keeps
+    # it in its environment while the user works, where a 5-minute realm default
+    # would mean 401s minutes into every session.
+    20-notebook-identity: |
+      def _trino_token(spawner, auth_state):
+          token = (auth_state or {}).get("access_token")
+          if token:
+              spawner.environment["TRINO_TOKEN"] = token
+
+      c.Authenticator.enable_auth_state = True
+      c.Spawner.auth_state_hook = _trino_token
+      # A fresh token before every (re)spawn, so a server restarted after the
+      # token aged out starts with the refresh token's new access token.
+      c.OAuthenticator.refresh_pre_spawn = True
 
   config:
     JupyterHub:
@@ -98,10 +127,37 @@ proxy:
       limits:   { cpu: "500m", memory: "256Mi" }
 
 singleuser:
+  # stardelt's image (images/jupyter/Dockerfile): scipy-notebook + trino,
+  # pyspark[connect], pandas, pyarrow, and the warehouse quickstart under
+  # /opt/stardelt/notebooks. Built and published by CI (Image workflow), private
+  # like Superset, so the spawner pulls with the ghcr-creds Secret.
   image:
-    name: quay.io/jupyter/scipy-notebook
-    tag: "2024-10-07"
+    name: ghcr.io/stardelt/jupyter-singleuser
+    # Moving tag on purpose: the image is first published by the merge to main,
+    # so a digest cannot be committed before it exists. Pin
+    # `tag: dev@sha256:…` here when rolling a release — `make pin-images` only
+    # covers Deployments, and spawned pods are not Deployments.
+    tag: "dev"
+    pullSecrets:
+      - name: ghcr-creds
   defaultUrl: /lab
+  # Where the notebook finds the warehouse. Public HTTPS rather than the
+  # in-cluster Service: over plain HTTP Trino only accepts its password
+  # authenticator (http-server.authentication.allow-insecure-over-http), so a
+  # bearer token needs TLS. Issue #80 adds TLS to the coordinator; this can then
+  # become the in-cluster Service over HTTPS.
+  extraEnv:
+    TRINO_URL: https://trino.alpha.dev.stardelt.io:443
+  # Seed the quickstart into the home directory on every spawn, never
+  # overwriting a user's edited copy (`cp -n`). postStart always exits 0: a
+  # failing hook would make kubelet restart the container in a loop.
+  lifecycleHooks:
+    postStart:
+      exec:
+        command:
+          - bash
+          - -c
+          - cp -n /opt/stardelt/notebooks/*.ipynb "$HOME/" || true
   startTimeout: 300
   memory:
     limit: 1G
