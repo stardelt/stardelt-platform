@@ -91,16 +91,19 @@ server:
 
 coordinator:
   # The PKCS12 keystore cert-manager writes into Secret trino-coordinator-tls
-  # (key keystore.p12). Mounted as a single file: the coordinator needs to
-  # present the certificate, not a copy of tls.key. A certificate renewal does
-  # not restart the coordinator on its own — that would kill running queries — so
-  # pick it up with `kubectl -n stardelt rollout restart deploy/trino-coordinator`
+  # (key keystore.p12). The secret is mounted as a directory — a subPath file
+  # mount fails at container start when the image has no /etc/trino/tls yet
+  # ("not a directory" from runc), and the directory mount also lets the kubelet
+  # refresh the certificate after a renewal. Alongside the keystore the mount
+  # carries tls.key, which is the same key material the keystore already holds —
+  # no additional capability inside the pod. A certificate renewal does not
+  # restart the coordinator on its own (that would kill running queries), so pick
+  # it up with `kubectl -n stardelt rollout restart deploy/trino-coordinator`
   # (cert-manager renews 30 days before expiry, so there is no hurry).
   secretMounts:
     - name: trino-tls
       secretName: trino-coordinator-tls
-      path: /etc/trino/tls/keystore.p12
-      subPath: keystore.p12
+      path: /etc/trino/tls
 
 # The service-account password file: `superset:<bcrypt>`, generated on the
 # cluster by scripts/identity-bootstrap.sh (never committed) and mounted by the

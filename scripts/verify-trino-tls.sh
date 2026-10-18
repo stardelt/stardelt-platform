@@ -141,23 +141,51 @@ kubectl -n "$NAMESPACE" create secret generic "$TOKEN_SECRET" --from-file=token=
 TOKEN_VOLUME='[{"name":"ca","secret":{"secretName":"trino-ca","items":[{"key":"tls.crt","path":"ca.crt"}]}},{"name":"token","secret":{"secretName":"trino-tls-verify-token","items":[{"key":"token","path":"token"}]}}]'
 TOKEN_MOUNT='[{"name":"ca","mountPath":"/tls","readOnly":true},{"name":"token","mountPath":"/token","readOnly":true}]'
 
-body="$(run_probe trino-tls-user "
+result="$(run_probe trino-tls-user "
 body=\$(curl -sS --cacert /tls/ca.crt -X POST $HTTPS_URL/v1/statement \
   -H 'X-Trino-User: $TRINO_VERIFY_USER' \
   -H \"Authorization: Bearer \$(cat /token/token)\" \
   -d 'select current_user as who')
-for _ in \$(seq 1 50); do
+# One line per statement page: the rows of a query can be delivered on a page
+# that is not the last one (the final page may carry only the stats), so the
+# caller needs all of them, not just the body the loop ended on.
+printf '%s\n' \"\$body\"
+for _ in \$(seq 1 60); do
   next=\$(printf '%s' \"\$body\" | sed -n 's/.*\"nextUri\":\"\\([^\"]*\\)\".*/\\1/p')
   [ -n \"\$next\" ] || break
   body=\$(curl -sS --cacert /tls/ca.crt \"\$next\")
+  printf '%s\n' \"\$body\"
 done
-echo \"QUERY_BODY=\$body\"
-" "$TOKEN_VOLUME" "$TOKEN_MOUNT" | sed -n 's/^QUERY_BODY=//p')"
-[ -n "$body" ] || fail "no response from the in-cluster TLS endpoint for the user token"
-echo "  query id: $(printf '%s' "$body" | query_id)"
-echo "  rows: $(printf '%s' "$body" | rows)"
-[ -n "$(printf '%s' "$body" | query_id)" ] || fail "the token was refused: $(printf '%s' "$body" | head -c 200)"
-printf '%s' "$body" | rows | grep -q "$TRINO_VERIFY_USER" \
+" "$TOKEN_VOLUME" "$TOKEN_MOUNT" | python3 -c '
+import json, sys
+
+# Pages arrive one JSON object per line; collect ids, rows and the first error
+# from whichever page carried them.
+ids, rows, errors = [], [], []
+for line in sys.stdin:
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        body = json.loads(line)
+    except ValueError:
+        continue
+    if body.get("id") and not ids:
+        ids.append(body["id"])
+    rows.extend(body.get("data") or [])
+    if body.get("error"):
+        errors.append(body["error"].get("message") or json.dumps(body["error"])[:200])
+print(json.dumps({"id": ids[0] if ids else "", "rows": rows, "error": errors[0] if errors else ""}))
+')"
+[ -n "$result" ] || fail "no response from the in-cluster TLS endpoint for the user token"
+query_id="$(printf '%s' "$result" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')"
+rows="$(printf '%s' "$result" | python3 -c 'import sys,json;print(json.load(sys.stdin)["rows"])')"
+error="$(printf '%s' "$result" | python3 -c 'import sys,json;print(json.load(sys.stdin)["error"])')"
+[ -n "$query_id" ] || fail "the token was refused: ${error:-no query id and no error}"
+echo "  query id: $query_id"
+echo "  rows: $rows"
+[ -z "$error" ] || fail "the query failed: $error"
+printf '%s' "$rows" | grep -q "$TRINO_VERIFY_USER" \
   || fail "Trino did not authenticate the token as $TRINO_VERIFY_USER"
 
 echo "verify-trino-tls: 4/4 checks passed"
