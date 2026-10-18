@@ -1,0 +1,46 @@
+# Restore proof: recover the catalog's Postgres from the object store into a
+# namespace of its own, and look for the tables that should be there.
+#
+#   kubectl create namespace stardelt-restore
+#   kubectl -n stardelt get secret stardelt-s3-creds -o json \
+#     | jq 'del(.metadata.namespace,.metadata.uid,.metadata.resourceVersion,
+#               .metadata.creationTimestamp,.metadata.managedFields)' \
+#     | kubectl -n stardelt-restore apply -f -
+#   kubectl -n stardelt-restore apply -f manifests/cnpg-restore-proof.yaml
+#
+# `serverName` matters: it is the folder the source cluster wrote under in the
+# bucket (`lakekeeper-pg/`), and it does not follow the restored cluster's name.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: lakekeeper-pg-restore
+  namespace: stardelt-restore
+spec:
+  instances: 1
+  storage:
+    size: 2Gi
+  bootstrap:
+    recovery:
+      # Latest archived WAL, not the base backup: the stricter claim.
+      source: origin
+  externalClusters:
+    - name: origin
+      barmanObjectStore:
+        destinationPath: s3://backups/
+        serverName: lakekeeper-pg
+        endpointURL: http://seaweedfs-s3.stardelt.svc.cluster.local:8333
+        s3Credentials:
+          accessKeyId:
+            name: stardelt-s3-creds
+            key: access-key
+          secretAccessKey:
+            name: stardelt-s3-creds
+            key: secret-key
+          region:
+            name: stardelt-s3-creds
+            key: region
+        wal:
+          maxParallel: 2
+  resources:
+    requests: { cpu: "50m", memory: "256Mi" }
+    limits:   { cpu: "1",   memory: "512Mi" }
