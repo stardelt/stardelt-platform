@@ -13,7 +13,7 @@ name: Image
 
 on:
   push:
-    branches: [main]
+    branches: [main, feat/spark]
     tags: ["v*"]
     paths:
       - "images/**"
@@ -59,7 +59,7 @@ jobs:
             type=ref,event=branch
             type=ref,event=tag
             type=sha,prefix=sha-,format=short
-            type=raw,value=dev,enable={{is_default_branch}}
+            type=raw,value=dev
 
       - name: Build and push
         id: build
