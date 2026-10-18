@@ -43,7 +43,7 @@ BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 
 .PHONY: _context help deps lint install install-core install-notebooks install-identity install-operator trino upgrade uninstall build-superset-image push-superset-image pf pin pin-images dev-up dev-down dev-dns dev-dns-down
 .PHONY: chart-deps chart-template chart-install
-.PHONY: verify-backups verify-backup-config
+.PHONY: verify-backups verify-backup-config verify-realm-admin sync-realm-admin
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | \
@@ -251,24 +251,43 @@ trino: deps _context ## Install/upgrade Trino, with OAuth2 when a platform IdP i
 # Identity — optional platform IdP (Keycloak, realm `stardelt`).
 # Needs the CNPG operator (install-core). Secrets are generated on first run and
 # never printed; see scripts/identity-bootstrap.sh.
+#
+# The realm-admin guard (#81): `--import-realm` substitutes
+# ${STARDELT_REALM_ADMIN_PASSWORD} once and never again, while Secret
+# stardelt-realm-admin can be regenerated later — the two then disagree and the
+# documented login fails while everything else stays green. sync-realm-admin
+# re-applies the Secret's current value through the master-realm API (idempotent,
+# reaches Keycloak through the Service), and verify-realm-admin proves it with a
+# real password grant. install-identity runs both, in that order.
 # ---------------------------------------------------------------------------
+sync-realm-admin: _context ## Point realm `stardelt`'s admin password at Secret stardelt-realm-admin (idempotent)
+	@NAMESPACE=$(NAMESPACE) bash scripts/sync-realm-admin.sh
+
+verify-realm-admin: _context ## Prove the realm-admin Secret still signs in to realm `stardelt` (password grant, in-cluster)
+	@NAMESPACE=$(NAMESPACE) bash scripts/verify-realm-admin.sh
+
 install-identity: deps _context ## Install the platform IdP (Keycloak) at id.$(BASE_DOMAIN)
 	@kubectl get crd clusters.postgresql.cnpg.io >/dev/null 2>&1 || { \
 	  echo "CloudNative-PG CRDs not found — run 'make install-core' first" >&2; exit 1; }
-	@echo "› [1/5] Secrets + realm/identity ConfigMaps (base domain $(BASE_DOMAIN))"
+	@echo "› [1/6] Secrets + realm/identity ConfigMaps (base domain $(BASE_DOMAIN))"
 	@NAMESPACE=$(NAMESPACE) BASE_DOMAIN=$(BASE_DOMAIN) bash scripts/identity-bootstrap.sh
-	@echo "› [2/5] CNPG Cluster (Keycloak Postgres)"
+	@echo "› [2/6] CNPG Cluster (Keycloak Postgres)"
 	@kubectl apply -f manifests/keycloak.yaml
 	@kubectl -n $(NAMESPACE) wait --for=condition=Ready --timeout=300s cluster/keycloak-pg
-	@echo "› [3/5] Keycloak $(KEYCLOAK_VERSION)"
+	@echo "› [3/6] Keycloak $(KEYCLOAK_VERSION)"
 	@kubectl -n $(NAMESPACE) rollout status deploy/keycloak --timeout=10m
-	@echo "› [4/5] Sync the live realm's Trino client (import skips an existing realm)"
+	@echo "› [4/6] Heal realm-admin drift: the Secret is the source of truth, not the import"
+	@$(MAKE) --no-print-directory sync-realm-admin
+	@echo "› [4/6] guard: the documented realm admin must still sign in"
+	@$(MAKE) --no-print-directory verify-realm-admin
+	@echo "› [5/6] Sync the live realm's Trino client (import skips an existing realm)"
 	@NAMESPACE=$(NAMESPACE) TRINO_PUBLIC_URL=https://trino.$(BASE_DOMAIN) \
 	  bash scripts/keycloak-sync-trino-client.sh
-	@echo "› [5/5] Put the query engine behind the platform identity"
+	@echo "› [6/6] Put the query engine behind the platform identity"
 	@$(MAKE) --no-print-directory trino
 	@echo "Keycloak installed. Issuer: https://id.$(BASE_DOMAIN)/realms/stardelt"
 	@echo "Realm admin password: kubectl -n $(NAMESPACE) get secret stardelt-realm-admin -o jsonpath='{.data.password}' | base64 -d"
+	@echo "  (the install re-applies it: rotate by changing the Secret, then 'make sync-realm-admin')"
 
 # ---------------------------------------------------------------------------
 # Control plane — the stardelt Operator (dev: from the sibling checkout).
@@ -334,6 +353,12 @@ chart-install: _context ## Install/upgrade the umbrella chart as release `starde
 	@helm upgrade --install stardelt chart \
 	  --namespace $(NAMESPACE) --create-namespace \
 	  $(CHART_EXTRA)
+	@# identity.mode=platform ships Keycloak; the same import-time drift applies to
+	@# the chart path, so re-apply the Secret afterwards too (#81).
+	@if kubectl -n $(NAMESPACE) get deploy keycloak >/dev/null 2>&1; then \
+	  $(MAKE) --no-print-directory sync-realm-admin; \
+	  $(MAKE) --no-print-directory verify-realm-admin; \
+	fi
 	@echo ""
 	@echo "stardelt installed from chart/. Run 'make pf' to open port-forwards."
 

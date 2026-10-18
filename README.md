@@ -321,9 +321,39 @@ The realm import (`chart/files/keycloak-realm.json`, shared by both paths) defin
 `scripts/identity-bootstrap.sh`; `randAlphaNum` + `lookup` in the chart) into the Secrets
 `keycloak-admin`, `stardelt-realm-admin` and `stardelt-oidc-clients` (one key per client). They are
 never printed, the realm ConfigMap only holds `${ENV}` placeholders, and re-runs keep existing
-values. `make uninstall` (and `helm uninstall`) leave the Secrets in place; delete them to rotate
-before a fresh install. The realm is imported only when it does not exist yet, so later edits to the
-realm file are not applied to a running realm.
+values. `make uninstall` (and `helm uninstall`) leave the Secrets in place. The realm is imported
+only when it does not exist yet, so later edits to the realm file are not applied to a running
+realm.
+
+### The realm-admin Secret is the source of truth
+
+The documented way into realm `stardelt` is the generated Secret:
+
+```sh
+kubectl -n stardelt get secret stardelt-realm-admin -o jsonpath='{.data.password}' | base64 -d
+kubectl -n stardelt port-forward svc/keycloak 8080:8080   # /admin is deliberately not published (#53)
+```
+
+`--import-realm` substitutes `${STARDELT_REALM_ADMIN_PASSWORD}` **once**, on the first start that
+creates the realm, and never looks at it again. Regenerating the Secret — deleting it to rotate, or
+re-running `scripts/identity-bootstrap.sh` after a re-provision — therefore used to leave the realm
+on the old password: the command above failed with **"Invalid username or password"** while
+`analyst` and every app sign-in stayed healthy (#81). The installer now heals that drift instead of
+leaving it for a failed login to reveal:
+
+```sh
+make sync-realm-admin     # re-apply the Secret's current value through the master-realm API
+make verify-realm-admin   # real password grant as the realm admin, from inside the cluster
+```
+
+`make install-identity` runs both after Keycloak is up (and `make chart-install` does whenever the
+release ships Keycloak), so the Secret wins on every install and rotation is a supported operation:
+change `stardelt-realm-admin` (or delete it and re-run `scripts/identity-bootstrap.sh`), then run
+`make sync-realm-admin` — or just re-run the installer. `sync-realm-admin` is idempotent: it probes
+the existing password first and does nothing when the Secret already works. The probe and
+`verify-realm-admin` both use client `admin-cli`, Keycloak's per-realm default that allows direct
+access grants (the app clients genuinely need them off), and reach Keycloak through `svc/keycloak`
+— never the public `id.` host. Neither script prints a secret.
 
 Sizing (single node): Keycloak 100m / 512Mi request, 1 CPU / 1Gi limit, one replica,
 `KC_CACHE=local`; its Postgres 50m / 128Mi request, 256Mi limit, 1Gi volume. The Keycloak image is
@@ -347,7 +377,9 @@ login responses outgrow nginx's default 4k header buffer.
 | `verify-backup-config` | Post-apply guard (also run by both install targets): the live `lakekeeper-pg` Cluster must still declare `spec.backup`, or the command fails loudly |
 | `verify-backups` | Full WAL check: `spec.backup` + the newest object in `s3://backups/lakekeeper-pg/wals/` is younger than `MAX_AGE_SECONDS` (900) + it matches `pg_stat_archiver.last_archived_wal`. `SKIP_OBJECTS=1` skips the S3 half |
 | `install-notebooks` | JupyterHub (notebooks) |
-| `install-identity` | Platform IdP: Keycloak + CNPG Postgres + realm `stardelt`, then the live-realm Trino client and the Trino OAuth2 overlay (`BASE_DOMAIN=…`, see [Identity](#identity-optional-platform-idp)) |
+| `install-identity` | Platform IdP: Keycloak + CNPG Postgres + realm `stardelt`, then the realm-admin sync + guard, the live-realm Trino client and the Trino OAuth2 overlay (`BASE_DOMAIN=…`, see [Identity](#identity-optional-platform-idp)) |
+| `sync-realm-admin` | Point realm `stardelt`'s `admin` at Secret `stardelt-realm-admin` through the master-realm API; idempotent, runs as part of `install-identity`/`chart-install` (#81) |
+| `verify-realm-admin` | Prove the realm-admin Secret still signs in — a real password grant as that user through `svc/keycloak`; fails with the fix in the message |
 | `trino` | Install/upgrade Trino; adds `helm-values/trino-identity.yaml` (Keycloak OAuth2 + service-account password) when `stardelt-identity` exists |
 | `install-operator` | Install the stardelt Operator from `../stardelt-operator/chart` (dev path) |
 | `pin` | Pin a deployment to the newest published digest **and write it back into `manifests/nova-deployment.yaml`** (`make pin APP=nova`), so a later `kubectl apply` cannot put the mutable tag back |
@@ -403,7 +435,9 @@ scripts/
   lint.sh               bash -n + ShellCheck the shell scripts (make lint)
   port-forwards.sh      Background port-forwards to all services
   protect-branches.sh   Apply `main` branch protection in all five stardelt repos
+  sync-realm-admin.sh   Re-apply Secret stardelt-realm-admin to the live realm's admin (import skips an existing realm)
   verify-backups.sh     Backup guards: post-apply spec.backup assert + bucket-vs-database WAL check
+  verify-realm-admin.sh Assert the realm-admin Secret still signs in to realm `stardelt`
   verify-trino-auth.sh  Assert Trino refuses anonymous SQL and accepts user tokens + the service account
   helm-plugins/
     stardelt-dedupe/    Helm v4 post-renderer: deduplicates env lists
