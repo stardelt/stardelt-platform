@@ -40,6 +40,8 @@ cp manifests/s3-credentials.example.yaml manifests/s3-credentials.yaml
 kubectl apply -f manifests/s3-credentials.yaml
 ```
 
+`make install-core` creates the dev Secret only when no `stardelt-s3-creds` Secret exists, so a Secret applied beforehand is kept.
+
 ---
 
 ## Quickstart
