@@ -23,7 +23,12 @@ volume:
     - name: data
       type: persistentVolumeClaim
       size: 20Gi
-      maxVolumes: 0
+      # Volume slots. The chart's default (0 → auto-configure, 7 on Linux) is a trap
+      # on a small install: once the slots are used up, the master cannot create a
+      # volume for a *new* collection, and writes to a new bucket block forever —
+      # the client sees a hang, the master log says "failed to find writable volumes
+      # … Not enough data nodes found", and buckets created earlier keep working.
+      maxVolumes: 100
   resources:
     requests: { cpu: "200m", memory: "512Mi" }
     limits:   { cpu: "2",    memory: "2Gi"  }
