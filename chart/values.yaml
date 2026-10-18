@@ -837,20 +837,19 @@ airflow:
           key: region
 
 jupyterhub:
-  # Embedding in Nova. JupyterHub 5 refuses framing by default
-  # (`Content-Security-Policy: frame-ancestors 'none'`), so Nova's Notebooks page shows a
-  # notice quoting that header instead of a blank frame. To let Nova embed the hub, allow
-  # exactly its origin (values files are not templated, so write your domain out):
+  # Embedding in Nova. Nova's Notebooks page frames the hub, and the hub sends a
+  # signed-in person on to their own single-user server — the app that executes
+  # code and refuses framing hardest. Both get the same narrow exception: Nova's
+  # own origin, read from the identity contract (`stardelt-identity.publicUrl`)
+  # and never written out here; both keep their secure defaults (`frame-ancestors
+  # 'none'`) when identity.mode is none. The hub-side headers and the cookies
+  # that make a framed session work live in the `15-framing` entry below, which
+  # also hands the origin to each spawned server (the server takes its
+  # Content-Security-Policy from the image's jupyter_server_config.py).
   #
-  #   hub:
-  #     config:
-  #       JupyterHub:
-  #         tornado_settings:
-  #           headers:
-  #             Content-Security-Policy: "frame-ancestors 'self' https://<baseDomain>; report-uri /hub/security/csp-report"
-  #
-  # A notebook is not a dashboard: whoever controls the embedding origin can clickjack
-  # the hub, which is why this is an explicit value rather than a default.
+  # A notebook is not a dashboard: whoever controls the embedding origin can
+  # clickjack the hub and the server, which is why this is an explicit value
+  # rather than a default — and why it is exactly one origin, never `*`.
   # Multi-user notebooks (chart: jupyterhub 4.4.3, appVersion 5.5.3).
   #
   # Sign-in is OIDC against the platform IdP — the realm's `jupyterhub` client
@@ -877,6 +876,15 @@ jupyterhub:
           configMapKeyRef:
             name: stardelt-identity
             key: issuerUrl
+            optional: true
+      # Nova's own origin (`https://<nova host>`), the one origin allowed to
+      # frame the hub and the single-user servers. From the identity contract,
+      # never from this file.
+      STARDELT_NOVA_URL:
+        valueFrom:
+          configMapKeyRef:
+            name: stardelt-identity
+            key: publicUrl
             optional: true
       STARDELT_OIDC_CLIENT_SECRET:
         valueFrom:
@@ -911,6 +919,41 @@ jupyterhub:
         _secret = os.environ.get("STARDELT_OIDC_CLIENT_SECRET", "").strip()
         if _secret:
             c.GenericOAuthenticator.client_secret = _secret
+
+      # Framing + frame-compatible cookies, for the hub *and* for every spawned
+      # server. The origin is the identity contract's `publicUrl`; with no
+      # identity it is absent and the hub keeps `frame-ancestors 'none'`.
+      #
+      # The server half: JupyterHub does not set the server's headers, so the
+      # origin goes into the spawn environment and the image's
+      # jupyter_server_config.py turns it into the server's CSP.
+      #
+      # The cookie half: a frame is a third-party context for the app inside it;
+      # `SameSite=None; Secure` is what browsers then require. The hub reads its
+      # options from `tornado_settings`, the server's come from the spawner as
+      # JUPYTERHUB_COOKIE_OPTIONS.
+      15-framing: |
+        import os
+
+        _nova = os.environ.get("STARDELT_NOVA_URL", "").rstrip("/")
+        if _nova:
+            c.JupyterHub.tornado_settings = {
+                **c.JupyterHub.tornado_settings,
+                "headers": {
+                    **c.JupyterHub.tornado_settings.get("headers", {}),
+                    "Content-Security-Policy": (
+                        f"frame-ancestors 'self' {_nova}; "
+                        "report-uri /hub/security/csp-report"
+                    ),
+                },
+            }
+            c.KubeSpawner.environment = {
+                **(c.KubeSpawner.environment or {}),
+                "STARDELT_NOVA_ORIGIN": _nova,
+            }
+            _cookies = {"SameSite": "None", "Secure": True}
+            c.JupyterHub.tornado_settings["cookie_options"] = _cookies
+            c.Spawner.cookie_options = _cookies
 
       # The signed-in user's own token, inside the spawned notebook: the
       # access token JupyterHub keeps (auth_state) is copied into the pod's
@@ -1018,3 +1061,23 @@ jupyterhub:
     # and, to pick a class, `dynamic.storageClass` (empty = the default StorageClass).
     storage:
       type: none
+    # The chart's default denies egress to every private address
+    # (`egressAllowRules.privateIPs: false`), which is right: a user pod has no
+    # business reaching arbitrary cluster-internal services. One private
+    # destination belongs to the notebook experience — Spark Connect, the second
+    # engine over the same Iceberg catalog (`manifests/spark.yaml`, ClusterIP-only
+    # because Spark Connect has no authentication of its own). The grant is by
+    # pod label and port, so it follows the Service and opens nothing else;
+    # `privateIPs: true` would open Trino, Lakekeeper, S3 and the Kubernetes API
+    # to every user pod for the same feature. The umbrella chart does not ship
+    # Spark (apply `manifests/spark.yaml` or enable it separately); when the
+    # pods are absent the rule simply matches nothing.
+    networkPolicy:
+      egress:
+        - to:
+            - podSelector:
+                matchLabels:
+                  app.kubernetes.io/name: spark-connect
+          ports:
+            - port: 15002
+              protocol: TCP

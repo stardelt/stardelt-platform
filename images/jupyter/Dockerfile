@@ -16,6 +16,11 @@
 # signed-in user's Keycloak access token into the pod as `TRINO_TOKEN` at spawn
 # (helm-values/jupyterhub.yaml, `20-notebook-identity`); `TRINO_URL` comes from
 # the same chart values.
+#
+# Framing. Nova frames the notebook, and a single-user server executes
+# arbitrary code, so Jupyter Server's `frame-ancestors` list is a deliberate
+# choice: exactly `'self'` plus Nova's origin, which the hub passes at spawn
+# from the identity contract. The config file documents the mechanism.
 FROM quay.io/jupyter/scipy-notebook:2024-10-07
 
 USER ${NB_UID}
@@ -34,3 +39,7 @@ RUN python3 -m pip install --no-cache-dir --upgrade-strategy only-if-needed \
 # notebooks into the user's home (`cp -n`), so edits survive a restart and a
 # newer image replaces the source without touching the user's copy.
 COPY --chown=${NB_UID}:${NB_GID} notebooks/ /opt/stardelt/notebooks/
+
+# The single-user server's framing policy (Nova's origin, passed at spawn) —
+# see the file's docstring for why this exists and what happens without it.
+COPY jupyter_server_config.py /usr/local/etc/jupyter/jupyter_server_config.py
