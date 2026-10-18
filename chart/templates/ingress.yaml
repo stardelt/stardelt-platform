@@ -7,6 +7,10 @@
   Components without a sign-in of their own (trino, lakekeeper, superset,
   airflow, jupyterhub) render only when named in `ingress.exposeUnauthenticated`.
 
+  Paths default to `/`; Keycloak publishes only the realm's public surface
+  (`/realms/stardelt`, `/resources`, `/robots.txt`), so its master-realm admin
+  console is never reachable through this host.
+
   Host resolution, per service: `ingress.hosts.<name>` wins; otherwise
   `<sub>.<platform.baseDomain>`; otherwise nothing is rendered for that service
   (a reachable-only-by-Service setup stays valid).
@@ -24,7 +28,7 @@
       (dict "name" "superset"   "service" "superset"           "port" 8088 "sub" "superset"   "enabled" .Values.superset.enabled)
       (dict "name" "airflow"    "service" "airflow-api-server" "port" 8080 "sub" "airflow"    "enabled" .Values.airflow.enabled)
       (dict "name" "jupyterhub" "service" "proxy-public"       "port" 80   "sub" "jupyter"    "enabled" .Values.jupyterhub.enabled)
-      (dict "name" "keycloak"   "service" "keycloak"           "port" 8080 "sub" "id"         "enabled" (eq (include "stardelt.identityMode" .) "platform"))
+      (dict "name" "keycloak"   "service" "keycloak"           "port" 8080 "sub" "id"         "enabled" (eq (include "stardelt.identityMode" .) "platform") "paths" (list "/realms/stardelt" "/resources" "/robots.txt"))
 }}
 {{- range $services }}
 {{- if and .enabled (or (not (has .name $unauthenticated)) (has .name $exposed)) }}
@@ -71,13 +75,16 @@ spec:
     - host: {{ $host | quote }}
       http:
         paths:
-          - path: /
+          {{- $service := . }}
+          {{- range (.paths | default (list "/")) }}
+          - path: {{ . | quote }}
             pathType: Prefix
             backend:
               service:
-                name: {{ .service }}
+                name: {{ $service.service }}
                 port:
-                  number: {{ .port }}
+                  number: {{ $service.port }}
+          {{- end }}
 {{- end }}
 {{- end }}
 {{- end }}
