@@ -27,4 +27,19 @@ data:
   issuerUrl: {{ include "stardelt.issuerUrl" . | quote }}
   groupClaim: {{ .Values.identity.groupClaim | quote }}
   adminGroup: {{ .Values.identity.adminGroup | quote }}
+---
+# Signs Nova's session cookie. Nova refuses to start below 32 bytes, so this is
+# generated rather than left to a human to invent; it is kept across upgrades and
+# uninstalls (like the other identity secrets), because rotating it logs everyone
+# out.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Values.nova.auth.sessionSecret.name }}
+  namespace: {{ .Release.Namespace }}
+  labels: { app.kubernetes.io/part-of: stardelt }
+  annotations: { helm.sh/resource-policy: keep }
+type: Opaque
+data:
+  {{ .Values.nova.auth.sessionSecret.key }}: {{ include "stardelt.secretValue" (list . .Values.nova.auth.sessionSecret.name .Values.nova.auth.sessionSecret.key) | quote }}
 {{- end }}

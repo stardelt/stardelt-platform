@@ -74,6 +74,48 @@ spec:
               value: {{ .Values.nova.warehouseName | quote }}
             - name: NOVA_DEV_USER
               value: {{ .Values.nova.devUser | quote }}
+            {{- $authMode := .Values.nova.auth.mode | default "dev" }}
+            {{- if not (has $authMode (list "dev" "oidc")) }}
+            {{- fail (printf "nova.auth.mode must be dev or oidc, got %q" $authMode) }}
+            {{- end }}
+            {{- if eq $authMode "oidc" }}
+            {{- $issuer := include "stardelt.issuerUrl" . }}
+            {{- if or (eq (include "stardelt.identityMode" .) "none") (not $issuer) }}
+            {{- fail "nova.auth.mode=oidc needs an identity provider: set identity.mode=platform (deploys Keycloak) or identity.mode=external with identity.issuerUrl — otherwise Nova cannot validate a single token" }}
+            {{- end }}
+            {{- $publicUrl := .Values.nova.auth.publicUrl }}
+            {{- if not $publicUrl }}
+            {{- $publicUrl = printf "https://%s" (include "stardelt.appHost" (list . "nova" "")) }}
+            {{- end }}
+            - name: NOVA_AUTH_MODE
+              value: "oidc"
+            # Redirect URI is <publicUrl>/api/auth/callback — register it at the IdP.
+            - name: NOVA_PUBLIC_URL
+              value: {{ $publicUrl | quote }}
+            - name: NOVA_OIDC_ISSUER
+              value: {{ $issuer | quote }}
+            - name: NOVA_OIDC_CLIENT_ID
+              value: {{ .Values.nova.auth.clientId | quote }}
+            - name: NOVA_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.nova.auth.clientSecret.name }}
+                  key: {{ .Values.nova.auth.clientSecret.key }}
+            - name: NOVA_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.nova.auth.sessionSecret.name }}
+                  key: {{ .Values.nova.auth.sessionSecret.key }}
+            - name: NOVA_OIDC_SCOPES
+              value: {{ .Values.nova.auth.scopes | quote }}
+            - name: NOVA_OIDC_GROUP_CLAIM
+              value: {{ .Values.identity.groupClaim | quote }}
+            - name: NOVA_OIDC_ADMIN_GROUP
+              value: {{ .Values.identity.adminGroup | quote }}
+            {{- else }}
+            - name: NOVA_AUTH_MODE
+              value: "dev"
+            {{- end }}
             # Namespace whose workloads Nova reports (downward API).
             - name: POD_NAMESPACE
               valueFrom:

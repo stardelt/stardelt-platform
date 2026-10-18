@@ -58,6 +58,8 @@ kubectl get namespace "$NAMESPACE" >/dev/null 2>&1 || kubectl create namespace "
 ensure_secret keycloak-admin        username=admin password=@rand
 ensure_secret stardelt-realm-admin  username=admin password=@rand
 ensure_secret stardelt-oidc-clients nova=@rand lakekeeper=@rand superset=@rand airflow=@rand jupyterhub=@rand
+# Signs Nova's session cookie; Nova refuses to start with less than 32 bytes.
+ensure_secret stardelt-nova-session session=@rand
 
 # Host layout matches dev/playground/ingress.yaml and the chart's ingress
 # defaults: Nova on the base domain itself, every other app on <sub>.<base>.
