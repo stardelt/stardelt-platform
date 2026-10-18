@@ -1,0 +1,238 @@
+# Spark — heavy compute over the same Iceberg tables Trino reads
+# (master spec §5 plug matrix #14, P2).
+#
+# Shape: one Deployment runs the Spark Connect server as a long-running driver
+# with Kubernetes as the cluster manager. Executors are pods the driver creates
+# on demand and releases when a query is done (dynamic allocation), so an idle
+# platform pays for the driver only — not for a second scheduler and a worker
+# JVM that a single-node cluster cannot use for anything.
+#
+# Why not the Apache Spark Kubernetes Operator (yet): it is the right controller
+# once several Spark applications share a cluster, and it is where the stardelt
+# operator's Workspace/Pipeline reconciliation will point. On this 16 GB shared
+# node its controller alone requests 2 GiB by default, permanently, to manage a
+# single long-running app. The CRD path is the explicit follow-up (see README).
+#
+# Why not a standalone master + worker: on one node they add two permanent JVMs
+# and a second scheduler without adding isolation. Kubernetes already schedules,
+# and every executor pod carries its own resource envelope.
+#
+# No Ingress, by design: Spark Connect has no built-in authentication
+# (https://spark.apache.org/docs/4.1.3/spark-connect-overview.html#client-application-authentication),
+# so it stays ClusterIP-only. Notebooks, Nova and scheduled jobs reach
+#   sc://spark-connect.stardelt.svc.cluster.local:15002
+# The same catalog config Trino uses is in the ConfigMap below.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spark-connect
+  namespace: stardelt
+  labels: { app.kubernetes.io/name: spark-connect, app.kubernetes.io/part-of: stardelt }
+---
+# The driver creates/deletes executor pods through the Kubernetes scheduler
+# backend, so it needs exactly that: manage pods in its own namespace. Services
+# are for the driver endpoint if this ever moves to cluster mode; configmaps for
+# Spark's own cluster-mode resources.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: spark-connect
+  namespace: stardelt
+  labels: { app.kubernetes.io/name: spark-connect, app.kubernetes.io/part-of: stardelt }
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete", "deletecollection"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "create", "update", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: spark-connect
+  namespace: stardelt
+  labels: { app.kubernetes.io/name: spark-connect, app.kubernetes.io/part-of: stardelt }
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: spark-connect
+subjects:
+  - kind: ServiceAccount
+    name: spark-connect
+    namespace: stardelt
+---
+# The Spark configuration. Executors inherit it from the driver; only the
+# driver's own address (spark.driver.host) is added at runtime by the image's
+# entrypoint, because it is the pod IP.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spark-connect-config
+  namespace: stardelt
+  labels: { app.kubernetes.io/name: spark-connect, app.kubernetes.io/part-of: stardelt }
+data:
+  spark-defaults.conf: |
+    # --- Kubernetes as the cluster manager ---------------------------------
+    spark.master                                            k8s://https://kubernetes.default.svc
+    spark.kubernetes.namespace                              stardelt
+    # Executors are built from the same image as the driver: Spark 4.1 plus the
+    # Iceberg runtime and AWS bundle (images/spark/Dockerfile).
+    # Single space before the digest: the pinned reference is 136 characters,
+    # just inside the 140 the YAML lint allows.
+    spark.kubernetes.container.image ghcr.io/stardelt/spark:dev@sha256:2bfe7b6a5c2f8277cedd067a8e773464353b31012d55d00457256651afa83f78
+    spark.kubernetes.container.image.pullPolicy             IfNotPresent
+    spark.kubernetes.container.image.pullSecrets            ghcr-creds
+    spark.kubernetes.authenticate.executor.serviceAccountName spark-connect
+    spark.kubernetes.executor.podNamePrefix                 stardelt-spark
+    # S3 credentials reach every executor by Secret reference, never through a
+    # config file. S3FileIO's default credentials chain reads these variables.
+    spark.kubernetes.executor.secretKeyRef.AWS_ACCESS_KEY_ID     stardelt-s3-creds:access-key
+    spark.kubernetes.executor.secretKeyRef.AWS_SECRET_ACCESS_KEY stardelt-s3-creds:secret-key
+
+    # --- Sizing on the shared 16 GB node ------------------------------------
+    # Driver: 1g heap, 2 GiB container limit (README has the budget table).
+    # Executors: 1 core + 1g heap + 384m overhead each, at most two at a time,
+    # scaled to zero when idle.
+    spark.driver.memory                                     1g
+    spark.executor.memory                                   1g
+    spark.executor.memoryOverhead                           384m
+    spark.executor.cores                                    1
+    spark.dynamicAllocation.enabled                         true
+    spark.dynamicAllocation.shuffleTracking.enabled         true
+    spark.dynamicAllocation.minExecutors                    0
+    spark.dynamicAllocation.initialExecutors                0
+    spark.dynamicAllocation.maxExecutors                    2
+    spark.dynamicAllocation.executorIdleTimeout             60s
+    # Shuffle tracking (there is no external shuffle service) keeps an executor
+    # until its shuffle data is no longer needed — by default *forever*, so one
+    # GROUP BY would hold ~0.7 GiB on this node for the life of the driver.
+    # Expire it: recomputing a small shuffle is cheaper than a resident executor.
+    spark.dynamicAllocation.shuffleTracking.timeout         180s
+    # Small cluster, small tables: Spark's 200-partition default would spend
+    # more time scheduling than scanning.
+    spark.sql.shuffle.partitions                            8
+    spark.ui.enabled                                        false
+
+    # --- Spark Connect endpoint --------------------------------------------
+    spark.connect.grpc.binding.address                      0.0.0.0
+    spark.connect.grpc.binding.port                         15002
+
+    # --- Iceberg: the same catalog Trino reads -----------------------------
+    # Property names follow Iceberg's SparkCatalog (REST) + S3FileIO. The
+    # endpoint and credentials mirror helm-values/trino.yaml; Lakekeeper runs
+    # with authz=allowall and without vended credentials, so Spark signs its
+    # own S3 requests with the Secret above.
+    spark.sql.extensions                                    org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
+    spark.sql.catalog.warehouse                             org.apache.iceberg.spark.SparkCatalog
+    spark.sql.catalog.warehouse.type                        rest
+    spark.sql.catalog.warehouse.uri                         http://lakekeeper.stardelt.svc.cluster.local:8181/catalog
+    spark.sql.catalog.warehouse.warehouse                   warehouse
+    spark.sql.catalog.warehouse.io-impl                     org.apache.iceberg.aws.s3.S3FileIO
+    spark.sql.catalog.warehouse.s3.endpoint                 http://seaweedfs-s3.stardelt.svc.cluster.local:8333
+    spark.sql.catalog.warehouse.s3.region                   us-east-1
+    spark.sql.catalog.warehouse.s3.path-style-access        true
+    spark.sql.defaultCatalog                                warehouse
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spark-connect
+  namespace: stardelt
+  labels: { app.kubernetes.io/name: spark-connect, app.kubernetes.io/part-of: stardelt }
+spec:
+  replicas: 1
+  # Sessions live in this driver; two of them would also share the executor
+  # pod-name prefix. Replace, never surge.
+  strategy:
+    type: Recreate
+  revisionHistoryLimit: 2
+  selector:
+    matchLabels: { app.kubernetes.io/name: spark-connect }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: spark-connect, app.kubernetes.io/part-of: stardelt }
+    spec:
+      serviceAccountName: spark-connect
+      imagePullSecrets:
+        - name: ghcr-creds
+      # Let the driver delete its executor pods on SIGTERM before the kubelet
+      # gives up on the container.
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 185
+        fsGroup: 185
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: spark-connect
+          image: ghcr.io/stardelt/spark:dev@sha256:2bfe7b6a5c2f8277cedd067a8e773464353b31012d55d00457256651afa83f78
+          imagePullPolicy: IfNotPresent
+          command: ["/opt/spark/bin/stardelt-connect-server"]
+          env:
+            # The downward API is the only place the driver's pod address is
+            # known; the entrypoint turns it into spark.driver.host.
+            - name: POD_IP
+              valueFrom:
+                fieldRef: { fieldPath: status.podIP }
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef: { name: stardelt-s3-creds, key: access-key }
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: { name: stardelt-s3-creds, key: secret-key }
+          ports:
+            - name: connect
+              containerPort: 15002
+              protocol: TCP
+          readinessProbe:
+            tcpSocket: { port: connect }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: { port: connect }
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            failureThreshold: 6
+          resources:
+            requests: { cpu: "250m", memory: "1Gi" }
+            limits: { cpu: "1", memory: "2Gi" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - name: spark-defaults
+              mountPath: /opt/spark/conf/spark-defaults.conf
+              subPath: spark-defaults.conf
+              readOnly: true
+            # Spark writes staging files and the local dirs here; keep them off
+            # the node's overlay and inside the container's writable layer.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: spark-defaults
+          configMap:
+            name: spark-connect-config
+        - name: tmp
+          emptyDir: {}
+---
+# ClusterIP only. No Ingress: Spark Connect has no authentication of its own,
+# and this endpoint is reached by in-cluster clients (notebooks, Nova jobs).
+apiVersion: v1
+kind: Service
+metadata:
+  name: spark-connect
+  namespace: stardelt
+  labels: { app.kubernetes.io/name: spark-connect, app.kubernetes.io/part-of: stardelt }
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: spark-connect
+  ports:
+    - name: connect
+      port: 15002
+      targetPort: connect
+      protocol: TCP

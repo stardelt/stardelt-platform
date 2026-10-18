@@ -42,7 +42,7 @@ CHART_EXTRA ?=
 # client redirect URIs on the app subdomains. Same default as `dev-dns`.
 BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 
-.PHONY: _context help deps lint install install-core install-notebooks install-identity install-operator trino upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-up dev-down dev-dns dev-dns-down
+.PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator trino upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-up dev-down dev-dns dev-dns-down
 .PHONY: chart-deps chart-template chart-install
 .PHONY: verify-backups verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
 
@@ -225,6 +225,32 @@ install-notebooks: deps _context _helm-repos ## Install JupyterHub (notebooks)
 	@echo "JupyterHub installed. Public service: proxy-public:80."
 
 # ---------------------------------------------------------------------------
+# Spark — heavy compute over the same Iceberg catalog (manifests/spark.yaml).
+#
+# A Deployment, not a Helm release: there is no upstream chart for a Spark
+# Connect *server* (the Apache Spark Kubernetes Operator is a controller for
+# many SparkApplications, and its own overhead is not worth it for one app on
+# the dev node — see the header of manifests/spark.yaml).
+#
+# The ConfigMap holds the whole Spark configuration. `kubectl apply` updates it
+# without touching the running driver, so the target restarts the driver only
+# when the rendered config actually changed; an unchanged re-run leaves open
+# sessions alone.
+# ---------------------------------------------------------------------------
+install-spark: deps _context ## Install the Spark Connect endpoint (Iceberg on the Lakekeeper catalog)
+	@old=$$(kubectl -n $(NAMESPACE) get configmap spark-connect-config \
+	  -o jsonpath='{.data.spark-defaults\.conf}' 2>/dev/null | sha256sum | cut -d' ' -f1 || true); \
+	kubectl apply -f manifests/spark.yaml; \
+	new=$$(kubectl -n $(NAMESPACE) get configmap spark-connect-config \
+	  -o jsonpath='{.data.spark-defaults\.conf}' | sha256sum | cut -d' ' -f1); \
+	if [ "$$old" != "$$new" ]; then \
+	  echo "› spark-defaults.conf changed — restarting the connect server"; \
+	  kubectl -n $(NAMESPACE) rollout restart deploy/spark-connect; \
+	fi
+	@kubectl -n $(NAMESPACE) rollout status deploy/spark-connect --timeout=5m
+	@echo "Spark Connect ready: sc://spark-connect.$(NAMESPACE).svc.cluster.local:15002 (in-cluster only)"
+
+# ---------------------------------------------------------------------------
 # Trino — the query engine, and the one component whose authentication state
 # depends on whether the platform has an IdP: with `stardelt-identity` present
 # (make install-identity / the umbrella chart) every statement needs a Keycloak
@@ -318,6 +344,7 @@ upgrade: install ## Upgrade all components (same as install)
 # ---------------------------------------------------------------------------
 uninstall: _context ## Uninstall all stardelt components (reverse order)
 	@echo "› removing manifests"
+	@kubectl delete -f manifests/spark.yaml                   --ignore-not-found
 	@kubectl delete -f manifests/nova-deployment.yaml        --ignore-not-found
 	@kubectl delete -f manifests/keycloak.yaml               --ignore-not-found
 	@kubectl -n $(NAMESPACE) delete configmap keycloak-realm keycloak-env stardelt-identity --ignore-not-found
@@ -384,6 +411,10 @@ pin-images: _context ## Pin every stardelt image this cluster runs to its publis
 	      echo "  › could not pin $$app — leaving the tag in place"; \
 	  fi; \
 	done
+	@if kubectl -n $(NAMESPACE) get deploy spark-connect >/dev/null 2>&1; then \
+	  APP=spark DEPLOY=spark-connect NS=$(NAMESPACE) bash scripts/pin-image.sh || \
+	    echo "  › could not pin spark — leaving the tag in place"; \
+	fi
 
 build-superset-image: ## Build the Superset image (ghcr.io/stardelt/superset:dev)
 	@echo "› building $(SUPERSET_IMAGE)"

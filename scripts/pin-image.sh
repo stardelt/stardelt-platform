@@ -84,20 +84,42 @@ fi
 # stale cached layer can serve an older image (that happened four times in one day, twice
 # during an apply that looked like a no-op). The reference keeps the tag for readability
 # and adds the digest the kubelet actually resolves: `:dev@sha256:…`.
-manifest="${MANIFEST:-manifests/nova-deployment.yaml}"
-if [ "$APP" = "nova" ] && [ -f "$manifest" ] && grep -qE "^\s+image: $REGISTRY/$REPO:" "$manifest"; then
-  python3 - "$manifest" "$REGISTRY/$REPO" "$digest" <<'PYEOF'
+#
+# Components without a checked-in image line (stardelt-operator) skip this half.
+case "$APP" in
+  nova)  manifest="${MANIFEST:-manifests/nova-deployment.yaml}" ;;
+  spark) manifest="${MANIFEST:-manifests/spark.yaml}" ;;
+  *)     manifest="${MANIFEST:-}" ;;
+esac
+
+if [ -n "$manifest" ] && [ -f "$manifest" ] && grep -qE "^\s+image: $REGISTRY/$REPO:" "$manifest"; then
+  python3 - "$manifest" "$REGISTRY/$REPO" "$digest" "$APP" <<'PYEOF'
 import re, sys
-path, repo, digest = sys.argv[1], sys.argv[2], sys.argv[3]
+path, repo, digest, app = sys.argv[1:5]
 text = open(path).read()
-new, n = re.subn(
-    rf"(^\s+image: ){re.escape(repo)}:[^\s@]+(?:@sha256:[0-9a-f]+)?$",
-    lambda m: f"{m.group(1)}{repo}:dev@{digest}",
+
+# The Deployment's own image.
+text, replaced = re.subn(
+    rf"(^\s+image: ){re.escape(repo)}:([^\s@]+)(?:@sha256:[0-9a-f]+)?\s*$",
+    lambda m: f"{m.group(1)}{repo}:{m.group(2)}@{digest}",
     text,
     flags=re.M,
 )
-if n:
-    open(path, "w").write(new)
-    print(f"› {path}: image pinned to {repo}:dev@{digest[:19]}…")
+
+# Spark executors are created by the driver from spark-defaults.conf, not from
+# the Deployment spec. Pin the same digest there, or a node with a cached `dev`
+# layer can run executors from an older build while the driver runs the new one.
+if app == "spark":
+    text, executor = re.subn(
+        rf"(^\s+spark\.kubernetes\.container\.image\s+){re.escape(repo)}:([^\s@]+)(?:@sha256:[0-9a-f]+)?\s*$",
+        lambda m: f"{m.group(1)}{repo}:{m.group(2)}@{digest}",
+        text,
+        flags=re.M,
+    )
+    replaced += executor
+
+if replaced:
+    open(path, "w").write(text)
+    print(f"› {path}: image pinned to {repo}:…@{digest[:19]}…")
 PYEOF
 fi
