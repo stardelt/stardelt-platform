@@ -36,6 +36,10 @@ ADD --checksum=sha256:dd7e49ffa4ac9b215bed846581991259e3aec9bb2fa08d6cec029c46cd
     https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-aws-bundle/${ICEBERG_VERSION}/iceberg-aws-bundle-${ICEBERG_VERSION}.jar \
     /opt/spark/jars/iceberg-aws-bundle.jar
 
+# `ADD <url>` lands the file as mode 0600; the container runs as the `spark`
+# user (uid 185), so make the jars world-readable or the JVM cannot load them.
+RUN chmod 0644 /opt/spark/jars/iceberg-spark-runtime.jar /opt/spark/jars/iceberg-aws-bundle.jar
+
 # Starts the Connect server in the foreground and fills in the one address that
 # only exists at runtime (the driver's pod IP). See the file for the details.
 COPY spark-connect-entrypoint.sh /opt/spark/bin/stardelt-connect-server
