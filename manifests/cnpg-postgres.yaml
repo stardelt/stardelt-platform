@@ -10,6 +10,32 @@ spec:
   instances: 1
   storage:
     size: 2Gi
+  # Continuous backup into the platform's own object store: barman-cloud streams
+  # the WAL and CNPG adds base backups on the schedule in
+  # `cnpg-backup-schedule.yaml`, so a lost volume is recoverable to a point in
+  # time without any external service. Point `endpointURL`/`destinationPath` at
+  # your own S3 bucket for production (`backups` must exist and the credentials
+  # must be allowed to write to it).
+  backup:
+    retentionPolicy: "14d"
+    barmanObjectStore:
+      destinationPath: s3://backups/
+      endpointURL: http://seaweedfs-s3.stardelt.svc.cluster.local:8333
+      s3Credentials:
+        accessKeyId:
+          name: stardelt-s3-creds
+          key: access-key
+        secretAccessKey:
+          name: stardelt-s3-creds
+          key: secret-key
+        region:
+          name: stardelt-s3-creds
+          key: region
+      wal:
+        compression: gzip
+        maxParallel: 2
+      data:
+        compression: gzip
   bootstrap:
     initdb:
       database: lakekeeper

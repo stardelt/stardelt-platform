@@ -1,0 +1,27 @@
+# Daily base backup of the catalog's Postgres, on top of the continuous WAL
+# archiving configured in `cnpg-postgres.yaml` (spec.backup.barmanObjectStore).
+#
+# WAL alone recovers to a point in time; a base backup makes the restore fast
+# instead of replaying every WAL segment since the volume was created. Together
+# they cover the two ways this data dies: an operator error (recover to just
+# before it) and a lost volume (recover to the last base backup + WAL).
+#
+#   kubectl apply -f manifests/cnpg-backup-schedule.yaml
+#
+# `immediate: true` takes a first backup right away, which is what makes a fresh
+# install verifiable — `kubectl -n stardelt get backups` must show one completed.
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: lakekeeper-pg-daily
+  namespace: stardelt
+spec:
+  # CloudNativePG cron has six fields, seconds first: 02:30 every day.
+  schedule: "0 30 2 * * *"
+  immediate: true
+  # Keep the Backup objects after the schedule is deleted, so deleting this CR
+  # cannot delete the only record of what was taken.
+  backupOwnerReference: self
+  method: barmanObjectStore
+  cluster:
+    name: lakekeeper-pg

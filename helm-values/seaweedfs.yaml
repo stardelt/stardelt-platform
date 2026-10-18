@@ -53,6 +53,10 @@ s3:
   createBuckets:
     - name: lakehouse
       anonymousRead: false
+    # Destination for the catalog's continuous backups
+    # (manifests/cnpg-backup-schedule.yaml).
+    - name: backups
+      anonymousRead: false
   resources:
     requests: { cpu: "100m", memory: "256Mi" }
     limits:   { cpu: "2",    memory: "1Gi"  }
