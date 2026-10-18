@@ -107,10 +107,10 @@ make chart-install CHART_EXTRA="-f chart/values-slim.yaml"
 
 With ingress.enabled=true only Nova (and Keycloak in identity.mode=platform) get an Ingress; list components in ingress.exposeUnauthenticated (e.g. [trino]) to expose a UI that has no sign-in.
 
-The default `stardelt-s3-creds` Secret holds the dev credentials that match the
-SeaweedFS sub-chart (as `make install-core` does). For a real install override
-`s3Credentials.accessKey` / `secretKey`, or set `s3Credentials.create=false` and
-create the Secret yourself from `manifests/s3-credentials.example.yaml`.
+`stardelt-s3-creds` is generated on first install (random key pair, also written to
+`seaweedfs-s3-config` for the SeaweedFS gateway), kept across upgrades and on uninstall.
+Set `s3Credentials.accessKey` / `secretKey` to choose your own, or `s3Credentials.create=false`
+and create both Secrets yourself (`manifests/s3-credentials.example.yaml` shows the first).
 
 A chart install also gets the catalog's continuous backups (`postgres.backup`,
 on by default): the `lakekeeper-pg` Cluster declares `spec.backup.barmanObjectStore`

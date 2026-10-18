@@ -169,19 +169,22 @@ postgres:
 
 s3Credentials:
   # Secret that every object-storage consumer reads: the SeaweedFS S3 endpoint
-  # plus access key / secret key / bucket / region. Equivalent to
-  # manifests/s3-credentials.dev.yaml.
+  # plus access key / secret key / bucket / region. Generated on first install
+  # (random 48 characters), kept across upgrades and on uninstall. The same key pair
+  # is written to Secret `seaweedfs-s3-config`, which the SeaweedFS S3 gateway reads
+  # (`seaweedfs.s3.existingConfigSecret` below). Nothing here holds a credential.
   #
-  # DEV DEFAULTS — these match the credentials pinned in the `seaweedfs` block
-  # below, so a fresh install works out of the box. For anything real, either
-  # override all four values, or set `create: false` and create the Secret
-  # yourself (see manifests/s3-credentials.example.yaml).
+  # `create: false`: you provide BOTH Secrets yourself (see
+  # manifests/s3-credentials.example.yaml for the first; the second is
+  # `seaweedfs_s3_config` = {"identities":[{"name":"stardelt","credentials":
+  # [{"accessKey":"…","secretKey":"…"}],"actions":["Admin","Read","Write"]}]}).
   create: true
   # Renaming requires updating the secretKeyRef entries under `trino.env` and
   # `airflow.extraEnv` too.
   name: stardelt-s3-creds
-  accessKey: stardelt-access-key
-  secretKey: stardelt-secret-key
+  # Leave empty to generate. Set both to choose your own.
+  accessKey: ""
+  secretKey: ""
   # Rendered with `tpl`, so `{{ .Release.Namespace }}` expands.
   endpoint: "http://seaweedfs-s3.{{ .Release.Namespace }}.svc.cluster.local:8333"
   bucket: lakehouse
@@ -254,12 +257,9 @@ seaweedfs:
     replicas: 1
     port: 8333
     enableAuth: true
-    # Pin credentials so they match the `stardelt-s3-creds` Secret instead of
-    # auto-generating random ones (see `s3Credentials` above).
-    credentials:
-      admin:
-        accessKey: stardelt-access-key
-        secretKey: stardelt-secret-key
+    # The S3 identities come from a Secret this chart writes (templates/s3-credentials.yaml)
+    # so the key pair matches `stardelt-s3-creds`; nothing is committed here.
+    existingConfigSecret: seaweedfs-s3-config
     createBuckets:
       - name: lakehouse
         anonymousRead: false

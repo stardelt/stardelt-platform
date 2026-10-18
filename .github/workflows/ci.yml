@@ -155,3 +155,15 @@ jobs:
           [ "$n" = 1 ] || { echo "expected only the nova Ingress, got $n" >&2; exit 1; }
           n=$(helm template stardelt chart -n stardelt --set ingress.enabled=true --set platform.baseDomain=example.com --set 'ingress.exposeUnauthenticated={trino}' | grep -c '^kind: Ingress')
           [ "$n" = 2 ] || { echo "expected nova + trino Ingresses, got $n" >&2; exit 1; }
+          # S3 credentials (#100): one generated key pair in both Secrets, and SeaweedFS
+          # reads it instead of generating a secret of its own.
+          helm template stardelt chart -n stardelt > /tmp/umbrella.yaml
+          python3 - <<'PY'
+          import json, yaml
+          docs = [d for d in yaml.safe_load_all(open('/tmp/umbrella.yaml')) if d]
+          sec = {d['metadata']['name']: d for d in docs if d.get('kind') == 'Secret'}
+          c = sec['stardelt-s3-creds']['stringData']
+          k = json.loads(sec['seaweedfs-s3-config']['stringData']['seaweedfs_s3_config'])['identities'][0]['credentials'][0]
+          assert (c['access-key'], c['secret-key']) == (k['accessKey'], k['secretKey']) and len(c['access-key']) >= 16, 'S3 key pairs differ or are too short'
+          PY
+          ! grep -q 'name: seaweedfs-s3-secret' /tmp/umbrella.yaml || { echo "SeaweedFS must read seaweedfs-s3-config, not generate its own secret" >&2; exit 1; }
