@@ -1,5 +1,10 @@
 # stardelt Platform — install/upgrade/uninstall against your current kube-context.
 #
+# Every target that changes a cluster first prints the kube-context it will act on
+# (`_context`). Pin it with EXPECT_CONTEXT so a stale `kubectl config use-context`
+# cannot send an install or uninstall to the wrong cluster:
+#   EXPECT_CONTEXT=stardelt-dev make install-core
+#
 # Usage:
 #   make install              # install all components into the stardelt namespace
 #   NAMESPACE=mycluster make install
@@ -27,7 +32,7 @@ TRINO_EXTRA := $(if $(filter 1,$(SLIM)),-f helm-values/slim/trino.yaml,)
 #   make chart-template CHART_EXTRA="-f chart/values-slim.yaml"
 CHART_EXTRA ?=
 
-.PHONY: help deps lint install install-core install-notebooks install-operator upgrade uninstall build-superset-image push-superset-image pf pin dev-up dev-down dev-dns dev-dns-down
+.PHONY: _context help deps lint install install-core install-notebooks install-operator upgrade uninstall build-superset-image push-superset-image pf pin dev-up dev-down dev-dns dev-dns-down
 .PHONY: chart-deps chart-template chart-install
 
 help: ## Show this help
@@ -36,6 +41,19 @@ help: ## Show this help
 
 deps: ## Check required CLI tools
 	@bash scripts/check-deps.sh
+
+# Show which cluster a mutating target is about to act on; with EXPECT_CONTEXT set,
+# refuse to continue unless the current kube-context matches it exactly.
+EXPECT_CONTEXT ?=
+_context:
+	@command -v kubectl >/dev/null 2>&1 || { echo "kubectl not found (run 'make deps')" >&2; exit 1; }
+	@ctx="$$(kubectl config current-context 2>/dev/null || true)"; \
+	 [ -n "$$ctx" ] || { echo "no kubectl current-context: set KUBECONFIG or run 'kubectl config use-context'" >&2; exit 1; }; \
+	 server="$$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || true)"; \
+	 echo "› kube-context: $$ctx ($$server)"; \
+	 if [ -n "$(EXPECT_CONTEXT)" ] && [ "$$ctx" != "$(EXPECT_CONTEXT)" ]; then \
+	   echo "refusing: current-context is '$$ctx' but EXPECT_CONTEXT is '$(EXPECT_CONTEXT)'" >&2; exit 1; \
+	 fi
 
 lint: ## Syntax-check (bash -n) + ShellCheck the scripts under scripts/ and dev/
 	@bash scripts/lint.sh
@@ -58,7 +76,7 @@ _helm-repos:
 # ---------------------------------------------------------------------------
 # Install
 # ---------------------------------------------------------------------------
-install: deps _helm-repos ## Install all stardelt components (idempotent)
+install: deps _context _helm-repos ## Install all stardelt components (idempotent)
 	@echo "› [1/9] CloudNative-PG operator"
 	@helm upgrade --install cnpg cnpg/cloudnative-pg \
 	  --version $(CNPG_VERSION) \
@@ -110,7 +128,7 @@ install: deps _helm-repos ## Install all stardelt components (idempotent)
 # Core install — the cheap path for a single small node (cx33 / 8 GB).
 # Storage + catalog + query + Nova. Skips Airflow and Superset.
 # ---------------------------------------------------------------------------
-install-core: deps _helm-repos ## Install the core only (storage+catalog+query+Nova)
+install-core: deps _context _helm-repos ## Install the core only (storage+catalog+query+Nova)
 	@echo "› [1/7] CloudNative-PG operator"
 	@helm upgrade --install cnpg cnpg/cloudnative-pg \
 	  --version $(CNPG_VERSION) \
@@ -151,7 +169,7 @@ install-core: deps _helm-repos ## Install the core only (storage+catalog+query+N
 # ---------------------------------------------------------------------------
 # Notebooks — JupyterHub (fits the cheap node alongside the core stack).
 # ---------------------------------------------------------------------------
-install-notebooks: deps _helm-repos ## Install JupyterHub (notebooks)
+install-notebooks: deps _context _helm-repos ## Install JupyterHub (notebooks)
 	@echo "› JupyterHub"
 	@helm upgrade --install jupyterhub jupyterhub/jupyterhub \
 	  --version $(JUPYTERHUB_VERSION) \
@@ -164,7 +182,7 @@ install-notebooks: deps _helm-repos ## Install JupyterHub (notebooks)
 # Control plane — the stardelt Operator (dev: from the sibling checkout).
 # ---------------------------------------------------------------------------
 OPERATOR_DIR ?= ../stardelt-operator
-install-operator: ## Install the stardelt Operator (needs ../stardelt-operator)
+install-operator: _context ## Install the stardelt Operator (needs ../stardelt-operator)
 	@test -f $(OPERATOR_DIR)/chart/Chart.yaml || { \
 	  echo "operator chart not found at $(OPERATOR_DIR)/chart — set OPERATOR_DIR"; exit 1; }
 	@helm upgrade --install stardelt-operator $(OPERATOR_DIR)/chart \
@@ -180,13 +198,14 @@ upgrade: install ## Upgrade all components (same as install)
 # ---------------------------------------------------------------------------
 # Uninstall
 # ---------------------------------------------------------------------------
-uninstall: ## Uninstall all stardelt components (reverse order)
+uninstall: _context ## Uninstall all stardelt components (reverse order)
 	@echo "› removing manifests"
 	@kubectl delete -f manifests/nova-deployment.yaml        --ignore-not-found
 	@kubectl delete -f manifests/lakekeeper-bootstrap.yaml   --ignore-not-found
 	@kubectl delete -f manifests/cnpg-postgres.yaml          --ignore-not-found
 
 	@echo "› uninstalling helm releases"
+	@helm uninstall jupyterhub --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@helm uninstall superset   --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@helm uninstall airflow    --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@helm uninstall trino      --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
@@ -213,7 +232,7 @@ chart-deps: ## Fetch/refresh the umbrella chart's sub-charts (helm dependency up
 chart-template: ## Render the umbrella chart without installing it
 	@helm template stardelt chart --namespace $(NAMESPACE) $(CHART_EXTRA)
 
-chart-install: ## Install/upgrade the umbrella chart as release `stardelt`
+chart-install: _context ## Install/upgrade the umbrella chart as release `stardelt`
 	@helm upgrade --install stardelt chart \
 	  --namespace $(NAMESPACE) --create-namespace \
 	  $(CHART_EXTRA)
@@ -223,7 +242,7 @@ chart-install: ## Install/upgrade the umbrella chart as release `stardelt`
 # ---------------------------------------------------------------------------
 # Superset image
 # ---------------------------------------------------------------------------
-pin: ## Pin a deployment to the newest published digest: make pin APP=nova NS=stardelt TAG=dev
+pin: _context ## Pin a deployment to the newest published digest: make pin APP=nova NS=stardelt TAG=dev
 	@APP="$(APP)" NS="$(NAMESPACE)" TAG="$(TAG)" bash scripts/pin-image.sh
 
 build-superset-image: ## Build the Superset image (ghcr.io/stardelt/superset:dev)
