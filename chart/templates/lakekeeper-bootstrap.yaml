@@ -16,9 +16,15 @@ spec:
   template:
     spec:
       restartPolicy: OnFailure
+      # Only talks to Lakekeeper over HTTP: no Kubernetes API token needed.
+      automountServiceAccountToken: false
       containers:
         - name: bootstrap
           image: {{ .Values.lakekeeperBootstrap.image | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            seccompProfile: { type: RuntimeDefault }
           env:
             - name: LK
               value: http://lakekeeper:8181
@@ -61,6 +67,10 @@ spec:
               fi
 
               echo "▶ creating warehouse 'warehouse' on s3://$S3_BUCKET ($S3_ENDPOINT)"
+              # The payload carries the S3 secret key: keep the file private, remove it
+              # on exit, and never print it (job logs are readable by anyone with pods/log).
+              umask 077
+              trap 'rm -f /tmp/wh.json' EXIT
               cat > /tmp/wh.json <<EOF
               {
                 "warehouse-name": "warehouse",
@@ -84,7 +94,6 @@ spec:
                 }
               }
               EOF
-              cat /tmp/wh.json
               curl -fsS -X POST -H 'Content-Type: application/json' \
                 -d @/tmp/wh.json \
                 "$LK/management/v1/warehouse"
