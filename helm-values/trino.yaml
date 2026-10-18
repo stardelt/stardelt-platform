@@ -41,12 +41,31 @@ worker:
     - "-Xms1G"
 
 # Pull S3 creds from the stardelt-s3-creds Secret so catalog properties can
-# substitute ${ENV:S3_ACCESS_KEY} / ${ENV:S3_SECRET_KEY}.
+# substitute ${ENV:S3_ACCESS_KEY} / ${ENV:S3_SECRET_KEY}. Trino substitutes
+# ${ENV:…} in every properties file, including config.properties
+# (https://trino.io/docs/480/security/secrets.html).
+#
+# The three identity variables are only *read* by the OAuth2 overlay
+# (helm-values/trino-identity.yaml): they are optional so a dev cluster without
+# an IdP installs claim-for-claim the same pod. They live here rather than in
+# the overlay because Helm replaces lists instead of merging them — an overlay
+# `env:` would silently drop the S3 credentials.
 env:
   - name: S3_ACCESS_KEY
     valueFrom: { secretKeyRef: { name: stardelt-s3-creds, key: access-key } }
   - name: S3_SECRET_KEY
     valueFrom: { secretKeyRef: { name: stardelt-s3-creds, key: secret-key } }
+  # Confidential client `trino` in realm `stardelt` (scripts/identity-bootstrap.sh).
+  - name: TRINO_CLIENT_SECRET
+    valueFrom: { secretKeyRef: { name: stardelt-oidc-clients, key: trino, optional: true } }
+  # Authenticates coordinator <-> worker traffic once an authenticator is on.
+  - name: TRINO_INTERNAL_SHARED_SECRET
+    valueFrom: { secretKeyRef: { name: trino-internal-secret, key: shared-secret, optional: true } }
+  # Issuer of the platform IdP, from the identity contract ConfigMap. Keycloak
+  # (platform mode) and an external IdP write the same key, so the overlay needs
+  # no per-deployment host baked into a tracked file.
+  - name: TRINO_OIDC_ISSUER
+    valueFrom: { configMapKeyRef: { name: stardelt-identity, key: issuerUrl, optional: true } }
 
 catalogs:
   warehouse: |

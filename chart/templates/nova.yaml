@@ -74,6 +74,11 @@ spec:
               value: {{ .Values.nova.warehouseName | quote }}
             - name: NOVA_DEV_USER
               value: {{ .Values.nova.devUser | quote }}
+            # Send the signed-in user's own token to Trino (master spec §7). Only
+            # meaningful with an IdP configured; Trino must trust audience
+            # `trino` for that token (realm mapper `aud-trino` on client `nova`).
+            - name: NOVA_FORWARD_IDENTITY
+              value: "1"
             {{- $authMode := .Values.nova.auth.mode | default "dev" }}
             {{- if not (has $authMode (list "dev" "oidc")) }}
             {{- fail (printf "nova.auth.mode must be dev or oidc, got %q" $authMode) }}

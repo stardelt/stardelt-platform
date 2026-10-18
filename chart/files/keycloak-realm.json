@@ -102,16 +102,18 @@
       "name": "Trino",
       "enabled": true,
       "protocol": "openid-connect",
-      "publicClient": true,
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${STARDELT_TRINO_CLIENT_SECRET}",
       "standardFlowEnabled": true,
       "implicitFlowEnabled": false,
       "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": false,
-      "redirectUris": ["https://__TRINO_HOST__/oauth2/callback"],
+      "redirectUris": ["https://__TRINO_HOST__/oauth2/callback", "https://__TRINO_HOST__/ui/login.html"],
       "webOrigins": ["https://__TRINO_HOST__"],
       "attributes": {
-        "pkce.code.challenge.method": "S256",
-        "oauth2.device.authorization.grant.enabled": "true"
+        "oauth2.device.authorization.grant.enabled": "true",
+        "post.logout.redirect.uris": "https://__TRINO_HOST__/ui/logout/logout.html"
       },
       "protocolMappers": [
         {

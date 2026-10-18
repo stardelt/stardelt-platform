@@ -41,7 +41,7 @@ CHART_EXTRA ?=
 # client redirect URIs on the app subdomains. Same default as `dev-dns`.
 BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 
-.PHONY: _context help deps lint install install-core install-notebooks install-identity install-operator upgrade uninstall build-superset-image push-superset-image pf pin pin-images dev-up dev-down dev-dns dev-dns-down
+.PHONY: _context help deps lint install install-core install-notebooks install-identity install-operator trino upgrade uninstall build-superset-image push-superset-image pf pin pin-images dev-up dev-down dev-dns dev-dns-down
 .PHONY: chart-deps chart-template chart-install
 .PHONY: verify-backups verify-backup-config
 
@@ -131,10 +131,7 @@ install: deps _context _helm-repos ## Install all stardelt components (idempoten
 	@kubectl apply -f manifests/lakekeeper-bootstrap.yaml
 
 	@echo "› [6/11] Trino"
-	@helm upgrade --install trino trino/trino \
-	  --version $(TRINO_VERSION) \
-	  $(HELM_FLAGS) \
-	  -f helm-values/trino.yaml
+	@$(MAKE) --no-print-directory trino
 
 	@echo "› [7/11] Airflow/Superset Secrets (generated once, kept across installs)"
 	@NAMESPACE=$(NAMESPACE) bash scripts/app-secrets.sh
@@ -195,10 +192,7 @@ install-core: deps _context _helm-repos ## Install the core only (storage+catalo
 	@kubectl apply -f manifests/lakekeeper-bootstrap.yaml
 
 	@echo "› [7/7] Trino + Nova"
-	@helm upgrade --install trino trino/trino \
-	  --version $(TRINO_VERSION) \
-	  $(HELM_FLAGS) \
-	  -f helm-values/trino.yaml $(TRINO_EXTRA)
+	@$(MAKE) --no-print-directory trino
 	@kubectl apply -f manifests/nova-deployment.yaml
 
 	@echo "› [8/8] Pin images to the digests CI published"
@@ -220,6 +214,30 @@ install-notebooks: deps _context _helm-repos ## Install JupyterHub (notebooks)
 	@echo "JupyterHub installed. Public service: proxy-public:80."
 
 # ---------------------------------------------------------------------------
+# Trino — the query engine, and the one component whose authentication state
+# depends on whether the platform has an IdP: with `stardelt-identity` present
+# (make install-identity / the umbrella chart) every statement needs a Keycloak
+# token or the service-account password (helm-values/trino-identity.yaml); on a
+# bare `install-core` without identity there is nothing to authenticate against
+# and Trino keeps the development default — anonymous, cluster-internal only.
+# ---------------------------------------------------------------------------
+trino: deps _context ## Install/upgrade Trino, with OAuth2 when a platform IdP is present
+	@if kubectl -n $(NAMESPACE) get configmap stardelt-identity >/dev/null 2>&1; then \
+	  echo "› Trino $(TRINO_VERSION) + helm-values/trino-identity.yaml (platform IdP present)"; \
+	  helm upgrade --install trino trino/trino \
+	    --version $(TRINO_VERSION) \
+	    $(HELM_FLAGS) \
+	    -f helm-values/trino.yaml $(TRINO_EXTRA) \
+	    -f helm-values/trino-identity.yaml; \
+	else \
+	  echo "› Trino $(TRINO_VERSION) — no platform IdP, so no authentication (dev only)"; \
+	  helm upgrade --install trino trino/trino \
+	    --version $(TRINO_VERSION) \
+	    $(HELM_FLAGS) \
+	    -f helm-values/trino.yaml $(TRINO_EXTRA); \
+	fi
+
+# ---------------------------------------------------------------------------
 # Identity — optional platform IdP (Keycloak, realm `stardelt`).
 # Needs the CNPG operator (install-core). Secrets are generated on first run and
 # never printed; see scripts/identity-bootstrap.sh.
@@ -227,13 +245,18 @@ install-notebooks: deps _context _helm-repos ## Install JupyterHub (notebooks)
 install-identity: deps _context ## Install the platform IdP (Keycloak) at id.$(BASE_DOMAIN)
 	@kubectl get crd clusters.postgresql.cnpg.io >/dev/null 2>&1 || { \
 	  echo "CloudNative-PG CRDs not found — run 'make install-core' first" >&2; exit 1; }
-	@echo "› [1/3] Secrets + realm/identity ConfigMaps (base domain $(BASE_DOMAIN))"
+	@echo "› [1/5] Secrets + realm/identity ConfigMaps (base domain $(BASE_DOMAIN))"
 	@NAMESPACE=$(NAMESPACE) BASE_DOMAIN=$(BASE_DOMAIN) bash scripts/identity-bootstrap.sh
-	@echo "› [2/3] CNPG Cluster (Keycloak Postgres)"
+	@echo "› [2/5] CNPG Cluster (Keycloak Postgres)"
 	@kubectl apply -f manifests/keycloak.yaml
 	@kubectl -n $(NAMESPACE) wait --for=condition=Ready --timeout=300s cluster/keycloak-pg
-	@echo "› [3/3] Keycloak $(KEYCLOAK_VERSION)"
+	@echo "› [3/5] Keycloak $(KEYCLOAK_VERSION)"
 	@kubectl -n $(NAMESPACE) rollout status deploy/keycloak --timeout=10m
+	@echo "› [4/5] Sync the live realm's Trino client (import skips an existing realm)"
+	@NAMESPACE=$(NAMESPACE) TRINO_PUBLIC_URL=https://trino.$(BASE_DOMAIN) \
+	  bash scripts/keycloak-sync-trino-client.sh
+	@echo "› [5/5] Put the query engine behind the platform identity"
+	@$(MAKE) --no-print-directory trino
 	@echo "Keycloak installed. Issuer: https://id.$(BASE_DOMAIN)/realms/stardelt"
 	@echo "Realm admin password: kubectl -n $(NAMESPACE) get secret stardelt-realm-admin -o jsonpath='{.data.password}' | base64 -d"
 
@@ -275,7 +298,8 @@ uninstall: _context ## Uninstall all stardelt components (reverse order)
 	@helm uninstall cnpg       --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 
 	@echo "Uninstall complete. Kept (like PVCs): Secrets keycloak-admin, stardelt-realm-admin,"
-	@echo "stardelt-oidc-clients, airflow-fernet-key, airflow-webserver-key, airflow-jwt-secret,"
+	@echo "stardelt-oidc-clients, trino-internal-secret, trino-password-db,"
+	@echo "airflow-fernet-key, airflow-webserver-key, airflow-jwt-secret,"
 	@echo "airflow-admin, superset-secret-key, superset-admin (see scripts/app-secrets.sh)."
 
 # ---------------------------------------------------------------------------
