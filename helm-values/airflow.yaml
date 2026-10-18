@@ -80,6 +80,88 @@ apiServer:
   replicas: 1
   service:
     type: ClusterIP
+  # Identity contract + Keycloak client secret, projected as files from the
+  # ConfigMap/Secret the identity install generates. `optional: true` on each
+  # source keeps a platform installed without `make install-identity` booting on
+  # the local admin login (see below), and only the api-server — the only
+  # component that builds the FAB app — gets them. (`apiServer.env` would be
+  # smaller, but chart 1.21.0's env helper drops `optional`, so an absent
+  # ConfigMap would block the pod on clusters that never ran install-identity.)
+  extraVolumes:
+    - name: stardelt-identity
+      projected:
+        sources:
+          - configMap:
+              name: stardelt-identity
+              optional: true
+              items:
+                - { key: issuerUrl, path: issuerUrl }
+                - { key: adminGroup, path: adminGroup }
+          - secret:
+              name: stardelt-oidc-clients
+              optional: true
+              items:
+                - { key: airflow, path: client-secret }
+  extraVolumeMounts:
+    - name: stardelt-identity
+      mountPath: /opt/airflow/stardelt-identity
+      readOnly: true
+  # The FAB auth manager reads its Flask config from webserver_config.py
+  # (`[fab] config_file`, /opt/airflow/webserver_config.py). The chart mounts this
+  # string there for Airflow >= 3.0.0. Changing it does not roll the pod (the
+  # ConfigMap name is fixed), so a values change needs
+  # `kubectl -n stardelt rollout restart deploy/airflow-api-server`.
+  #
+  # FAB registers one login view per AUTH_TYPE, so OAuth replaces the local form
+  # rather than sitting beside it; the local `admin` user (createUserJob,
+  # airflow-admin Secret) is kept and AUTH_TYPE falls back to AUTH_DB when the
+  # identity contract is absent or the break-glass flag is set:
+  #   kubectl -n stardelt set env deploy/airflow-api-server STARDELT_AUTH_LOCAL_ONLY=1
+  # (rolls the pod; `set env ... STARDELT_AUTH_LOCAL_ONLY-` undoes it).
+  apiServerConfig: |
+    import os
+    from flask_appbuilder.const import AUTH_DB, AUTH_OAUTH
+
+
+    def _identity_file(name):
+        try:
+            with open("/opt/airflow/stardelt-identity/" + name) as handle:
+                return handle.read().strip()
+        except OSError:
+            return ""
+
+
+    _issuer = _identity_file("issuerUrl").rstrip("/")
+    _admin_group = _identity_file("adminGroup") or "stardelt-admins"
+    _secret = _identity_file("client-secret")
+    _local_only = os.environ.get("STARDELT_AUTH_LOCAL_ONLY") == "1"
+
+    if _issuer and _secret and not _local_only:
+        AUTH_TYPE = AUTH_OAUTH
+        OAUTH_PROVIDERS = [
+            {
+                "name": "keycloak",
+                "token_key": "access_token",
+                "icon": "fa-key",
+                "remote_app": {
+                    "client_id": "airflow",
+                    "client_secret": _secret,
+                    # api_base_url + "openid-connect/userinfo" is how FAB's
+                    # Keycloak branch reads preferred_username and groups.
+                    "server_metadata_url": _issuer + "/.well-known/openid-configuration",
+                    "api_base_url": _issuer + "/protocol/",
+                    "client_kwargs": {"scope": "openid email profile"},
+                },
+            }
+        ]
+        # Realm users may sign in read-only; stardelt-admins is synced to Admin
+        # at every login (the same group Nova treats as administrator).
+        AUTH_USER_REGISTRATION = True
+        AUTH_USER_REGISTRATION_ROLE = "Viewer"
+        AUTH_ROLES_MAPPING = {_admin_group: ["Admin"]}
+        AUTH_ROLES_SYNC_AT_LOGIN = True
+    else:
+        AUTH_TYPE = AUTH_DB
   resources:
     requests: { cpu: "100m", memory: "384Mi" }
     limits:   { cpu: "2",    memory: "1Gi"   }
