@@ -240,8 +240,10 @@ is flat for the per-component install), and Superset's pre-imported datasource
 
 ### Turning on sign-in
 
-Deploying the IdP does not put anything behind a login: that is Nova's decision
-(`nova.auth.mode`) plus, later, the other building blocks' own clients.
+`make install-identity` (or the chart's `identity.mode: platform`) is what wires the apps'
+logins: Nova gets it from `nova.auth.mode`, while Superset, Airflow and JupyterHub read the
+same `stardelt-identity` ConfigMap and `stardelt-oidc-clients` Secret with credentials only
+they can see. Deploying the IdP alone (before those values landed) signed nobody in.
 
 ```sh
 # chart path — the IdP and the login in one install
@@ -273,6 +275,31 @@ reads the issuer from `stardelt-identity` and the client secret from `stardelt-o
 but signs nobody in. Keycloak's own admin console is not published — the `id.` Ingress (and the
 chart's keycloak Ingress) carries just `/realms/stardelt`, `/resources` and `/robots.txt`, so
 use `kubectl -n stardelt port-forward svc/keycloak 8080:8080` to administer the realm.
+
+Superset and Airflow sign in through the same realm, via Flask-AppBuilder's OAuth provider
+(`helm-values/superset.yaml`, `helm-values/airflow.yaml`): the issuer and admin group come
+from `stardelt-identity`, the client secret from `stardelt-oidc-clients` (keys `superset` /
+`airflow`) — as env for Superset's appended `superset_config.py`, and as projected files on
+Airflow's api-server only, which is the pod that builds the FAB app. Both map the realm group
+`stardelt-admins` to `Admin` (`AUTH_ROLES_MAPPING`, synced at every login) and register
+other realm users read-only (`Gamma` in Superset, `Viewer` in Airflow).
+
+Two consequences worth knowing:
+
+- Any realm user can reach both UIs. Only `stardelt-admins` can administer them.
+- FAB selects exactly one login view from `AUTH_TYPE`: OAuth and the local username/password
+  form cannot both be live. The local admin rows and their Secrets are kept, and
+  `STARDELT_AUTH_LOCAL_ONLY=1` on the Deployment switches back to the local form without
+  touching the database — the way back in if the IdP is unreachable:
+
+  ```sh
+  kubectl -n stardelt set env deploy/superset STARDELT_AUTH_LOCAL_ONLY=1   # break-glass
+  kubectl -n stardelt set env deploy/superset STARDELT_AUTH_LOCAL_ONLY-    # back to OAuth
+  kubectl -n stardelt set env deploy/airflow-api-server STARDELT_AUTH_LOCAL_ONLY=1
+  ```
+
+  The same values files keep `AUTH_TYPE = AUTH_DB` when `stardelt-identity` is absent, so an
+  install without `make install-identity` behaves exactly as before.
 
 Rotating the session secret logs everyone out: delete the Secret and re-run the installer
 (the chart regenerates it and keeps it across upgrades — `helm.sh/resource-policy: keep`).
