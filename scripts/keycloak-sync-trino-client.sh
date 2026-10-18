@@ -9,8 +9,8 @@
 # install, but `--import-realm` skips an existing realm, so the changes that turn
 # client `trino` from a public client into Trino 480's confidential OAuth2 client
 # have to be applied through the admin API on a running cluster. It is idempotent
-# and touches exactly two objects: client `trino` and client `nova`'s audience
-# mapper.
+# and touches three clients: `trino`, `nova` and `jupyterhub` (the interactive
+# clients whose tokens reach Trino).
 #
 # What it does:
 #   1. port-forwards svc/keycloak — the admin API is deliberately not published
@@ -22,10 +22,15 @@
 #      "Missing parameter: code_challenge_method"), redirect URIs
 #      <TRINO_PUBLIC_URL>/oauth2/callback + /ui/login.html, post-logout
 #      <TRINO_PUBLIC_URL>/ui/logout/logout.html;
-#   3. client `nova`: adds the aud-trino mapper when missing. That mapper is the
-#      moat: it is what makes the token Nova forwards — the user's own — carry a
-#      valid audience at Trino;
-#   4. proves the client secret works: Keycloak answers invalid_grant for the
+#   3. clients `nova` and `jupyterhub`: add the aud-trino mapper when missing.
+#      That mapper is the moat: it is what makes the tokens those clients issue —
+#      the user's own — carry a valid audience at Trino. Nova forwards its token
+#      per request; the hub copies it into the notebook pod at spawn;
+#   4. client `jupyterhub` only: `access.token.lifespan=28800` (8 h). A notebook
+#      keeps its token in the pod environment for the length of a session, where
+#      the realm's 5-minute default would mean 401s minutes after spawn. Nova
+#      still refreshes its own token, so it keeps the realm default;
+#   5. proves the client secret works: Keycloak answers invalid_grant for the
 #      right secret and unauthorized_client for a wrong one (bogus auth code,
 #      so the check needs no user).
 #
@@ -126,23 +131,35 @@ PY
   -X PUT --data @"$tmp/trino-secret.json" "$API/clients/$client_id" >/dev/null
 echo "› client trino: confidential, secret synced from stardelt-oidc-clients/trino"
 
-# 3. The aud-trino mapper on client nova — without it a Nova-forwarded token is
-#    rejected by Trino with 401 even though Keycloak signed it.
-nova_id="$("${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" "$API/clients?clientId=nova" \
-  | python3 -c 'import sys,json;print(json.load(sys.stdin)[0]["id"])')"
-existing="$("${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" "$API/clients/$nova_id/protocol-mappers/models")"
-if printf '%s' "$existing" | python3 -c 'import sys,json;sys.exit(0 if any(m["name"]=="aud-trino" for m in json.load(sys.stdin)) else 1)'; then
-  echo "› client nova: aud-trino mapper present"
-else
-  "${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" -H 'Content-Type: application/json' -X POST \
-    --data @- "$API/clients/$nova_id/protocol-mappers/models" >/dev/null <<'JSON'
+# 3. The aud-trino mapper on the interactive clients — without it a token they
+#    issue is rejected by Trino with 401 even though Keycloak signed it. `nova`
+#    forwards the user's token per request; `jupyterhub` hands it to the spawned
+#    notebook, which keeps it in the pod's environment.
+for client in nova jupyterhub; do
+  client_id="$("${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" "$API/clients?clientId=$client" \
+    | python3 -c 'import sys,json;print(json.load(sys.stdin)[0]["id"])')"
+  existing="$("${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" "$API/clients/$client_id/protocol-mappers/models")"
+  if printf '%s' "$existing" | python3 -c 'import sys,json;sys.exit(0 if any(m["name"]=="aud-trino" for m in json.load(sys.stdin)) else 1)'; then
+    echo "› client $client: aud-trino mapper present"
+  else
+    "${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" -H 'Content-Type: application/json' -X POST \
+      --data @- "$API/clients/$client_id/protocol-mappers/models" >/dev/null <<'JSON'
 {"name":"aud-trino","protocol":"openid-connect","protocolMapper":"oidc-audience-mapper","consentRequired":false,
  "config":{"included.client.audience":"trino","id.token.claim":"false","access.token.claim":"true","introspection.token.claim":"true"}}
 JSON
-  echo "› client nova: aud-trino mapper added"
-fi
+    echo "› client $client: aud-trino mapper added"
+  fi
+done
 
-# 4. Prove the secret: wrong secret → unauthorized_client, right secret → invalid_grant.
+# 4. Client jupyterhub: the notebook token lifespan (Keycloak merges attributes
+#    on update, so this cannot wipe post.logout.redirect.uris).
+jupyterhub_id="$("${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" "$API/clients?clientId=jupyterhub" \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)[0]["id"])')"
+"${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" -H 'Content-Type: application/json' \
+  -X PUT --data '{"attributes":{"access.token.lifespan":"28800"}}' "$API/clients/$jupyterhub_id" >/dev/null
+echo "› client jupyterhub: access token lifespan 8h (notebook session)"
+
+# 5. Prove the secret: wrong secret → unauthorized_client, right secret → invalid_grant.
 printf 'user = "trino:%s"\n' "$(cat "$tmp/trino-secret")" > "$tmp/trino.curlrc"
 verify="$("${CURL_SOFT[@]}" -K "$tmp/trino.curlrc" "${HEAD[@]}" -X POST "$KC/realms/stardelt/protocol/openid-connect/token" \
   --data-urlencode "grant_type=authorization_code" --data-urlencode "code=verify-only" \

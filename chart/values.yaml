@@ -868,6 +868,23 @@ jupyterhub:
         _secret = os.environ.get("STARDELT_OIDC_CLIENT_SECRET", "").strip()
         if _secret:
             c.GenericOAuthenticator.client_secret = _secret
+
+      # The signed-in user's own token, inside the spawned notebook: the
+      # access token JupyterHub keeps (auth_state) is copied into the pod's
+      # environment as TRINO_TOKEN, and the quickstart reads it. The token's
+      # 8-hour lifetime is a property of the realm's `jupyterhub` client
+      # (chart/files/keycloak-realm.json), not of this hook.
+      20-notebook-identity: |
+        def _trino_token(spawner, auth_state):
+            token = (auth_state or {}).get("access_token")
+            if token:
+                spawner.environment["TRINO_TOKEN"] = token
+
+        c.Authenticator.enable_auth_state = True
+        c.Spawner.auth_state_hook = _trino_token
+        # A fresh token before every (re)spawn, so a server restarted after the
+        # token aged out starts with the refresh token's new access token.
+        c.OAuthenticator.refresh_pre_spawn = True
     config:
       JupyterHub:
         authenticator_class: generic-oauth
@@ -903,10 +920,37 @@ jupyterhub:
         limits:   { cpu: "500m", memory: "256Mi" }
 
   singleuser:
+    # stardelt's image (images/jupyter/Dockerfile): scipy-notebook + trino,
+    # pyspark[connect], pandas, pyarrow, and the warehouse quickstart under
+    # /opt/stardelt/notebooks. Built and published by CI (Image workflow); make
+    # the GHCR package public or keep ghcr-creds (ghcr-pull-secret.sh) available
+    # in the namespace.
     image:
-      name: quay.io/jupyter/scipy-notebook
-      tag: "2024-10-07"
+      name: ghcr.io/stardelt/jupyter-singleuser
+      # Moving tag on purpose: the image is first published by the merge to main,
+      # so a digest cannot be committed before it exists. Pin `tag: dev@sha256:…`
+      # here when rolling a release.
+      tag: "dev"
+      pullSecrets:
+        - name: ghcr-creds
     defaultUrl: /lab
+    # Where the notebook finds the warehouse. Public HTTPS rather than the
+    # in-cluster Service: over plain HTTP Trino only accepts its password
+    # authenticator, so a bearer token needs TLS (issue #80 adds TLS to the
+    # coordinator). Values files are not templated, so deployments on another
+    # domain override this.
+    extraEnv:
+      TRINO_URL: https://trino.alpha.dev.stardelt.io:443
+    # Seed the quickstart into the home directory on every spawn, never
+    # overwriting a user's edited copy (`cp -n`); postStart always exits 0 so a
+    # failing hook cannot make kubelet restart the container in a loop.
+    lifecycleHooks:
+      postStart:
+        exec:
+          command:
+            - bash
+            - -c
+            - cp -n /opt/stardelt/notebooks/*.ipynb "$HOME/" || true
     startTimeout: 300
     memory:
       limit: 1G

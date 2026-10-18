@@ -13,7 +13,7 @@ Production-shape deployment artifacts. Helm values, manifests, and scripts to in
 |------|----------------|-------|
 | `kubectl` | 1.28+ | Must be configured with a valid kubeconfig pointing at your cluster |
 | `helm` | 3.18+ | The `stardelt-dedupe` post-renderer plugin is installed automatically |
-| `docker` | any recent | Required only for `make build-superset-image` / `make push-superset-image` |
+| `docker` | any recent | Required only for the local image targets (`make build-superset-image`, `make build-jupyter-image`) |
 
 Your `kubectl` current-context determines the target cluster. Verify with:
 
@@ -190,6 +190,47 @@ carries the narrow override that allows **only** Nova's origin, and the umbrella
 under `jupyterhub:` for admins who want the same. Without it, nothing breaks: the page explains
 itself and the hub stays unembeddable.
 
+### Notebooks: the user's own identity, inside the pod
+
+Spawning a server is more than starting JupyterLab: the single-user pod gets the user's workspace
+and, with it, a way to query the warehouse **as themselves**.
+
+* **Image.** `helm-values/jupyterhub.yaml` points the single-user pods at
+  `ghcr.io/stardelt/jupyter-singleuser:dev` (built by the `Image` workflow from
+  `images/jupyter/Dockerfile`): `scipy-notebook` plus the `trino` Python client,
+  `pyspark[connect]`, `pandas` and `pyarrow`, and the `warehouse-quickstart` notebook under
+  `/opt/stardelt/notebooks/`. `jupyterlab-sql` is deliberately absent — its last release predates
+  JupyterLab 4 and it cannot carry the per-user token. The package is private, like Superset, so
+  the pod pulls with the `ghcr-creds` secret.
+* **Token.** The hub enables `enable_auth_state` and an `auth_state_hook` copies the user's
+  Keycloak access token into the pod's environment as `TRINO_TOKEN` at spawn
+  (`20-notebook-identity` in `hub.extraConfig`). Nothing is shared between users and nothing is
+  baked into the image; Trino sees the hub user, not a service account.
+* **Notebook.** A `postStart` hook copies `/opt/stardelt/notebooks/*.ipynb` into the home
+  directory the first time only (`cp -n`), so a user's edits survive restarts. The quickstart
+  connects with `trino.auth.JWTAuthentication(os.environ["TRINO_TOKEN"])`, asserts
+  `SELECT current_user` equals the hub user, lists schemas and queries `warehouse.demo.trips`.
+* **Endpoint.** `singleuser.extraEnv.TRINO_URL` is the *public HTTPS* origin
+  (`https://trino.<baseDomain>:443`), not the in-cluster Service: over plain HTTP Trino only
+  accepts its password authenticator (`http-server.authentication.allow-insecure-over-http`), so a
+  bearer token needs TLS. Issue #80 adds TLS to the coordinator; until then notebooks need the
+  ingress path. The values are not templated, so another domain overrides `TRINO_URL`.
+* **Lifetime.** The realm's `jupyterhub` client gets `access.token.lifespan=28800` (8 h) — a
+  notebook holds the token in its environment for a whole session, where the realm's 5-minute
+  default would mean 401s minutes after spawn. Restarting the server re-mints it
+  (`refresh_pre_spawn`); after the 10 h SSO session the user signs in again.
+* **Spark.** `pyspark[connect]` is installed and the notebook has a Spark Connect cell that probes
+  the endpoint and reports that it is not deployed yet — the hookup for roadmap step 3.
+
+`scripts/verify-notebook-identity.py` is the acceptance test for all of this: it signs in at the
+hub headlessly, restarts the server, runs the quickstart inside the pod and then runs it again
+with `TRINO_TOKEN` unset to prove the 401.
+
+```sh
+HUB_URL=https://jupyter.alpha.dev.stardelt.io NOTEBOOK_USER=analyst NOTEBOOK_PASSWORD=... \
+  python3 scripts/verify-notebook-identity.py
+```
+
 ### Trino: the query engine behind the identity
 
 Trino is the one building block whose authentication state is derived from the platform:
@@ -289,6 +330,12 @@ The realm import (`chart/files/keycloak-realm.json`, shared by both paths) defin
 | `airflow` | confidential | `https://airflow.<baseDomain>/auth/oauth-authorized/keycloak` |
 | `jupyterhub` | confidential | `https://jupyter.<baseDomain>/hub/oauth_callback` |
 
+Trino only accepts tokens whose audience contains `trino`, so the `nova` and `jupyterhub` clients
+carry an `aud-trino` audience mapper; `jupyterhub` also gets `access.token.lifespan=28800`
+(8 hours) because a spawned notebook keeps its token in the pod environment for a whole session
+(Nova refreshes its own token and keeps the realm default). On a fresh realm the import applies
+both; `scripts/keycloak-sync-trino-client.sh` applies them to a running one.
+
 **No committed credentials.** On first install the Keycloak bootstrap-admin password, the realm
 `admin` password and the six client secrets are generated (`openssl rand` in
 `scripts/identity-bootstrap.sh`; `randAlphaNum` + `lookup` in the chart) into the Secrets
@@ -332,6 +379,8 @@ login responses outgrow nginx's default 4k header buffer.
 | `chart-install` | Install/upgrade the umbrella chart as release `stardelt` (see [Helm chart](#helm-chart-baseline)) |
 | `build-superset-image` | Build `ghcr.io/stardelt/superset:dev` locally |
 | `push-superset-image` | Push that image to ghcr.io |
+| `build-jupyter-image` | Build `ghcr.io/stardelt/jupyter-singleuser:dev` locally |
+| `push-jupyter-image` | Push that image to ghcr.io |
 | `pf` | Open port-forwards to Nova, Trino, Lakekeeper, Superset |
 | `dev-up` / `dev-down` | Create / delete the Hetzner k3s development cluster |
 | `dev-dns` / `dev-dns-down` | Point / remove the playground DNS records |
@@ -367,16 +416,19 @@ manifests/            Plain Kubernetes manifests (kubectl apply)
 
 images/
   superset/Dockerfile   Superset 5.0.0 + psycopg2 + trino driver
+  jupyter/Dockerfile    scipy-notebook + trino, pyspark, pandas, pyarrow
+  jupyter/notebooks/    warehouse-quickstart.ipynb (seeded into each user's home)
 
 scripts/
   app-secrets.sh        Generate the Airflow/Superset Secrets (idempotent, never printed)
   check-deps.sh         Verify required CLI tools
   identity-bootstrap.sh Generate the IdP Secrets + render realm/identity ConfigMaps
-  keycloak-sync-trino-client.sh  Sync the live realm's Trino client (import skips an existing realm)
+  keycloak-sync-trino-client.sh  Sync the live realm's Trino token settings (import skips an existing realm)
   lint.sh               bash -n + ShellCheck the shell scripts (make lint)
   port-forwards.sh      Background port-forwards to all services
   protect-branches.sh   Apply `main` branch protection in all five stardelt repos
   verify-backups.sh     Backup guards: post-apply spec.backup assert + bucket-vs-database WAL check
+  verify-notebook-identity.py  Headless hub login + run the quickstart in the pod (positive and 401 negative)
   verify-trino-auth.sh  Assert Trino refuses anonymous SQL and accepts user tokens + the service account
   helm-plugins/
     stardelt-dedupe/    Helm v4 post-renderer: deduplicates env lists
@@ -474,6 +526,16 @@ publishes `ghcr.io/stardelt/superset:dev` (plus `sha-<short>`) on merge to `main
 `helm-values/superset.yaml` points at it with the `ghcr-creds` pull secret. A local
 `make build-superset-image` + `make push-superset-image` is only for iteration.
 
+### Jupyter single-user image
+
+`images/jupyter/Dockerfile` adds `trino`, `pyspark[connect]`, `pandas` and `pyarrow` to
+`quay.io/jupyter/scipy-notebook` and ships `warehouse-quickstart.ipynb`. Same workflow:
+CI publishes `ghcr.io/stardelt/jupyter-singleuser:dev` on merge to `main`, and
+`helm-values/jupyterhub.yaml` points `singleuser.image` at it with the `ghcr-creds`
+pull secret; `make build-jupyter-image` + `make push-jupyter-image` are for local
+iteration. It never carries credentials — the user's token is copied into the pod at
+spawn (see [Notebooks](#notebooks-the-users-own-identity-inside-the-pod)).
+
 ---
 
 ## Container images
@@ -483,9 +545,9 @@ cluster: merge to `main` publishes `dev` and an immutable `sha-<short>` tag, and
 job summary prints the digest. **Pin deployments by digest** — a moving tag may keep
 serving a cached layer.
 
-`nova` is public; `operator` and `superset` are internal/private until someone flips
-them in the package settings (the API refuses), so the cluster needs a pull secret
-named `ghcr-creds` in the namespace:
+`nova` is public; `operator`, `superset` and `jupyter-singleuser` are internal/private until
+someone flips them in the package settings (the API refuses), so the cluster needs a pull
+secret named `ghcr-creds` in the namespace:
 
 ```sh
 ./dev/ghcr-pull-secret.sh          # uses your `gh auth token`
