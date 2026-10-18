@@ -41,7 +41,7 @@ CHART_EXTRA ?=
 # client redirect URIs on the app subdomains. Same default as `dev-dns`.
 BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 
-.PHONY: _context help deps lint install install-core install-notebooks install-identity install-operator upgrade uninstall build-superset-image push-superset-image pf pin dev-up dev-down dev-dns dev-dns-down
+.PHONY: _context help deps lint install install-core install-notebooks install-identity install-operator upgrade uninstall build-superset-image push-superset-image pf pin pin-images dev-up dev-down dev-dns dev-dns-down
 .PHONY: chart-deps chart-template chart-install
 
 help: ## Show this help
@@ -130,6 +130,9 @@ install: deps _context _helm-repos ## Install all stardelt components (idempoten
 	@echo "› [9/9] Nova"
 	@kubectl apply -f manifests/nova-deployment.yaml
 
+	@echo "› [10/10] Pin images to the digests CI published"
+	@$(MAKE) --no-print-directory pin-images
+
 	@echo ""
 	@echo "stardelt installed. Run 'make pf' to open port-forwards."
 
@@ -171,6 +174,9 @@ install-core: deps _context _helm-repos ## Install the core only (storage+catalo
 	  $(HELM_FLAGS) \
 	  -f helm-values/trino.yaml $(TRINO_EXTRA)
 	@kubectl apply -f manifests/nova-deployment.yaml
+
+	@echo "› [8/8] Pin images to the digests CI published"
+	@$(MAKE) --no-print-directory pin-images
 
 	@echo ""
 	@echo "Core installed. Run 'make pf' to reach Nova, Trino and Lakekeeper."
@@ -273,6 +279,14 @@ chart-install: _context ## Install/upgrade the umbrella chart as release `starde
 # ---------------------------------------------------------------------------
 pin: _context ## Pin a deployment to the newest published digest: make pin APP=nova NS=stardelt TAG=dev
 	@APP="$(APP)" NS="$(NAMESPACE)" TAG="$(TAG)" bash scripts/pin-image.sh
+
+pin-images: _context ## Pin every stardelt image this cluster runs to its published digest
+	@for app in nova stardelt-operator; do \
+	  if kubectl -n $(NAMESPACE) get deploy $$app >/dev/null 2>&1; then \
+	    APP=$$app NS=$(NAMESPACE) bash scripts/pin-image.sh || \
+	      echo "  › could not pin $$app — leaving the tag in place"; \
+	  fi; \
+	done
 
 build-superset-image: ## Build the Superset image (ghcr.io/stardelt/superset:dev)
 	@echo "› building $(SUPERSET_IMAGE)"
