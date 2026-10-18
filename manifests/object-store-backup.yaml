@@ -1,0 +1,74 @@
+# Object-store backup: a copy of the lakehouse data outside its own bucket.
+#
+# The catalog's Postgres is covered by CloudNativePG (manifests/cnpg-postgres.yaml
+# streams the WAL into s3://backups/). That protects the *map*; this protects the
+# *territory* — restoring a catalog whose Parquet files are gone buys nothing.
+#
+# Mechanism: `aws s3 sync` in a CronJob, source bucket → archive bucket, over the S3
+# API with the credentials the platform already has. Deliberately no `--delete`: sync
+# pushes new and changed objects and leaves everything else, so an object removed from
+# the live bucket stays recoverable in the archive — that is what an archive is for.
+#
+#   kubectl apply -f manifests/object-store-backup.yaml
+#   kubectl -n stardelt create job --from=cronjob/lakehouse-backup lakehouse-backup-now
+#
+# Restore (per prefix, or the whole bucket by dropping the /smoke):
+#   kubectl -n stardelt create job --from=cronjob/lakehouse-restore-now   # see below
+#
+# Known limit, stated rather than hidden: the job uses one credential set, because
+# `aws s3 sync` speaks to one endpoint per invocation. The default destination is a
+# second bucket in the same store, which covers the realistic accidents (a dropped
+# bucket, a bad lifecycle rule, `aws s3 rm --recursive`). For an archive that survives
+# losing the cluster, use SeaweedFS' own replication to a remote cluster, or run the
+# sync from whatever holds the off-site credentials — `aws s3 sync` also refuses to
+# help there, and rclone (the obvious alternative) hangs against this S3 endpoint in
+# our testing, so that is a real gap rather than a footnote.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: lakehouse-backup
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+spec:
+  # 03:15 daily, after the catalog's base backup at 02:30: the data copy follows the
+  # metadata copy, so a restore always finds a catalog describing what is present.
+  schedule: "15 3 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels: { app.kubernetes.io/part-of: stardelt }
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: s3-sync
+              image: amazon/aws-cli:2.17.0
+              command: ["/bin/sh", "-ec"]
+              args:
+                - |
+                  echo "› source:      s3://${SOURCE_BUCKET}"
+                  echo "› destination: s3://${DEST_BUCKET}"
+                  exec aws s3 sync "s3://${SOURCE_BUCKET}" "s3://${DEST_BUCKET}" \
+                    --endpoint-url "${AWS_ENDPOINT_URL}" --no-progress
+              env:
+                # One endpoint/credential set for both sides (see the limit above).
+                # Point these at your archive's S3 for an off-cluster copy.
+                - name: AWS_ENDPOINT_URL
+                  valueFrom: { secretKeyRef: { name: stardelt-s3-creds, key: endpoint } }
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom: { secretKeyRef: { name: stardelt-s3-creds, key: access-key } }
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom: { secretKeyRef: { name: stardelt-s3-creds, key: secret-key } }
+                - name: AWS_DEFAULT_REGION
+                  valueFrom: { secretKeyRef: { name: stardelt-s3-creds, key: region } }
+                - name: SOURCE_BUCKET
+                  valueFrom: { secretKeyRef: { name: stardelt-s3-creds, key: bucket } }
+                - name: DEST_BUCKET
+                  value: lakehouse-backup
+              resources:
+                requests: { cpu: "50m",  memory: "128Mi" }
+                limits:   { cpu: "1",    memory: "512Mi" }
