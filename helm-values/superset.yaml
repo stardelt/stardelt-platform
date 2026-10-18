@@ -22,8 +22,10 @@ image:
   pullPolicy: IfNotPresent
 
 # The package is private, so the pod needs the same pull secret as Nova.
+# Kubernetes' shape: a list of {name: …} objects. The chart passes this through
+# verbatim, so the string form fails the release with a type error on apply.
 imagePullSecrets:
-  - ghcr-creds
+  - name: ghcr-creds
 
 bootstrapScript: |
   #!/bin/bash
