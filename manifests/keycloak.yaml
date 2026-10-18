@@ -1,0 +1,136 @@
+# Keycloak — the optional PLATFORM identity provider (realm `stardelt`).
+# Applied by `make install-identity`; the umbrella chart renders the same objects
+# from chart/templates/keycloak.yaml when `identity.mode: platform`.
+#
+# Not applied on its own: it reads objects that `scripts/identity-bootstrap.sh`
+# creates first —
+#   Secret    keycloak-admin          master-realm bootstrap admin (generated)
+#   Secret    stardelt-realm-admin    `admin` user of realm stardelt (generated)
+#   Secret    stardelt-oidc-clients   client secrets nova/lakekeeper/superset/airflow/jupyterhub (generated)
+#   ConfigMap keycloak-realm          realm import, hosts rendered from the base domain
+#   ConfigMap keycloak-env            KC_HOSTNAME (https://id.<baseDomain>)
+#
+# Image: official quay.io/keycloak/keycloak (Apache-2.0). The tag is pinned in
+# three places that scripts/check-version-parity.sh keeps equal: KEYCLOAK_VERSION
+# in the Makefile, this file, and identity.keycloak.image.tag in chart/values.yaml.
+---
+# CloudNative-PG Cluster for Keycloak's own state (realms, users, sessions).
+# The operator generates `keycloak-pg-app` (username/password) itself.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: keycloak-pg
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+spec:
+  instances: 1
+  storage:
+    size: 1Gi
+  bootstrap:
+    initdb:
+      database: keycloak
+      owner: keycloak
+  resources:
+    requests: { cpu: "50m", memory: "128Mi" }
+    limits:   { cpu: "500m", memory: "256Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  namespace: stardelt
+  labels: { app.kubernetes.io/name: keycloak, app.kubernetes.io/part-of: stardelt }
+spec:
+  type: ClusterIP
+  selector: { app.kubernetes.io/name: keycloak }
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  namespace: stardelt
+  labels: { app.kubernetes.io/name: keycloak, app.kubernetes.io/part-of: stardelt }
+spec:
+  # Single replica: KC_CACHE=local below, no clustering on the dev node.
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app.kubernetes.io/name: keycloak }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: keycloak, app.kubernetes.io/part-of: stardelt }
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:26.8.1
+          # `start` (production mode) without --optimized: the stock image has no
+          # pre-built postgres config, so Keycloak runs its build step on boot
+          # (~30-60 s extra). --import-realm creates realm `stardelt` from
+          # /opt/keycloak/data/import on first start and skips it afterwards.
+          args: ["start", "--import-realm"]
+          envFrom:
+            - configMapRef: { name: keycloak-env }
+          env:
+            - { name: KC_DB, value: postgres }
+            - { name: KC_DB_URL, value: "jdbc:postgresql://keycloak-pg-rw:5432/keycloak" }
+            - name: KC_DB_USERNAME
+              valueFrom: { secretKeyRef: { name: keycloak-pg-app, key: username } }
+            - name: KC_DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: keycloak-pg-app, key: password } }
+            # TLS terminates at the ingress; trust its X-Forwarded-* headers.
+            - { name: KC_HTTP_ENABLED, value: "true" }
+            - { name: KC_PROXY_HEADERS, value: xforwarded }
+            - { name: KC_HEALTH_ENABLED, value: "true" }
+            - { name: KC_CACHE, value: local }
+            - { name: JAVA_OPTS_KC_HEAP, value: "-XX:MaxRAMPercentage=65 -XX:InitialRAMPercentage=25" }
+            - name: KC_BOOTSTRAP_ADMIN_USERNAME
+              valueFrom: { secretKeyRef: { name: keycloak-admin, key: username } }
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: keycloak-admin, key: password } }
+            # Resolved by Keycloak's ${ENV} placeholders in the realm import, so no
+            # secret is ever written into the ConfigMap.
+            - name: STARDELT_REALM_ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: stardelt-realm-admin, key: password } }
+            - name: STARDELT_NOVA_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: stardelt-oidc-clients, key: nova } }
+            - name: STARDELT_LAKEKEEPER_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: stardelt-oidc-clients, key: lakekeeper } }
+            - name: STARDELT_SUPERSET_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: stardelt-oidc-clients, key: superset } }
+            - name: STARDELT_AIRFLOW_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: stardelt-oidc-clients, key: airflow } }
+            - name: STARDELT_JUPYTERHUB_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: stardelt-oidc-clients, key: jupyterhub } }
+          ports:
+            - { name: http, containerPort: 8080 }
+            - { name: management, containerPort: 9000 }
+          startupProbe:
+            httpGet: { path: /health/started, port: management }
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: { path: /health/ready, port: management }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health/live, port: management }
+            periodSeconds: 20
+            failureThreshold: 5
+          resources:
+            requests: { cpu: "100m", memory: "512Mi" }
+            limits:   { cpu: "1",    memory: "1Gi"   }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: realm, mountPath: /opt/keycloak/data/import, readOnly: true }
+      volumes:
+        - name: realm
+          configMap: { name: keycloak-realm }

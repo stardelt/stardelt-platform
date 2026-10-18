@@ -61,6 +61,21 @@ Without it Nova still reports live status, but every deep-link (`trino.`, `jupyt
 The umbrella chart does the same thing through `platform.baseDomain`, so a chart install needs this
 step only when you use the plain manifests.
 
+## 6. Platform IdP (optional)
+
+```sh
+make install-identity BASE_DOMAIN="${INGRESS_HOST:-alpha.dev.stardelt.io}"
+```
+
+Keycloak comes up at **https://id.alpha.dev.stardelt.io** (the `keycloak` Ingress in
+`ingress.yaml`; re-apply it if you applied the file before this step existed). It adds about
+640 MiB of memory requests. Sign in to realm `stardelt` as `admin`; the password is in a Secret
+and is never printed by the install:
+
+```sh
+kubectl -n stardelt get secret stardelt-realm-admin -o jsonpath='{.data.password}' | base64 -d
+```
+
 ## Tear down
 
 ```sh

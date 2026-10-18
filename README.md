@@ -102,6 +102,57 @@ create the Secret yourself from `manifests/s3-credentials.example.yaml`.
 
 ---
 
+## Identity (optional platform IdP)
+
+stardelt has two identity modes (contract: `docs/architecture/identity` in stardelt-docs):
+an **external** OIDC provider (Entra ID, Okta, a corporate Keycloak) or the **platform** IdP,
+Keycloak, that every building block authenticates against. Either way the platform publishes
+the same ConfigMap, `stardelt-identity`, with `issuerUrl`, `groupClaim` (`groups`) and
+`adminGroup` (`stardelt-admins`).
+
+| Umbrella chart | Makefile | What is deployed |
+|---|---|---|
+| `identity.mode: none` (default) | — | nothing |
+| `identity.mode: platform` | `make install-identity` | Keycloak (official `quay.io/keycloak/keycloak`, Apache-2.0) + its own CNPG Cluster `keycloak-pg`, realm `stardelt`; Ingress `id.<baseDomain>` when `ingress.enabled` (playground: `dev/playground/ingress.yaml`) |
+| `identity.mode: external` + `identity.issuerUrl` | — | only `stardelt-identity` (render fails without an https issuer) |
+
+```sh
+make install-core SLIM=1                                    # CNPG operator first
+make install-identity BASE_DOMAIN=alpha.dev.stardelt.io     # Keycloak at https://id.<BASE_DOMAIN>
+# or: make chart-install CHART_EXTRA="--set identity.mode=platform --set platform.baseDomain=example.com"
+```
+
+The realm import (`chart/files/keycloak-realm.json`, shared by both paths) defines group
+`stardelt-admins`, user `admin` in it, a `groups` claim (group names, full path off) and these clients:
+
+| Client | Type | Redirect URI |
+|---|---|---|
+| `nova` | confidential, code + PKCE | `https://<baseDomain>/api/auth/callback` |
+| `trino` | public, code + PKCE, device grant | `https://trino.<baseDomain>/oauth2/callback` |
+| `lakekeeper` | confidential | `https://lakekeeper.<baseDomain>/ui/*` |
+| `superset` | confidential | `https://superset.<baseDomain>/oauth-authorized/keycloak` |
+| `airflow` | confidential | `https://airflow.<baseDomain>/auth/oauth-authorized/keycloak` |
+| `jupyterhub` | confidential | `https://jupyter.<baseDomain>/hub/oauth_callback` |
+
+**No committed credentials.** On first install the Keycloak bootstrap-admin password, the realm
+`admin` password and the five client secrets are generated (`openssl rand` in
+`scripts/identity-bootstrap.sh`; `randAlphaNum` + `lookup` in the chart) into the Secrets
+`keycloak-admin`, `stardelt-realm-admin` and `stardelt-oidc-clients` (one key per client). They are
+never printed, the realm ConfigMap only holds `${ENV}` placeholders, and re-runs keep existing
+values. `make uninstall` (and `helm uninstall`) leave the Secrets in place; delete them to rotate
+before a fresh install. The realm is imported only when it does not exist yet, so later edits to the
+realm file are not applied to a running realm.
+
+Sizing (single node): Keycloak 100m / 512Mi request, 1 CPU / 1Gi limit, one replica,
+`KC_CACHE=local`; its Postgres 50m / 128Mi request, 256Mi limit, 1Gi volume. The Keycloak image is
+pinned as `KEYCLOAK_VERSION` in the Makefile and mirrored in `manifests/keycloak.yaml` and
+`identity.keycloak.image.tag`; `scripts/check-version-parity.sh` checks all three and Renovate
+updates them together. Behind ingress-nginx, raise `proxy-buffer-size` for the `id.` host (the
+playground Ingress sets `16k`; for the chart pass it through `ingress.annotations`), since Keycloak's
+login responses outgrow nginx's default 4k header buffer.
+
+---
+
 ## Makefile targets
 
 | Target | Description |
@@ -112,6 +163,7 @@ create the Secret yourself from `manifests/s3-credentials.example.yaml`.
 | `install` | Add helm repos, deploy the full stack (9 steps) |
 | `install-core` | Core only (storage + catalog + query + Nova) — fits a small node; `SLIM=1` for 8 GB |
 | `install-notebooks` | JupyterHub (notebooks) |
+| `install-identity` | Platform IdP: Keycloak + CNPG Postgres + realm `stardelt` (`BASE_DOMAIN=…`, see [Identity](#identity-optional-platform-idp)) |
 | `install-operator` | Install the stardelt Operator from `../stardelt-operator/chart` (dev path) |
 | `pin` | Pin a deployment to the newest published digest (`make pin APP=nova`) |
 | `upgrade` | Re-run `install` (helm upgrade is idempotent) |
@@ -134,7 +186,8 @@ chart/                Umbrella Helm chart (see "Helm chart (baseline)")
   Chart.yaml            Dependencies + conditions; versions mirror the Makefile pins
   values.yaml           Per-sub-chart values, mirrored from helm-values/
   values-slim.yaml      Small-node Trino overrides (mirrors helm-values/slim/)
-  templates/            Nova, CNPG Cluster, S3 Secret, Lakekeeper bootstrap Job
+  templates/            Nova, CNPG Cluster, S3 Secret, Lakekeeper bootstrap Job, Keycloak/identity
+  files/                keycloak-realm.json — realm import shared with make install-identity
   charts/               Sub-charts, fetched by `make chart-deps` (not committed)
 
 helm-values/          Helm values files, one per chart
@@ -148,6 +201,7 @@ helm-values/          Helm values files, one per chart
 
 manifests/            Plain Kubernetes manifests (kubectl apply)
   cnpg-postgres.yaml    CloudNative-PG Cluster for Lakekeeper metadata
+  keycloak.yaml         Platform IdP: Keycloak + its CNPG Cluster (make install-identity)
   lakekeeper-bootstrap.yaml  Job: accept ToS + create default warehouse
   nova-deployment.yaml  stardelt Nova UI + backend
   s3-credentials.example.yaml  Template for the stardelt-s3-creds Secret
@@ -157,6 +211,7 @@ images/
 
 scripts/
   check-deps.sh         Verify required CLI tools
+  identity-bootstrap.sh Generate the IdP Secrets + render realm/identity ConfigMaps
   lint.sh               bash -n + ShellCheck the shell scripts (make lint)
   port-forwards.sh      Background port-forwards to all services
   helm-plugins/
@@ -175,6 +230,7 @@ scripts/
 | Trino | 1.42.2 | 480 |
 | Apache Airflow | 1.21.0 | 3.2.0 |
 | Apache Superset | 0.15.5 | 5.0.0 |
+| Keycloak (image, no chart) | — | 26.8.1 |
 
 ---
 

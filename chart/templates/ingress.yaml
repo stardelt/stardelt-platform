@@ -19,6 +19,7 @@
       (dict "name" "superset"   "service" "superset"           "port" 8088 "sub" "superset"   "enabled" .Values.superset.enabled)
       (dict "name" "airflow"    "service" "airflow-api-server" "port" 8080 "sub" "airflow"    "enabled" .Values.airflow.enabled)
       (dict "name" "jupyterhub" "service" "proxy-public"       "port" 80   "sub" "jupyter"    "enabled" .Values.jupyterhub.enabled)
+      (dict "name" "keycloak"   "service" "keycloak"           "port" 8080 "sub" "id"         "enabled" (eq (include "stardelt.identityMode" .) "platform"))
 }}
 {{- range $services }}
 {{- if .enabled }}

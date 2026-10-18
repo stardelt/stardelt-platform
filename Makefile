@@ -21,6 +21,11 @@ AIRFLOW_VERSION    := 1.21.0
 SUPERSET_VERSION   := 0.15.5
 JUPYTERHUB_VERSION := 4.4.3
 
+# Pinned image versions (no chart: plain manifests in manifests/keycloak.yaml).
+# Mirrored in manifests/keycloak.yaml and chart/values.yaml
+# (identity.keycloak.image.tag); scripts/check-version-parity.sh checks all three.
+KEYCLOAK_VERSION   := 26.8.1
+
 HELM_FLAGS := --namespace $(NAMESPACE) --create-namespace --wait --timeout 10m
 
 SUPERSET_IMAGE := ghcr.io/stardelt/superset:dev
@@ -32,7 +37,11 @@ TRINO_EXTRA := $(if $(filter 1,$(SLIM)),-f helm-values/slim/trino.yaml,)
 #   make chart-template CHART_EXTRA="-f chart/values-slim.yaml"
 CHART_EXTRA ?=
 
-.PHONY: _context help deps lint install install-core install-notebooks install-operator upgrade uninstall build-superset-image push-superset-image pf pin dev-up dev-down dev-dns dev-dns-down
+# Base domain for the platform IdP (install-identity): Keycloak at id.<BASE_DOMAIN>,
+# client redirect URIs on the app subdomains. Same default as `dev-dns`.
+BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
+
+.PHONY: _context help deps lint install install-core install-notebooks install-identity install-operator upgrade uninstall build-superset-image push-superset-image pf pin dev-up dev-down dev-dns dev-dns-down
 .PHONY: chart-deps chart-template chart-install
 
 help: ## Show this help
@@ -179,6 +188,24 @@ install-notebooks: deps _context _helm-repos ## Install JupyterHub (notebooks)
 	@echo "JupyterHub installed. Public service: proxy-public:80."
 
 # ---------------------------------------------------------------------------
+# Identity — optional platform IdP (Keycloak, realm `stardelt`).
+# Needs the CNPG operator (install-core). Secrets are generated on first run and
+# never printed; see scripts/identity-bootstrap.sh.
+# ---------------------------------------------------------------------------
+install-identity: deps _context ## Install the platform IdP (Keycloak) at id.$(BASE_DOMAIN)
+	@kubectl get crd clusters.postgresql.cnpg.io >/dev/null 2>&1 || { \
+	  echo "CloudNative-PG CRDs not found — run 'make install-core' first" >&2; exit 1; }
+	@echo "› [1/3] Secrets + realm/identity ConfigMaps (base domain $(BASE_DOMAIN))"
+	@NAMESPACE=$(NAMESPACE) BASE_DOMAIN=$(BASE_DOMAIN) bash scripts/identity-bootstrap.sh
+	@echo "› [2/3] CNPG Cluster (Keycloak Postgres)"
+	@kubectl apply -f manifests/keycloak.yaml
+	@kubectl -n $(NAMESPACE) wait --for=condition=Ready --timeout=300s cluster/keycloak-pg
+	@echo "› [3/3] Keycloak $(KEYCLOAK_VERSION)"
+	@kubectl -n $(NAMESPACE) rollout status deploy/keycloak --timeout=10m
+	@echo "Keycloak installed. Issuer: https://id.$(BASE_DOMAIN)/realms/stardelt"
+	@echo "Realm admin password: kubectl -n $(NAMESPACE) get secret stardelt-realm-admin -o jsonpath='{.data.password}' | base64 -d"
+
+# ---------------------------------------------------------------------------
 # Control plane — the stardelt Operator (dev: from the sibling checkout).
 # ---------------------------------------------------------------------------
 OPERATOR_DIR ?= ../stardelt-operator
@@ -201,6 +228,8 @@ upgrade: install ## Upgrade all components (same as install)
 uninstall: _context ## Uninstall all stardelt components (reverse order)
 	@echo "› removing manifests"
 	@kubectl delete -f manifests/nova-deployment.yaml        --ignore-not-found
+	@kubectl delete -f manifests/keycloak.yaml               --ignore-not-found
+	@kubectl -n $(NAMESPACE) delete configmap keycloak-realm keycloak-env stardelt-identity --ignore-not-found
 	@kubectl delete -f manifests/lakekeeper-bootstrap.yaml   --ignore-not-found
 	@kubectl delete -f manifests/cnpg-postgres.yaml          --ignore-not-found
 
@@ -213,7 +242,7 @@ uninstall: _context ## Uninstall all stardelt components (reverse order)
 	@helm uninstall seaweedfs  --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@helm uninstall cnpg       --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 
-	@echo "Uninstall complete."
+	@echo "Uninstall complete. Kept (like PVCs): Secrets keycloak-admin, stardelt-realm-admin, stardelt-oidc-clients."
 
 # ---------------------------------------------------------------------------
 # Umbrella chart — the declarative counterpart of `install`/`install-core`.

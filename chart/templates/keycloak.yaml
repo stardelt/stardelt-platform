@@ -1,0 +1,195 @@
+{{- if eq (include "stardelt.identityMode" .) "platform" }}
+{{- $kc := .Values.identity.keycloak }}
+{{- $base := .Values.platform.baseDomain }}
+{{- $kcHost := include "stardelt.appHost" (list . "keycloak" "id") }}
+# Keycloak — the platform identity provider (identity.mode=platform).
+# Equivalent to manifests/keycloak.yaml + scripts/identity-bootstrap.sh.
+#
+# Generated credentials: random on first install, re-read with `lookup` on every
+# upgrade (the imported realm already holds them), and kept on uninstall.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keycloak-admin
+  namespace: {{ .Release.Namespace }}
+  labels: { app.kubernetes.io/part-of: stardelt }
+  annotations: { helm.sh/resource-policy: keep }
+type: Opaque
+data:
+  username: {{ "admin" | b64enc | quote }}
+  password: {{ include "stardelt.secretValue" (list . "keycloak-admin" "password") | quote }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: stardelt-realm-admin
+  namespace: {{ .Release.Namespace }}
+  labels: { app.kubernetes.io/part-of: stardelt }
+  annotations: { helm.sh/resource-policy: keep }
+type: Opaque
+data:
+  username: {{ "admin" | b64enc | quote }}
+  password: {{ include "stardelt.secretValue" (list . "stardelt-realm-admin" "password") | quote }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: stardelt-oidc-clients
+  namespace: {{ .Release.Namespace }}
+  labels: { app.kubernetes.io/part-of: stardelt }
+  annotations: { helm.sh/resource-policy: keep }
+type: Opaque
+data:
+  {{- range list "nova" "lakekeeper" "superset" "airflow" "jupyterhub" }}
+  {{ . }}: {{ include "stardelt.secretValue" (list $ "stardelt-oidc-clients" .) | quote }}
+  {{- end }}
+---
+# Realm import. Hosts are rendered here; secrets stay ${ENV} placeholders that
+# Keycloak resolves from the Secrets above at import time.
+{{- $realm := .Files.Get "files/keycloak-realm.json"
+      | replace "__BASE_DOMAIN__" $base
+      | replace "__NOVA_HOST__" (include "stardelt.appHost" (list . "nova" ""))
+      | replace "__TRINO_HOST__" (include "stardelt.appHost" (list . "trino" "trino"))
+      | replace "__LAKEKEEPER_HOST__" (include "stardelt.appHost" (list . "lakekeeper" "lakekeeper"))
+      | replace "__SUPERSET_HOST__" (include "stardelt.appHost" (list . "superset" "superset"))
+      | replace "__AIRFLOW_HOST__" (include "stardelt.appHost" (list . "airflow" "airflow"))
+      | replace "__JUPYTER_HOST__" (include "stardelt.appHost" (list . "jupyterhub" "jupyter")) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-realm
+  namespace: {{ .Release.Namespace }}
+  labels: { app.kubernetes.io/part-of: stardelt }
+data:
+  stardelt-realm.json: |
+{{ $realm | indent 4 }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-env
+  namespace: {{ .Release.Namespace }}
+  labels: { app.kubernetes.io/part-of: stardelt }
+data:
+  KC_HOSTNAME: {{ printf "https://%s" $kcHost | quote }}
+---
+# CloudNative-PG Cluster for Keycloak's own state. The operator generates
+# `keycloak-pg-app` (username/password).
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: keycloak-pg
+  namespace: {{ .Release.Namespace }}
+  labels: { app.kubernetes.io/part-of: stardelt }
+spec:
+  instances: {{ $kc.postgres.instances }}
+  storage:
+    size: {{ $kc.postgres.storage.size }}
+    {{- with .Values.storage.className }}
+    storageClass: {{ . }}
+    {{- end }}
+  bootstrap:
+    initdb:
+      database: keycloak
+      owner: keycloak
+  resources:
+    {{- toYaml $kc.postgres.resources | nindent 4 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  namespace: {{ .Release.Namespace }}
+  labels: { app.kubernetes.io/name: keycloak, app.kubernetes.io/part-of: stardelt }
+spec:
+  type: ClusterIP
+  selector: { app.kubernetes.io/name: keycloak }
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  namespace: {{ .Release.Namespace }}
+  labels: { app.kubernetes.io/name: keycloak, app.kubernetes.io/part-of: stardelt }
+spec:
+  # Single replica: KC_CACHE=local, no clustering.
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app.kubernetes.io/name: keycloak }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: keycloak, app.kubernetes.io/part-of: stardelt }
+      annotations:
+        # Roll the pod when the realm or hostname changes (the import itself
+        # only runs while realm `stardelt` does not exist yet).
+        checksum/realm: {{ $realm | sha256sum }}
+        checksum/hostname: {{ $kcHost | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      {{- with .Values.images.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: keycloak
+          image: "{{ $kc.image.repository }}:{{ $kc.image.tag }}"
+          imagePullPolicy: {{ $kc.image.pullPolicy }}
+          # Production mode without --optimized (stock image, build step on boot).
+          args: ["start", "--import-realm"]
+          envFrom:
+            - configMapRef: { name: keycloak-env }
+          env:
+            - { name: KC_DB, value: postgres }
+            - { name: KC_DB_URL, value: "jdbc:postgresql://keycloak-pg-rw:5432/keycloak" }
+            - name: KC_DB_USERNAME
+              valueFrom: { secretKeyRef: { name: keycloak-pg-app, key: username } }
+            - name: KC_DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: keycloak-pg-app, key: password } }
+            - { name: KC_HTTP_ENABLED, value: "true" }
+            - { name: KC_PROXY_HEADERS, value: xforwarded }
+            - { name: KC_HEALTH_ENABLED, value: "true" }
+            - { name: KC_CACHE, value: local }
+            - { name: JAVA_OPTS_KC_HEAP, value: "-XX:MaxRAMPercentage=65 -XX:InitialRAMPercentage=25" }
+            - name: KC_BOOTSTRAP_ADMIN_USERNAME
+              valueFrom: { secretKeyRef: { name: keycloak-admin, key: username } }
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: keycloak-admin, key: password } }
+            - name: STARDELT_REALM_ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: stardelt-realm-admin, key: password } }
+            {{- range list "nova" "lakekeeper" "superset" "airflow" "jupyterhub" }}
+            - name: {{ printf "STARDELT_%s_CLIENT_SECRET" (upper .) }}
+              valueFrom: { secretKeyRef: { name: stardelt-oidc-clients, key: {{ . }} } }
+            {{- end }}
+          ports:
+            - { name: http, containerPort: 8080 }
+            - { name: management, containerPort: 9000 }
+          startupProbe:
+            httpGet: { path: /health/started, port: management }
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: { path: /health/ready, port: management }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health/live, port: management }
+            periodSeconds: 20
+            failureThreshold: 5
+          resources:
+            {{- toYaml $kc.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: realm, mountPath: /opt/keycloak/data/import, readOnly: true }
+      volumes:
+        - name: realm
+          configMap: { name: keycloak-realm }
+{{- end }}

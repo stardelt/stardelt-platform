@@ -72,6 +72,18 @@
       "depNameTemplate": "superset",
       "datasourceTemplate": "helm",
       "registryUrlTemplate": "https://apache.github.io/superset"
+    },
+    {
+      "description": "Keycloak image pin (no chart: manifests/keycloak.yaml + chart/templates/keycloak.yaml). datasource=docker against quay.io because the official image is the thing that moves. The same tag lives in three places that scripts/check-version-parity.sh keeps equal (Makefile `KEYCLOAK_VERSION`, the manifest `image:` line, `identity.keycloak.image.tag` in chart/values.yaml), so all three are matched here and move in one PR.",
+      "customType": "regex",
+      "managerFilePatterns": ["/(^|/)Makefile$/", "/(^|/)manifests/keycloak\\.yaml$/", "/(^|/)chart/values\\.yaml$/"],
+      "matchStrings": [
+        "KEYCLOAK_VERSION\\s*:=\\s*(?<currentValue>[^\\s#]+)",
+        "image:\\s*quay\\.io/keycloak/keycloak:(?<currentValue>[^\\s\"]+)",
+        "repository:\\s*quay\\.io/keycloak/keycloak\\s+tag:\\s*\"?(?<currentValue>[^\\s\"]+)\"?"
+      ],
+      "depNameTemplate": "quay.io/keycloak/keycloak",
+      "datasourceTemplate": "docker"
     }
   ],
   "packageRules": [
@@ -85,6 +97,12 @@
       "matchDatasources": ["helm"],
       "matchUpdateTypes": ["major"],
       "groupName": "helm charts (major)",
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "Keycloak majors change realm-import and hostname options; require an explicit tick on the Dependency Dashboard.",
+      "matchPackageNames": ["quay.io/keycloak/keycloak"],
+      "matchUpdateTypes": ["major"],
       "dependencyDashboardApproval": true
     },
     {

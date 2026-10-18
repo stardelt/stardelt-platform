@@ -15,6 +15,12 @@ creates, so `make pf` and the playground ingresses keep working.
     {{ if .Values.airflow.enabled }}✓{{ else }}·{{ end }} Airflow    (enable with --set airflow.enabled=true)
     {{ if .Values.jupyterhub.enabled }}✓{{ else }}·{{ end }} JupyterHub (enable with --set jupyterhub.enabled=true)
 
+  Identity: {{ include "stardelt.identityMode" . }}{{ if ne (include "stardelt.identityMode" .) "none" }} — issuer {{ include "stardelt.issuerUrl" . }} (ConfigMap stardelt-identity){{ else }} (set identity.mode=platform|external){{ end }}
+{{- if eq (include "stardelt.identityMode" .) "platform" }}
+    Realm admin password (user `admin`, realm stardelt):
+      kubectl -n {{ .Release.Namespace }} get secret stardelt-realm-admin -o jsonpath='{.data.password}' | base64 -d
+{{- end }}
+
 Nova runs with image {{ .Values.nova.image.repository }}:{{ .Values.nova.image.tag }}.
 {{- if .Values.s3Credentials.create }}
 The Secret {{ .Values.s3Credentials.name }} carries the dev S3 credentials that

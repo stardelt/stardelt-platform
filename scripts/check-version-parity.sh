@@ -46,4 +46,20 @@ while IFS= read -r prefix; do
     echo "✓ $chart $make_version"
   fi
 done < <(printf '%s\n' "${!CHART_OF[@]}" | sort)
+
+# Image pins without a chart: the Makefile pin must equal the tag in the plain
+# manifest and in chart/values.yaml (Renovate updates all three together).
+#   Keycloak: KEYCLOAK_VERSION / manifests/keycloak.yaml / identity.keycloak.image.tag
+kc_make="$(sed -n 's/^KEYCLOAK_VERSION[[:space:]]*:=[[:space:]]*\([^[:space:]#]*\).*/\1/p' Makefile)"
+kc_manifest="$(sed -n 's|^[[:space:]]*image:[[:space:]]*quay.io/keycloak/keycloak:\([^[:space:]\"]*\).*|\1|p' manifests/keycloak.yaml)"
+kc_values="$(awk '
+  /repository:[[:space:]]*quay.io\/keycloak\/keycloak/ { want = 1; next }
+  want && /tag:/ { gsub(/["[:space:]]/, "", $2); print $2; exit }
+' chart/values.yaml)"
+if [[ -z "$kc_make" || "$kc_make" != "$kc_manifest" || "$kc_make" != "$kc_values" ]]; then
+  echo "✗ keycloak image: Makefile='${kc_make}', manifests/keycloak.yaml='${kc_manifest}', chart/values.yaml='${kc_values}'" >&2
+  status=1
+else
+  echo "✓ keycloak image $kc_make"
+fi
 exit "$status"

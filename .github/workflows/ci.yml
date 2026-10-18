@@ -120,3 +120,14 @@ jobs:
           helm template stardelt chart -n stardelt > /dev/null
           helm template stardelt chart -n stardelt --set superset.enabled=true > /dev/null
           helm template stardelt chart -n stardelt -f chart/values-slim.yaml > /dev/null
+          # identity.mode: none (default above), platform (Keycloak), external (issuer only)
+          helm template stardelt chart -n stardelt -f chart/values-slim.yaml \
+            --set identity.mode=platform --set platform.baseDomain=example.com --set ingress.enabled=true > /dev/null
+          helm template stardelt chart -n stardelt \
+            --set identity.mode=external --set identity.issuerUrl=https://login.example.com/realms/x > /dev/null
+          # invalid identity settings must fail the render (`!` alone is ignored by `set -e`)
+          for bad in "identity.mode=external" "identity.mode=platform" "identity.mode=bogus"; do
+            if helm template stardelt chart -n stardelt --set "$bad" > /dev/null 2>&1; then
+              echo "expected render failure for --set $bad" >&2; exit 1
+            fi
+          done
