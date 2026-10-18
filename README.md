@@ -111,6 +111,52 @@ release namespace: `NAMESPACE=<release ns> make verify-backup-config` / `verify-
 
 ---
 
+## Airflow and Superset credentials
+
+Neither values file contains a secret. `scripts/app-secrets.sh` generates them on the
+cluster and every install path runs it first (`make install`, `make chart-install`);
+`make install-core` does not need it. It is idempotent — a Secret that already exists is
+left untouched, so re-running an install never rotates a key under a running stack.
+
+| Secret | Keys | Read by |
+|---|---|---|
+| `airflow-fernet-key` | `fernet-key` | `fernetKeySecretName` |
+| `airflow-webserver-key` | `webserver-secret-key`, `api-secret-key` | `webserverSecretKeySecretName` (Airflow <3) and `apiSecretKeySecretName` (Airflow 3) |
+| `airflow-jwt-secret` | `jwt-secret` | `jwtSecretName` |
+| `airflow-admin` | `username`, `password` | create-user Job env → `airflow users create` |
+| `superset-secret-key` | `secret-key` | `SUPERSET_SECRET_KEY` via `extraEnvRaw` |
+| `superset-admin` | `username`, `password`, `firstname`, `lastname`, `email` | Superset init Job (password) |
+
+The Airflow chart has no Secret reference for `createUserJob.defaultUser` and the Superset
+chart has no `supersetSecretKeySecretName` (its `extraSecretEnv` writes literals), so both
+values files use the charts' next-smallest hooks instead: `createUserJob.env` plus custom
+`args`, and `extraEnvRaw` plus a copy of the default `init.initscript` that reads the
+password from the environment. Usernames and profile fields stay in values; only
+credentials come from Secrets.
+
+The Secrets carry `app.kubernetes.io/part-of=stardelt` and belong to no Helm release, so
+`make uninstall` / `helm uninstall` keep them (like the PVCs). Read one back deliberately —
+the script never prints a value:
+
+```sh
+kubectl -n stardelt get secret airflow-admin -o jsonpath='{.data.password}' | base64 -d
+kubectl -n stardelt get secret airflow-fernet-key -o jsonpath='{.data}' | jq 'keys'
+```
+
+To rotate, delete the Secret and re-run the step — `NAMESPACE=stardelt bash
+scripts/app-secrets.sh` (or the next `make install`). Two things to know:
+
+- **The fernet key is not like the others.** Rotating `airflow-fernet-key` makes every
+  connection Airflow stored encrypted in its metadata database undecryptable; the stored
+  credentials have to be re-entered. Rotating the API/JWT/session keys only ends sessions
+  (Superset users get logged out).
+- **The Airflow create-user Job only creates the user.** Changing an existing user's
+  password is Airflow CLI work, not a Secret edit. And because Job specs are immutable,
+  delete the two Airflow Jobs before the first upgrade that carries this change:
+  `kubectl -n stardelt delete job airflow-create-user airflow-run-airflow-migrations`.
+
+---
+
 ## Identity (optional platform IdP)
 
 stardelt has two identity modes (contract: `docs/architecture/identity` in stardelt-docs):
@@ -208,7 +254,7 @@ login responses outgrow nginx's default 4k header buffer.
 | `help` | List all targets with descriptions |
 | `deps` | Run `scripts/check-deps.sh` to verify CLI tools |
 | `lint` | `bash -n` + ShellCheck every script under `scripts/` and `dev/` (ShellCheck only if installed) |
-| `install` | Add helm repos, deploy the full stack (9 steps) |
+| `install` | Add helm repos, deploy the full stack (11 steps; generates the Airflow/Superset Secrets first) |
 | `install-core` | Core only (storage + catalog + query + Nova) — fits a small node; `SLIM=1` for 8 GB |
 | `verify-backup-config` | Post-apply guard (also run by both install targets): the live `lakekeeper-pg` Cluster must still declare `spec.backup`, or the command fails loudly |
 | `verify-backups` | Full WAL check: `spec.backup` + the newest object in `s3://backups/lakekeeper-pg/wals/` is younger than `MAX_AGE_SECONDS` (900) + it matches `pg_stat_archiver.last_archived_wal`. `SKIP_OBJECTS=1` skips the S3 half |
@@ -261,6 +307,7 @@ images/
   superset/Dockerfile   Superset 5.0.0 + psycopg2 + trino driver
 
 scripts/
+  app-secrets.sh        Generate the Airflow/Superset Secrets (idempotent, never printed)
   check-deps.sh         Verify required CLI tools
   identity-bootstrap.sh Generate the IdP Secrets + render realm/identity ConfigMaps
   lint.sh               bash -n + ShellCheck the shell scripts (make lint)

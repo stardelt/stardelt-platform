@@ -105,53 +105,56 @@ _helm-repos:
 # Install
 # ---------------------------------------------------------------------------
 install: deps _context _helm-repos ## Install all stardelt components (idempotent)
-	@echo "› [1/9] CloudNative-PG operator"
+	@echo "› [1/11] CloudNative-PG operator"
 	@helm upgrade --install cnpg cnpg/cloudnative-pg \
 	  --version $(CNPG_VERSION) \
 	  $(HELM_FLAGS)
 
-	@echo "› [2/9] CNPG Cluster (Lakekeeper Postgres)"
+	@echo "› [2/11] CNPG Cluster (Lakekeeper Postgres)"
 	@kubectl apply -f manifests/cnpg-postgres.yaml
-	@echo "› [2/9] guard: the live Cluster must still declare its backup config"
+	@echo "› [2/11] guard: the live Cluster must still declare its backup config"
 	@$(MAKE) --no-print-directory verify-backup-config
 
-	@echo "› [3/9] SeaweedFS"
+	@echo "› [3/11] SeaweedFS"
 	@helm upgrade --install seaweedfs seaweedfs/seaweedfs \
 	  --version $(SEAWEEDFS_VERSION) \
 	  $(HELM_FLAGS) \
 	  -f helm-values/seaweedfs.yaml
 
-	@echo "› [4/9] Lakekeeper"
+	@echo "› [4/11] Lakekeeper"
 	@helm upgrade --install lakekeeper lakekeeper/lakekeeper \
 	  --version $(LAKEKEEPER_VERSION) \
 	  $(HELM_FLAGS) \
 	  -f helm-values/lakekeeper.yaml
 
-	@echo "› [5/9] Lakekeeper bootstrap"
+	@echo "› [5/11] Lakekeeper bootstrap"
 	@kubectl apply -f manifests/lakekeeper-bootstrap.yaml
 
-	@echo "› [6/9] Trino"
+	@echo "› [6/11] Trino"
 	@helm upgrade --install trino trino/trino \
 	  --version $(TRINO_VERSION) \
 	  $(HELM_FLAGS) \
 	  -f helm-values/trino.yaml
 
-	@echo "› [7/9] Airflow"
+	@echo "› [7/11] Airflow/Superset Secrets (generated once, kept across installs)"
+	@NAMESPACE=$(NAMESPACE) bash scripts/app-secrets.sh
+
+	@echo "› [8/11] Airflow"
 	@helm upgrade --install airflow apache-airflow/airflow \
 	  --version $(AIRFLOW_VERSION) \
 	  $(HELM_FLAGS) \
 	  -f helm-values/airflow.yaml
 
-	@echo "› [8/9] Superset"
+	@echo "› [9/11] Superset"
 	@helm upgrade --install superset superset/superset \
 	  --version $(SUPERSET_VERSION) \
 	  $(HELM_FLAGS) \
 	  -f helm-values/superset.yaml
 
-	@echo "› [9/9] Nova"
+	@echo "› [10/11] Nova"
 	@kubectl apply -f manifests/nova-deployment.yaml
 
-	@echo "› [10/10] Pin images to the digests CI published"
+	@echo "› [11/11] Pin images to the digests CI published"
 	@$(MAKE) --no-print-directory pin-images
 
 	@echo ""
@@ -271,7 +274,9 @@ uninstall: _context ## Uninstall all stardelt components (reverse order)
 	@helm uninstall seaweedfs  --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@helm uninstall cnpg       --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 
-	@echo "Uninstall complete. Kept (like PVCs): Secrets keycloak-admin, stardelt-realm-admin, stardelt-oidc-clients."
+	@echo "Uninstall complete. Kept (like PVCs): Secrets keycloak-admin, stardelt-realm-admin,"
+	@echo "stardelt-oidc-clients, airflow-fernet-key, airflow-webserver-key, airflow-jwt-secret,"
+	@echo "airflow-admin, superset-secret-key, superset-admin (see scripts/app-secrets.sh)."
 
 # ---------------------------------------------------------------------------
 # Umbrella chart — the declarative counterpart of `install`/`install-core`.
@@ -291,6 +296,7 @@ chart-template: ## Render the umbrella chart without installing it
 	@helm template stardelt chart --namespace $(NAMESPACE) $(CHART_EXTRA)
 
 chart-install: _context ## Install/upgrade the umbrella chart as release `stardelt`
+	@NAMESPACE=$(NAMESPACE) bash scripts/app-secrets.sh
 	@helm upgrade --install stardelt chart \
 	  --namespace $(NAMESPACE) --create-namespace \
 	  $(CHART_EXTRA)
