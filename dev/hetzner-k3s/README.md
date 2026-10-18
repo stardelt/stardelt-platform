@@ -57,15 +57,24 @@ Then set up ingress + TLS from [dev/playground](../playground).
 | `NODE_TYPE` | `cx33` | 4 vCPU / 8 GB (~€10/mo); `cx43` = 16 GB (~€19/mo) |
 | `LOCATION` | `nbg1` | `nbg1` \| `fsn1` \| `hel1` \| `ash` \| `hil` |
 | `INGRESS_HOST` | `alpha.dev.stardelt.io` | playground hostname |
-| `ALLOW_IPV4` / `ALLOW_IPV6` | your current public IPs | SSH + API allowlist |
+| `ALLOW_IPV4` / `ALLOW_IPV6` | your current public IPs | SSH + API allowlist (plain address = /32 or /128, or a CIDR) |
 
 Reference config: [`cluster.yaml.example`](./cluster.yaml.example).
+
+`cluster.yaml` is the only record `dev-down` has of what to delete, so `provision.sh`
+refuses to overwrite one that describes a different `CLUSTER_NAME`; run `make dev-down`
+for the old cluster first.
 
 ## Tear down
 
 ```sh
 make dev-down        # hetzner-k3s delete + remove DNS records
 ```
+
+`dev-down` prints the cluster named in `cluster.yaml` and the DNS records it will remove,
+and asks before going on when run from a terminal (`FORCE=1` skips the question; without a
+terminal it proceeds). If the cluster delete fails it stops and leaves DNS alone; run
+`make dev-dns-down` once the cluster is really gone.
 
 What disappears: the server, k3s itself, and **everything on its disk** — every
 PersistentVolumeClaim (SeaweedFS data, Lakekeeper's Postgres, JupyterHub homes,

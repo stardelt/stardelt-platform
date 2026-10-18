@@ -7,6 +7,9 @@
 #
 # Credentials are read from ~/.config/stardelt/cloudflare.env (mode 600) unless
 # already exported. `WILDCARD=0` skips the wildcard A record.
+#
+# Guard rail: NAME must be a strict subdomain of the zone (never the apex), so a typo
+# or an empty/odd INGRESS_HOST cannot touch the zone's own records.
 set -euo pipefail
 
 CF_ENV="${CF_ENV:-$HOME/.config/stardelt/cloudflare.env}"
@@ -15,6 +18,7 @@ CF_ENV="${CF_ENV:-$HOME/.config/stardelt/cloudflare.env}"
 [ -f "$CF_ENV" ] && { set -a; . "$CF_ENV"; set +a; }
 
 : "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN (or create $CF_ENV)}"
+command -v jq >/dev/null 2>&1 || { echo "jq not found" >&2; exit 1; }
 ZONE_NAME="${CLOUDFLARE_ZONE_NAME:-stardelt.io}"
 NAME="${NAME:-${INGRESS_HOST:-alpha.dev.stardelt.io}}"
 IP="${IP:-}"
@@ -23,9 +27,36 @@ TTL="${TTL:-300}"
 ACTION="${1:-upsert}"
 API="https://api.cloudflare.com/client/v4"
 
+case "$ACTION" in
+  upsert|delete) ;;
+  *)
+    echo "usage: $0 upsert|delete  (env: NAME, IP, WILDCARD, TTL)" >&2
+    exit 2
+    ;;
+esac
+
+NAME="${NAME,,}"
+if [[ ! "$NAME" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || [[ "$NAME" != *".$ZONE_NAME" ]]; then
+  echo "refusing NAME='$NAME': must be a hostname strictly below zone $ZONE_NAME" >&2
+  exit 2
+fi
+if [ "$ACTION" = "upsert" ]; then
+  [[ "$IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || { echo "IP must be an IPv4 address (got '${IP}')" >&2; exit 2; }
+fi
+
+# cf <method> <path> [curl args...] — authenticated Cloudflare API call. The token is
+# handed to curl through a config on a pipe, so it never shows up in `ps` output.
+cf() {
+  local method="$1" path="$2"
+  shift 2
+  curl -fsS --connect-timeout 10 --max-time 30 -X "$method" \
+    -K <(printf 'header = "Authorization: Bearer %s"\n' "$CLOUDFLARE_API_TOKEN") \
+    -H "Content-Type: application/json" "$@" "$API$path"
+}
+
 zone_id() {
   if [ -n "${CLOUDFLARE_ZONE_ID:-}" ]; then echo "$CLOUDFLARE_ZONE_ID"; return; fi
-  curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$API/zones?name=$ZONE_NAME" | jq -r '.result[0].id'
+  cf GET "/zones?name=$ZONE_NAME" | jq -r '.result[0].id'
 }
 
 ZID="$(zone_id)"
@@ -35,8 +66,7 @@ if [ -z "$ZID" ] || [ "$ZID" = "null" ]; then
 fi
 
 record_id() {
-  curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-    "$API/zones/$ZID/dns_records?type=A&name=$1" | jq -r '.result[0].id // empty'
+  cf GET "/zones/$ZID/dns_records?type=A&name=$1" | jq -r '.result[0].id // empty'
 }
 
 upsert() {
@@ -45,11 +75,9 @@ upsert() {
   body="$(jq -nc --arg n "$name" --arg c "$content" --argjson ttl "$TTL" \
     '{type:"A",name:$n,content:$c,ttl:$ttl,proxied:false}')"
   if [ -n "$id" ]; then
-    curl -fsS -X PUT -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" \
-      "$API/zones/$ZID/dns_records/$id" -d "$body" | jq -c '{action:"updated",name:.result.name,content:.result.content}'
+    cf PUT "/zones/$ZID/dns_records/$id" -d "$body" | jq -c '{action:"updated",name:.result.name,content:.result.content}'
   else
-    curl -fsS -X POST -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" \
-      "$API/zones/$ZID/dns_records" -d "$body" | jq -c '{action:"created",name:.result.name,content:.result.content}'
+    cf POST "/zones/$ZID/dns_records" -d "$body" | jq -c '{action:"created",name:.result.name,content:.result.content}'
   fi
 }
 
@@ -60,22 +88,16 @@ remove() {
     echo "{\"action\":\"absent\",\"name\":\"$name\"}"
     return
   fi
-  curl -fsS -X DELETE -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-    "$API/zones/$ZID/dns_records/$id" | jq -c --arg n "$name" '{action:"deleted",name:$n,success:.success}'
+  cf DELETE "/zones/$ZID/dns_records/$id" | jq -c --arg n "$name" '{action:"deleted",name:$n,success:.success}'
 }
 
 case "$ACTION" in
   upsert)
-    : "${IP:?IP is required for upsert}"
     upsert "$NAME" "$IP"
-    [ "$WILDCARD" = "1" ] && upsert "*.$NAME" "$IP"
+    if [ "$WILDCARD" = "1" ]; then upsert "*.$NAME" "$IP"; fi
     ;;
   delete)
     remove "$NAME"
-    [ "$WILDCARD" = "1" ] && remove "*.$NAME"
-    ;;
-  *)
-    echo "usage: $0 upsert|delete  (env: NAME, IP, WILDCARD, TTL)" >&2
-    exit 2
+    if [ "$WILDCARD" = "1" ]; then remove "*.$NAME"; fi
     ;;
 esac
