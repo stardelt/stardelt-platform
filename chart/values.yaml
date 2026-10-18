@@ -923,7 +923,10 @@ jupyterhub:
         manage_groups: true
         auth_state_groups_key: oauth_user.groups
         # Default-closed: only the platform admin group signs in.
-        allowed_groups: ["stardelt-admins"]
+        # Two groups may use notebooks: platform admins, and everyone the realm puts
+        # in `stardelt-users` — the realm's default group, so a user created in the
+        # console joins it automatically and can open a notebook without an admin.
+        allowed_groups: [stardelt-admins, stardelt-users]
         admin_groups: ["stardelt-admins"]
     resources:
       requests: { cpu: "50m", memory: "256Mi" }
