@@ -9,6 +9,10 @@ Called by scripts/verify-trino-auth.sh, which provides:
     USER, PASSWORD   the realm user to prove
     CLIENT_SECRET_FILE   file holding the `trino` client secret (never argv)
 
+`MINT_ONLY=1` stops after the device grant and writes the access token to
+`TOKEN_FILE` (mode 600) instead of querying Trino — used by
+scripts/verify-trino-tls.sh, which sends the token from inside the cluster.
+
 Exits non-zero unless Trino answers `select current_user` with exactly USER.
 
 Keycloak's device-approval page is plain HTML forms, so this drives it with
@@ -26,10 +30,12 @@ import urllib.parse
 import urllib.request
 
 ISSUER = os.environ["ISSUER"].rstrip("/")
-TRINO = os.environ["TRINO_URL"].rstrip("/")
+TRINO = os.environ.get("TRINO_URL", "").rstrip("/")
 USER = os.environ["USER"]
 PASSWORD = os.environ["PASSWORD"]
 CLIENT_SECRET = open(os.environ["CLIENT_SECRET_FILE"]).read().strip()
+MINT_ONLY = os.environ.get("MINT_ONLY", "") not in ("", "0")
+TOKEN_FILE = os.environ.get("TOKEN_FILE", "")
 
 FORM = re.compile(r"<form[^>]*>.*?</form>", re.S)
 INPUT = re.compile(r'name="([^"]+)" value="([^"]*)"')
@@ -110,6 +116,17 @@ if not token or "access_token" not in token:
 claims = json.loads(base64.urlsafe_b64decode(token["access_token"].split(".")[1] + "=="))
 print("  token: aud=%s azp=%s preferred_username=%s"
       % (claims.get("aud"), claims.get("azp"), claims.get("preferred_username")))
+
+if TOKEN_FILE:
+    # Written for the caller (a 0700 temp dir), never printed.
+    umask = os.umask(0o077)
+    try:
+        with open(TOKEN_FILE, "w") as f:
+            f.write(token["access_token"])
+    finally:
+        os.umask(umask)
+if MINT_ONLY:
+    sys.exit(0)
 
 # 4. Use that token at Trino and follow the statement to completion. The poll
 #    requests deliberately carry no credentials: the nextUri token is the

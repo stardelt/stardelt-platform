@@ -45,7 +45,7 @@ BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 .PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator trino upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-up dev-down dev-dns dev-dns-down
 .PHONY: chart-deps chart-template chart-install
 .PHONY: verify-backups verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
-.PHONY: sync-oidc-clients verify-oidc-clients
+.PHONY: sync-oidc-clients verify-oidc-clients verify-trino-tls
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | \
@@ -256,10 +256,31 @@ install-spark: deps _context ## Install the Spark Connect endpoint (Iceberg on t
 # token or the service-account password (helm-values/trino-identity.yaml); on a
 # bare `install-core` without identity there is nothing to authenticate against
 # and Trino keeps the development default — anonymous, cluster-internal only.
+#
+# In the IdP case the coordinator also gets TLS (manifests/trino-tls.yaml): a
+# namespace-local cert-manager CA, an HTTPS listener on 8443 for in-cluster
+# clients, and `allow-insecure-over-http=false` so a plain-HTTP statement is
+# refused instead of being trusted from X-Trino-User (platform#80). cert-manager
+# must be installed for that (e.g. dev/playground/README.md); the Certificate is
+# waited for before the upgrade so Trino never starts without its keystore.
 # ---------------------------------------------------------------------------
-trino: deps _context ## Install/upgrade Trino, with OAuth2 when a platform IdP is present
+trino: deps _context ## Install/upgrade Trino, with OAuth2+TLS when a platform IdP is present
 	@if kubectl -n $(NAMESPACE) get configmap stardelt-identity >/dev/null 2>&1; then \
 	  echo "› Trino $(TRINO_VERSION) + helm-values/trino-identity.yaml (platform IdP present)"; \
+	  kubectl get crd certificates.cert-manager.io >/dev/null 2>&1 || { \
+	    echo "cert-manager CRDs not found — the identity install needs cert-manager to issue the" >&2; \
+	    echo "Trino coordinator certificate (see dev/playground/README.md, 'cert-manager')." >&2; \
+	    exit 1; \
+	  }; \
+	  echo "› Trino TLS anchor: CA + coordinator certificate (manifests/trino-tls.yaml)"; \
+	  NAMESPACE=$(NAMESPACE) bash scripts/trino-tls-secret.sh; \
+	  kubectl apply -f manifests/trino-tls.yaml; \
+	  kubectl -n $(NAMESPACE) wait --for=condition=Ready certificate/trino-coordinator-tls --timeout=180s; \
+	  if [ -z "$$(kubectl -n $(NAMESPACE) get configmap stardelt-identity -o jsonpath='{.data.trinoUrl}')" ]; then \
+	    echo "  › warning: stardelt-identity has no trinoUrl — re-run scripts/identity-bootstrap.sh" >&2; \
+	    echo "    ('make install-identity'), or Nova keeps its plain-HTTP default and cannot" >&2; \
+	    echo "    reach the TLS listener." >&2; \
+	  fi; \
 	  helm upgrade --install trino trino/trino \
 	    --version $(TRINO_VERSION) \
 	    $(HELM_FLAGS) \
@@ -315,6 +336,11 @@ sync-oidc-clients: _context ## Point the realm's confidential clients at Secret 
 verify-oidc-clients: _context ## Prove every confidential client's secret still authenticates (token endpoint, in-cluster)
 	@NAMESPACE=$(NAMESPACE) bash scripts/verify-oidc-clients.sh
 
+# platform#80: the in-cluster path must refuse plain HTTP and authenticate a
+# bearer token over TLS. TRINO_VERIFY_USER_PASSWORD=… adds the user check.
+verify-trino-tls: _context ## Prove the in-cluster Trino path is TLS-only and token-authenticated
+	@NAMESPACE=$(NAMESPACE) bash scripts/verify-trino-tls.sh
+
 install-identity: deps _context ## Install the platform IdP (Keycloak) at id.$(BASE_DOMAIN)
 	@kubectl get crd clusters.postgresql.cnpg.io >/dev/null 2>&1 || { \
 	  echo "CloudNative-PG CRDs not found — run 'make install-core' first" >&2; exit 1; }
@@ -338,8 +364,18 @@ install-identity: deps _context ## Install the platform IdP (Keycloak) at id.$(B
 	  bash scripts/keycloak-sync-trino-client.sh
 	@echo "› [9/10] guard: every client secret must authenticate at the token endpoint"
 	@$(MAKE) --no-print-directory verify-oidc-clients
-	@echo "› [10/10] Put the query engine behind the platform identity"
+	@echo "› [10/10] Put the query engine behind the platform identity (TLS on the coordinator)"
 	@$(MAKE) --no-print-directory trino
+	@# Nova reads its Trino endpoint from the identity ConfigMap (authMode turned
+	@# sign-in on, trinoUrl turns on the in-cluster TLS endpoint) and both are
+	@# process environment, not watched files: without this restart a fresh
+	@# install would keep running the dev-mode, plain-HTTP Nova it started with.
+	@if kubectl -n $(NAMESPACE) get deploy nova >/dev/null 2>&1; then \
+	  echo "› Nova: re-apply the manifest and restart so it re-reads the identity contract"; \
+	  kubectl apply -f manifests/nova-deployment.yaml; \
+	  kubectl -n $(NAMESPACE) rollout restart deploy/nova >/dev/null; \
+	  kubectl -n $(NAMESPACE) rollout status deploy/nova --timeout=3m; \
+	fi
 	@echo "Keycloak installed. Issuer: https://id.$(BASE_DOMAIN)/realms/stardelt"
 	@echo "Admin console: https://id.$(BASE_DOMAIN)/admin/stardelt/console/ (sign in as admin, then Users)"
 	@echo "Realm admin password: kubectl -n $(NAMESPACE) get secret stardelt-realm-admin -o jsonpath='{.data.password}' | base64 -d"
@@ -370,6 +406,7 @@ upgrade: install ## Upgrade all components (same as install)
 uninstall: _context ## Uninstall all stardelt components (reverse order)
 	@echo "› removing manifests"
 	@kubectl delete -f manifests/spark.yaml                   --ignore-not-found
+	@kubectl delete -f manifests/trino-tls.yaml               --ignore-not-found
 	@kubectl delete -f manifests/nova-deployment.yaml        --ignore-not-found
 	@kubectl delete -f manifests/keycloak.yaml               --ignore-not-found
 	@kubectl -n $(NAMESPACE) delete configmap keycloak-realm keycloak-env stardelt-identity --ignore-not-found
@@ -386,7 +423,8 @@ uninstall: _context ## Uninstall all stardelt components (reverse order)
 	@helm uninstall cnpg       --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 
 	@echo "Uninstall complete. Kept (like PVCs): Secrets keycloak-admin, stardelt-realm-admin,"
-	@echo "stardelt-oidc-clients, trino-internal-secret, trino-password-db,"
+	@echo "stardelt-oidc-clients, trino-internal-secret, trino-password-db, trino-tls-keystore,"
+	@echo "trino-ca, trino-coordinator-tls,"
 	@echo "airflow-fernet-key, airflow-webserver-key, airflow-jwt-secret,"
 	@echo "airflow-admin, superset-secret-key, superset-admin (see scripts/app-secrets.sh)."
 

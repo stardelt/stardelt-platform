@@ -21,6 +21,27 @@
 #     account; users never see a password prompt.
 #   * Anonymous requests get 401 with no query id.
 #
+# TLS (platform#80) — the in-cluster hole this closes. Until this overlay grew a
+# `https` block, `allow-insecure-over-http=true` meant a plain-HTTP request ran
+# **only the insecure authenticator**, which trusts the caller-supplied
+# `X-Trino-User`: any pod could POST SQL to trino:8080 as anybody and the Service
+# answered 200. The ingress was protected only because nginx sets
+# `X-Forwarded-Proto`, which `process-forwarded` turns into a secure request.
+#
+#   * `server.config.https` starts a second listener on 8443 with the PKCS12
+#     keystore cert-manager writes (manifests/trino-tls.yaml: a namespace-local
+#     CA, not Let's Encrypt — an HTTP-01 certificate cannot cover
+#     `trino.stardelt.svc.cluster.local`). That is the endpoint in-cluster
+#     clients use: Nova and the notebook pods carry the user's own token to it.
+#   * `allow-insecure-over-http=false` refuses a plain-HTTP statement before any
+#     authenticator runs (403, no query id), so the insecure authenticator is
+#     unreachable.
+#   * The HTTP listener stays on 8080 for two things, neither of them a user
+#     path: workers talk to the coordinator over it (internal communication uses
+#     the shared secret and never the user authenticators), and the ingress still
+#     terminates Let's Encrypt TLS and forwards with X-Forwarded-Proto. Changing
+#     the public path is not needed to close the in-cluster one.
+#
 # Why the properties are split the way they are:
 #
 #   * `server.config.authenticationType` renders `http-server.authentication.type`
@@ -29,22 +50,33 @@
 #     pointing at /etc/trino/auth/password/password.db.
 #   * Everything else goes through `server.coordinatorExtraConfig`: the chart's
 #     `additionalConfigProperties` is rendered into the **worker** configmap too,
-#     and a worker rejects UI/OAuth2 keys it does not bind (startup fails with
-#     "Configuration property … was not used").
+#     and a worker rejects UI/OAuth2/HTTPS keys it does not bind (startup fails
+#     with "Configuration property … was not used"). `server.config.https` is
+#     coordinator-only in the chart, which is why the listener lives there while
+#     the keystore password — a coordinator-only property too — is in
+#     coordinatorExtraConfig.
 #   * `additionalConfigProperties` keeps only what the worker also binds:
 #     the forwarded-header switch and the internal-communication secret.
-#   * TLS terminates at the ingress (`http-server.process-forwarded=true`), so
-#     Trino is served over HTTP inside the cluster and the OAuth2 endpoints are
-#     built from the forwarded proto/host. `allow-insecure-over-http` is what
-#     lets an authenticator run without a keystore in the pod.
 
 server:
   config:
     # PASSWORD first: tried before OAUTH2, so a Basic header from a service
     # account is not parsed as a bearer token.
     authenticationType: "PASSWORD,OAUTH2"
+    # In-cluster TLS listener. The keystore is mounted below from
+    # Secret trino-coordinator-tls; `make trino` waits for the Certificate to be
+    # Ready before it runs this upgrade, so the file exists on first start.
+    https:
+      enabled: true
+      port: 8443
+      keystore:
+        path: /etc/trino/tls/keystore.p12
   coordinatorExtraConfig: |
-    http-server.authentication.allow-insecure-over-http=true
+    http-server.https.keystore.key=${ENV:TRINO_TLS_KEYSTORE_PASSWORD}
+    # Refuse authentication over plain HTTP (see the header). Trino defaults this
+    # to false as soon as HTTPS is enabled, but stating it keeps the property that
+    # closes the hole visible to a reader of this file.
+    http-server.authentication.allow-insecure-over-http=false
     web-ui.authentication.type=oauth2
     http-server.authentication.oauth2.issuer=${ENV:TRINO_OIDC_ISSUER}
     http-server.authentication.oauth2.client-id=trino
@@ -56,6 +88,22 @@ server:
     # from the realm regardless of audience and would put a network round trip in
     # front of every query.
     http-server.authentication.oauth2.oidc.use-userinfo-endpoint=false
+
+coordinator:
+  # The PKCS12 keystore cert-manager writes into Secret trino-coordinator-tls
+  # (key keystore.p12). The secret is mounted as a directory — a subPath file
+  # mount fails at container start when the image has no /etc/trino/tls yet
+  # ("not a directory" from runc), and the directory mount also lets the kubelet
+  # refresh the certificate after a renewal. Alongside the keystore the mount
+  # carries tls.key, which is the same key material the keystore already holds —
+  # no additional capability inside the pod. A certificate renewal does not
+  # restart the coordinator on its own (that would kill running queries), so pick
+  # it up with `kubectl -n stardelt rollout restart deploy/trino-coordinator`
+  # (cert-manager renews 30 days before expiry, so there is no hurry).
+  secretMounts:
+    - name: trino-tls
+      secretName: trino-coordinator-tls
+      path: /etc/trino/tls
 
 # The service-account password file: `superset:<bcrypt>`, generated on the
 # cluster by scripts/identity-bootstrap.sh (never committed) and mounted by the

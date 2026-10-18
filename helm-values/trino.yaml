@@ -66,6 +66,12 @@ env:
   # no per-deployment host baked into a tracked file.
   - name: TRINO_OIDC_ISSUER
     valueFrom: { configMapKeyRef: { name: stardelt-identity, key: issuerUrl, optional: true } }
+  # Password of the PKCS12 keystore cert-manager writes into Secret
+  # trino-coordinator-tls (manifests/trino-tls.yaml). Only the TLS overlay reads
+  # it; optional like the other identity variables so a cluster without an IdP
+  # (and therefore without a certificate) installs the same pod.
+  - name: TRINO_TLS_KEYSTORE_PASSWORD
+    valueFrom: { secretKeyRef: { name: trino-tls-keystore, key: password, optional: true } }
 
 catalogs:
   warehouse: |

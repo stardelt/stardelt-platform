@@ -162,6 +162,31 @@ hub:
       # sign in again.
       c.Authenticator.delete_invalid_users = True
 
+    # The warehouse endpoint inside the spawned notebook. With the platform IdP
+    # present Trino serves TLS on the in-cluster Service (:8443) and refuses a
+    # plain-HTTP statement (helm-values/trino-identity.yaml, manifests/trino-tls.yaml),
+    # so the notebook gets that endpoint plus the internal CA that signs it —
+    # never the public host, a hairpin through the ingress, or a disabled
+    # certificate check. `REQUESTS_CA_BUNDLE` is what the trino Python client
+    # (requests) reads; the CA file comes from the `singleuser.storage.extraVolumes`
+    # mount below.
+    #
+    # `c.KubeSpawner.environment` already carries `singleuser.extraEnv` (z2jh maps
+    # it) and the framing origin from `15-framing`, so this overrides just
+    # TRINO_URL and adds the bundle. Without an IdP nothing is set and the static
+    # TRINO_URL — the public HTTPS origin — applies.
+    25-notebook-trino: |
+      import os
+
+      if os.environ.get("STARDELT_OIDC_ISSUER_URL", "").strip():
+          c.KubeSpawner.environment = {
+              **(c.KubeSpawner.environment or {}),
+              "TRINO_URL": os.environ.get(
+                  "STARDELT_TRINO_URL", "https://trino.stardelt.svc.cluster.local:8443"
+              ),
+              "REQUESTS_CA_BUNDLE": "/etc/stardelt/trino-ca/ca.crt",
+          }
+
   config:
     JupyterHub:
       authenticator_class: generic-oauth
@@ -228,11 +253,11 @@ singleuser:
     pullSecrets:
       - name: ghcr-creds
   defaultUrl: /lab
-  # Where the notebook finds the warehouse. Public HTTPS rather than the
-  # in-cluster Service: over plain HTTP Trino only accepts its password
-  # authenticator (http-server.authentication.allow-insecure-over-http), so a
-  # bearer token needs TLS. Issue #80 adds TLS to the coordinator; this can then
-  # become the in-cluster Service over HTTPS.
+  # Where the notebook finds the warehouse when the platform has **no** IdP (and
+  # therefore no TLS listener on the coordinator, manifests/trino-tls.yaml): the
+  # public HTTPS origin. With an IdP the hub overrides TRINO_URL to the
+  # in-cluster TLS endpoint in `25-notebook-trino` above, so the notebook never
+  # depends on the public name or the ingress.
   extraEnv:
     TRINO_URL: https://trino.alpha.dev.stardelt.io:443
   # Seed the quickstart into the home directory on every spawn, never
@@ -254,20 +279,37 @@ singleuser:
     guarantee: 0.1
   storage:
     type: none
+    # The CA that signs the coordinator certificate (manifests/trino-tls.yaml),
+    # mounted as ca.crt for REQUESTS_CA_BUNDLE in `25-notebook-trino`. Only that
+    # one key is mounted, never tls.key of the server certificate. `optional:
+    # true` because the Secret exists only once the platform has an IdP — an
+    # install without one gets an empty directory and uses the public endpoint.
+    extraVolumes:
+      - name: trino-ca
+        secret:
+          secretName: trino-ca
+          optional: true
+          items:
+            - key: tls.crt
+              path: ca.crt
+    extraVolumeMounts:
+      - name: trino-ca
+        mountPath: /etc/stardelt/trino-ca
+        readOnly: true
   # The chart's default denies egress to every private address
   # (`egressAllowRules.privateIPs: false`), and that default is right: a user pod
-  # has no business reaching arbitrary cluster-internal services. One private
-  # destination is part of the notebook experience — Spark Connect, the second
-  # engine over the same Iceberg catalog (`manifests/spark.yaml`, ClusterIP-only
-  # because Spark Connect has no authentication of its own). The grant is by pod
-  # label and port, so it follows the Service wherever it moves and opens nothing
+  # has no business reaching arbitrary cluster-internal services. Two private
+  # destinations are part of the notebook experience, each granted by pod label
+  # and port so the rule follows the Service wherever it moves and opens nothing
   # else:
   #
-  #   egress rule            reaches
-  #   podSelector+15002      the spark-connect driver, and nothing else below 15002
-  #   privateIPs: true       Trino, Lakekeeper, S3, the Kubernetes API — everything
+  #   egress rule                              reaches
+  #   podSelector spark-connect + 15002        Spark Connect, and nothing else on that port
+  #   podSelector trino coordinator + 8443     the warehouse's TLS endpoint, nothing else
   #
-  # (was: ConnectionRefusedError in the quickstart's Spark cell, stardelt-platform#90)
+  # (was: ConnectionRefusedError in the quickstart's Spark cell, stardelt-platform#90;
+  # the Trino rule arrived with the in-cluster TLS listener, platform#80 — before it,
+  # the notebook talked to the public hostname, which is a non-private address.)
   networkPolicy:
     egress:
       - to:
@@ -276,4 +318,12 @@ singleuser:
                 app.kubernetes.io/name: spark-connect
         ports:
           - port: 15002
+            protocol: TCP
+      - to:
+          - podSelector:
+              matchLabels:
+                app.kubernetes.io/name: trino
+                app.kubernetes.io/component: coordinator
+        ports:
+          - port: 8443
             protocol: TCP
