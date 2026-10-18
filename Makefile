@@ -123,6 +123,8 @@ install: deps _context _helm-repos ## Install all stardelt components (idempoten
 	@echo "› [2/11] guard: the live Cluster must still declare its backup config"
 	@$(MAKE) --no-print-directory verify-backup-config
 
+	@NAMESPACE=$(NAMESPACE) bash scripts/s3-secrets.sh
+
 	@echo "› [3/11] SeaweedFS"
 	@helm upgrade --install seaweedfs seaweedfs/seaweedfs \
 	  --version $(SEAWEEDFS_VERSION) \
@@ -175,12 +177,8 @@ install-core: deps _context _helm-repos ## Install the core only (storage+catalo
 	  --version $(CNPG_VERSION) \
 	  $(HELM_FLAGS)
 
-	@echo "› [2/7] S3 credentials Secret (dev default, created only if absent)"
-	@if kubectl -n stardelt get secret stardelt-s3-creds >/dev/null 2>&1; then \
-	  echo "  › stardelt-s3-creds exists — keeping it"; \
-	else \
-	  kubectl apply -f manifests/s3-credentials.dev.yaml; \
-	fi
+	@echo "› [2/7] Generated credentials (S3 key pair, once)"
+	@NAMESPACE=$(NAMESPACE) bash scripts/s3-secrets.sh
 
 	@echo "› [3/7] CNPG Cluster (Lakekeeper Postgres)"
 	@kubectl apply -f manifests/cnpg-postgres.yaml
