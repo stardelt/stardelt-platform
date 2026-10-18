@@ -34,7 +34,11 @@
 #
 # Environment:
 #   NAMESPACE         default stardelt
-#   CLUSTER           default lakekeeper-pg
+#   CLUSTER           default lakekeeper-pg — the CloudNative-PG Cluster name.
+#                     Invoked through make, PG_CLUSTER wins and is passed as
+#                     CLUSTER here, because stardelt-demos exports CLUSTER for
+#                     the *kind* cluster and that would otherwise be read as this
+#                     Cluster (#76).
 #   MAX_AGE_SECONDS   default 900
 #   SKIP_OBJECTS=1    skip (b)+(c) — for environments without S3 credentials or
 #                     access; (a) still runs. Deliberate escape, not a way to make

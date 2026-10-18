@@ -78,12 +78,18 @@ lint: ## Syntax-check (bash -n) + ShellCheck the scripts under scripts/ and dev/
 # ---------------------------------------------------------------------------
 SKIP_OBJECTS    ?=
 MAX_AGE_SECONDS ?= 900
+# The CloudNative-PG Cluster the guards read. Passed to the script as CLUSTER
+# *explicitly*: callers of `make` (stardelt-demos' verification gate does this)
+# export CLUSTER for the kind cluster's name, which would otherwise be read as
+# the Postgres Cluster name and fail the guard with
+# "cannot read Cluster stardelt/stardelt" before anything is installed (#76).
+PG_CLUSTER      ?= lakekeeper-pg
 
 verify-backup-config: _context ## Assert the live Cluster still declares spec.backup (post-apply guard)
-	@NAMESPACE=$(NAMESPACE) bash scripts/verify-backups.sh --config-only
+	@NAMESPACE=$(NAMESPACE) CLUSTER=$(PG_CLUSTER) bash scripts/verify-backups.sh --config-only
 
 verify-backups: _context ## Verify WAL archiving for real: config + a fresh object in the bucket + agreement with pg_stat_archiver. SKIP_OBJECTS=1 drops the S3 half
-	@NAMESPACE=$(NAMESPACE) SKIP_OBJECTS="$(SKIP_OBJECTS)" MAX_AGE_SECONDS="$(MAX_AGE_SECONDS)" \
+	@NAMESPACE=$(NAMESPACE) CLUSTER=$(PG_CLUSTER) SKIP_OBJECTS="$(SKIP_OBJECTS)" MAX_AGE_SECONDS="$(MAX_AGE_SECONDS)" \
 	  bash scripts/verify-backups.sh
 
 # ---------------------------------------------------------------------------
