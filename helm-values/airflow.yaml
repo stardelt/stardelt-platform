@@ -1,6 +1,8 @@
 # Apache Airflow — DAG-based orchestrator. The NYC TLC loader runs as the
-# `nyc_taxi_load` DAG, baked into a custom image `stardelt/airflow:dev`
-# (see airflow-image/Dockerfile, dags/nyc_taxi_load.py).
+# `nyc_taxi_load` DAG, baked into a custom image published by the demos CI as
+# `ghcr.io/stardelt/airflow:demo` (see airflow-image/Dockerfile,
+# dags/nyc_taxi_load.py). It is NOT on Docker Hub: the kind demo never notices
+# because it `kind load`s a locally built image, while a real install pulls.
 #
 # Chart: apache-airflow/airflow 1.21.0, appVersion 3.2.0.
 #
@@ -16,8 +18,12 @@ executor: KubernetesExecutor
 # stardelt-owned image with DAGs baked in
 images:
   airflow:
-    repository: stardelt/airflow
-    tag: dev
+    # GHCR, not Docker Hub, and the tag CI actually publishes. The digest is what
+    # runs (digests, not tags): `demo` moves on every demos merge, so a bare tag
+    # would silently redeploy a different DAG image.
+    repository: ghcr.io/stardelt/airflow
+    tag: demo
+    digest: sha256:7691c902240ebdd377914f7e7718409a337f1c27b1ea35961dc11677b08a512b
     pullPolicy: IfNotPresent
 
 # No secrets in this file: scripts/app-secrets.sh generates them per cluster
