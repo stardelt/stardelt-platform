@@ -40,6 +40,9 @@ jobs:
       - name: Chart pins agree (Makefile vs chart/Chart.yaml)
         run: bash scripts/check-version-parity.sh
 
+      - name: No committed default credentials
+        run: bash scripts/check-no-default-secrets.sh
+
       - name: Lint shell scripts (bash -n + shellcheck)
         run: make lint
 
