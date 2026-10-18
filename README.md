@@ -191,12 +191,21 @@ make install-identity BASE_DOMAIN=alpha.dev.stardelt.io     # Keycloak at https:
 
 ### Embedding JupyterHub in Nova
 
-Nova's Notebooks page embeds the hub, and the hub refuses framing by default
-(`frame-ancestors 'none'`, its clickjacking protection since JupyterHub 4.1) — so Nova reports
-`embed.state: blocked` with the exact header rather than showing a blank iframe. `helm-values/jupyterhub.yaml`
-carries the narrow override that allows **only** Nova's origin, and the umbrella chart documents it
-under `jupyterhub:` for admins who want the same. Without it, nothing breaks: the page explains
-itself and the hub stays unembeddable.
+Nova's Notebooks page frames the hub, and the hub sends a signed-in person on to their own
+single-user server — JupyterLab, which executes code and refuses framing harder than any
+dashboard. Both apps refuse framing by default (`frame-ancestors 'none'`), so both get the same
+narrow exception: **Nova's own origin, and only that origin**, read from the identity contract
+(`stardelt-identity.publicUrl`) instead of being written into a values file. The origin reaches
+the server at spawn (`STARDELT_NOVA_ORIGIN`) and the image's `jupyter_server_config.py` turns it
+into the server's CSP. Hub and server cookies are set `SameSite=None; Secure`, because a frame is
+a third-party context for the app inside it.
+
+The sign-in page is the one thing that must stay unframeable: Keycloak refuses framing, so a
+visitor without a hub session gets Nova's explicit **open in a new tab and sign in** call to
+action instead of a blank frame. `/api/embeds` reports exactly that: Nova stops following
+redirects at the app's own origin, judges the app's own headers, and names the sign-in host the
+signed-out journey lands on. Without the identity contract nothing is made frameable and Nova
+says so rather than showing an empty box.
 
 ### Notebooks: the user's own identity, inside the pod
 
@@ -210,6 +219,11 @@ and, with it, a way to query the warehouse **as themselves**.
   `/opt/stardelt/notebooks/`. `jupyterlab-sql` is deliberately absent — its last release predates
   JupyterLab 4 and it cannot carry the per-user token. The package is private, like Superset, so
   the pod pulls with the `ghcr-creds` secret.
+* **Framing.** The same image installs `/usr/local/etc/jupyter/jupyter_server_config.py`, which
+  allows exactly Nova's origin to frame this server — the origin the hub passes as
+  `STARDELT_NOVA_ORIGIN` at spawn (from the identity contract). With no IdP the variable is
+  absent and the server keeps JupyterHub's `frame-ancestors 'none'`. See "Embedding JupyterHub
+  in Nova".
 * **Token.** The hub enables `enable_auth_state` and an `auth_state_hook` copies the user's
   Keycloak access token into the pod's environment as `TRINO_TOKEN` at spawn
   (`20-notebook-identity` in `hub.extraConfig`). Nothing is shared between users and nothing is
@@ -227,8 +241,10 @@ and, with it, a way to query the warehouse **as themselves**.
   notebook holds the token in its environment for a whole session, where the realm's 5-minute
   default would mean 401s minutes after spawn. Restarting the server re-mints it
   (`refresh_pre_spawn`); after the 10 h SSO session the user signs in again.
-* **Spark.** `pyspark[connect]` is installed and the notebook has a Spark Connect cell that probes
-  the endpoint and reports that it is not deployed yet — the hookup for roadmap step 3.
+* **Spark.** The quickstart's Spark cell reads `warehouse.demo.trips` through Spark Connect, the
+  second engine over the same catalog. Spark is optional (`make install-spark`); the cell reports
+  what it found when the endpoint is absent. The singleuser NetworkPolicy grants egress to
+  exactly the `spark-connect` pods on port 15002 — see "Spark".
 
 `scripts/verify-notebook-identity.py` is the acceptance test for all of this: it signs in at the
 hub headlessly, restarts the server, runs the quickstart inside the pod and then runs it again
@@ -500,6 +516,18 @@ spark = SparkSession.builder.remote(
 spark.sql("SELECT borough, count(*) AS n FROM warehouse.demo.trips GROUP BY borough ORDER BY n DESC").show()
 spark.sql("SELECT * FROM warehouse.demo.trips").count()
 ```
+
+The quickstart notebook in the single-user image runs exactly that — it reads
+`warehouse.demo.trips` through Spark and prints the row count, so one click in Nova's Notebooks
+page proves the second engine as well as the first.
+
+Notebook pods reach the endpoint because the JupyterHub chart's singleuser NetworkPolicy carries
+one egress rule for it (`helm-values/jupyterhub.yaml`): `podSelector:
+app.kubernetes.io/name=spark-connect`, port 15002. The chart default denies **all** private
+addresses, and the one-line alternative (`egressAllowRules.privateIPs: true`) would have opened
+Trino, Lakekeeper, S3 and the Kubernetes API to every user pod for the same feature — the narrow
+rule is the point (stardelt-platform#90). Spark pods are not part of the umbrella chart; when
+they are absent the rule matches nothing.
 
 The image is `ghcr.io/stardelt/spark` (`images/spark/Dockerfile`): Apache Spark 4.1.3
 plus the Iceberg 1.12 runtime and AWS bundle. The jars are baked in at image build
