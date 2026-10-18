@@ -14,6 +14,9 @@ spec:
   instances: {{ .Values.postgres.instances }}
   storage:
     size: {{ .Values.postgres.storage.size }}
+    {{- with .Values.storage.className }}
+    storageClass: {{ . }}
+    {{- end }}
   bootstrap:
     initdb:
       database: lakekeeper

@@ -53,7 +53,8 @@ spec:
       labels: { app.kubernetes.io/name: nova, app.kubernetes.io/part-of: stardelt }
     spec:
       serviceAccountName: nova
-      {{- with .Values.nova.imagePullSecrets }}
+      {{- $pullSecrets := .Values.nova.imagePullSecrets | default .Values.images.pullSecrets }}
+      {{- with $pullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -78,9 +79,9 @@ spec:
               valueFrom:
                 fieldRef: { fieldPath: metadata.namespace }
             # External base domain for deep-linking platform apps in Nova.
-            # Empty = no links. The dev playground sets this to alpha.dev.stardelt.io.
+            # Empty = no links. Defaults to platform.baseDomain.
             - name: NOVA_BASE_DOMAIN
-              value: {{ .Values.nova.baseDomain | quote }}
+              value: {{ .Values.nova.baseDomain | default .Values.platform.baseDomain | quote }}
             - name: RUST_LOG
               value: {{ .Values.nova.logLevel | quote }}
           readinessProbe:
