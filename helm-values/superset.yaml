@@ -116,6 +116,23 @@ extraEnvRaw:
       secretKeyRef:
         name: superset-admin
         key: password
+  # Superset's Trino service account (#79): the init script below rewrites the
+  # datasource URI to it. `trino-password-db` comes from
+  # scripts/identity-bootstrap.sh, so it is optional like the identity entries —
+  # a platform installed without `make install-identity` still starts (and needs
+  # no Trino credentials, because without the IdP Trino has no authentication).
+  - name: TRINO_SUPERSET_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: trino-password-db
+        key: superset-password
+        optional: true
+  - name: STARDELT_PUBLIC_URL
+    valueFrom:
+      configMapKeyRef:
+        name: stardelt-identity
+        key: publicUrl
+        optional: true
   # Identity contract (same keys Nova reads): issuer + admin group, optional so a
   # platform installed without `make install-identity` still starts and keeps the
   # local admin login (see the oauth override below).
@@ -138,12 +155,14 @@ extraEnvRaw:
         key: superset
         optional: true
 
-# Pre-import the Trino database connection on init.
+# Pre-import the Trino database connection on init. Credential-free on purpose:
+# the URI cannot carry a secret, and the init script rewrites it to the
+# `superset` service account before the pod serves SQL Lab (#79).
 extraConfigs:
   import_datasources.yaml: |
     databases:
     - database_name: Trino Warehouse
-      sqlalchemy_uri: trino://stardelt-dev@trino.stardelt.svc.cluster.local:8080/warehouse
+      sqlalchemy_uri: trino://superset@trino.alpha.dev.stardelt.io:443/warehouse
       tables: []
 
 # init Job creates admin user + imports the datasource above.
@@ -183,6 +202,17 @@ init:
     if [ -f "{{ .Values.extraConfigMountPath }}/import_datasources.yaml" ]; then
       echo "Importing database connections.... "
       superset import_datasources -p {{ .Values.extraConfigMountPath }}/import_datasources.yaml
+    fi
+    # The YAML above cannot carry a secret and `superset import_datasources` has no
+    # env substitution in 5.0.0, so the credential is applied here, from the Secret.
+    # Public TLS endpoint: the driver forces https for password auth, and Trino's
+    # in-cluster port is plain HTTP (see the follow-up ticket on coordinator TLS).
+    host="${STARDELT_PUBLIC_URL:-}"; host="${host#https://}"; host="${host%/}"
+    if [ -n "$host" ] && [ -n "${TRINO_SUPERSET_PASSWORD:-}" ]; then
+      superset set-database-uri -d "Trino Warehouse" \
+        -u "trino://superset:${TRINO_SUPERSET_PASSWORD}@trino.${host}:443/warehouse"
+    else
+      echo "no Trino service account (trino-password-db or stardelt-identity missing) — datasource stays credential-free"
     fi
   loadExamples: false
 
