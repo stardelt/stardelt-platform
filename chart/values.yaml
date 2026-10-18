@@ -342,8 +342,11 @@ trino:
   # Authentication is opt-in and lives in helm-values/trino-identity.yaml, which
   # `make trino` applies when a platform IdP is present (it is written for the
   # per-component install, whose values are flat; the umbrella chart needs the
-  # same keys nested under `trino:` — tracked as a follow-up). Without it, Trino
-  # accepts anonymous SQL, which is only acceptable for an unreachable dev stack.
+  # same keys nested under `trino:` — tracked as a follow-up, together with the
+  # coordinator TLS listener in manifests/trino-tls.yaml that gives in-cluster
+  # clients an authenticated HTTPS endpoint, platform#80). Without the overlay,
+  # Trino accepts anonymous SQL, which is only acceptable for an unreachable dev
+  # stack.
   additionalConfigProperties:
     - http-server.process-forwarded=true
 

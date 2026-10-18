@@ -1,0 +1,114 @@
+# Trino coordinator TLS — the internal trust anchor for the in-cluster query path.
+#
+# Why (platform#80): with the platform IdP present, helm-values/trino-identity.yaml
+# makes Trino authenticate every statement. But `allow-insecure-over-http=true`
+# meant a plain-HTTP request ran only the *insecure* authenticator, which trusts
+# the caller-supplied `X-Trino-User` — so any pod in the cluster could submit SQL
+# as anybody (an anonymous POST to trino:8080 answered 200), while the ingress
+# path was protected. With this file + the TLS block in the same overlay the
+# coordinator serves HTTPS on 8443 for in-cluster clients, and a plain-HTTP
+# statement is refused outright. A bearer token is the only way in.
+#
+# What signs the coordinator certificate, and why not Let's Encrypt:
+# `letsencrypt-prod` is HTTP-01 only and can never cover
+# `trino.stardelt.svc.cluster.local`, so clients would have to resolve the
+# public name and hairpin through the ingress — the split-DNS / air-gap problem.
+# A namespace-local cert-manager CA signs it instead:
+#
+#   Issuer trino-selfsigned  (SelfSigned)
+#     └─ Certificate trino-ca            → Secret trino-ca            (the anchor)
+#          └─ Issuer trino-ca            (CA, reads Secret trino-ca)
+#               └─ Certificate trino-coordinator-tls → Secret trino-coordinator-tls
+#                                                     (tls.crt/key, ca.crt, keystore.p12)
+#
+# Only `Makefile`'s trino target applies this, and only when the platform has an
+# IdP (`stardelt-identity` ConfigMap) — the same condition as the authentication
+# overlay. A dev install without identity keeps its plain-HTTP, unauthenticated,
+# cluster-internal Trino.
+#
+# Clients trust one anchor, never a global weakening: Secret trino-ca, key
+# `tls.crt`, is handed to Nova (NOVA_TRINO_CA_PEM) and to the notebook pods
+# (mounted as ca.crt, requests' REQUESTS_CA_BUNDLE). The public path is
+# untouched: the ingress still terminates Let's Encrypt TLS and speaks HTTP to
+# 8080 with X-Forwarded-Proto, which Trino treats as secure.
+#
+# Rotation. The coordinator certificate lives 90 days and cert-manager renews it
+# 30 days before expiry, rewriting the PKCS12 keystore into
+# Secret trino-coordinator-tls; Trino loads the keystore at startup, so a renewal
+# is picked up by `kubectl -n stardelt rollout restart deploy/trino-coordinator`
+# (a rollout, not a config change: a renewal must not restart the coordinator on
+# its own, because that would kill running queries). The CA lives five years and
+# renews a year before expiry; clients mount it as a file (Nova reads it at
+# startup), so a CA rotation is a restart of the clients, not a re-configuration.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: trino-selfsigned
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: trino-ca
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+spec:
+  isCA: true
+  commonName: stardelt internal CA (trino)
+  secretName: trino-ca
+  duration: 43800h   # 5 years
+  renewBefore: 8760h # 1 year
+  usages: ["cert sign", "crl sign"]
+  privateKey:
+    algorithm: RSA
+    size: 2048
+  issuerRef:
+    name: trino-selfsigned
+    kind: Issuer
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: trino-ca
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+spec:
+  ca:
+    secretName: trino-ca
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: trino-coordinator-tls
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+spec:
+  secretName: trino-coordinator-tls
+  duration: 2160h   # 90 days
+  renewBefore: 720h # 30 days
+  usages: ["server auth"]
+  # Every name an in-cluster client may dial: the Service is `trino.stardelt`,
+  # Kubernetes also accepts the short forms.
+  dnsNames:
+    - trino
+    - trino.stardelt
+    - trino.stardelt.svc
+    - trino.stardelt.svc.cluster.local
+  # The PKCS12 keystore Trino loads (`http-server.https.keystore.path`). The
+  # password comes from Secret trino-tls-keystore, which `make trino` generates
+  # on first install (never committed). Modern2023 (PBES2/AES-256-CBC) is the
+  # profile Java's PKCS12 reader handles natively; the legacy RC2 default would
+  # need JCE legacy algorithms in the Trino JVM.
+  keystores:
+    pkcs12:
+      create: true
+      profile: Modern2023
+      passwordSecretRef:
+        name: trino-tls-keystore
+        key: password
+  issuerRef:
+    name: trino-ca
+    kind: Issuer

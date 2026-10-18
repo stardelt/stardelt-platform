@@ -14,6 +14,7 @@ Production-shape deployment artifacts. Helm values, manifests, and scripts to in
 | `kubectl` | 1.28+ | Must be configured with a valid kubeconfig pointing at your cluster |
 | `helm` | 3.18+ | The `stardelt-dedupe` post-renderer plugin is installed automatically |
 | `docker` | any recent | Required only for the local image targets (`make build-superset-image`, `make build-jupyter-image`) |
+| `cert-manager` | 1.15+ | Required by `make install-identity`: the Trino coordinator's in-cluster TLS certificate is issued by a namespace-local CA (`manifests/trino-tls.yaml`). The playground installs it with the ingress (see `dev/playground/README.md`). `make install-core` without identity does not need it. |
 
 Your `kubectl` current-context determines the target cluster. Verify with:
 
@@ -172,7 +173,9 @@ stardelt has two identity modes (contract: `docs/architecture/identity` in stard
 an **external** OIDC provider (Entra ID, Okta, a corporate Keycloak) or the **platform** IdP,
 Keycloak, that every building block authenticates against. Either way the platform publishes
 the same ConfigMap, `stardelt-identity`, with `issuerUrl`, `groupClaim` (`groups`) and
-`adminGroup` (`stardelt-admins`).
+`adminGroup` (`stardelt-admins`). The platforms' own installer adds `authMode`, `publicUrl` and
+`trinoUrl` (the coordinator's in-cluster TLS endpoint, which exists under exactly the same
+condition — see "TLS on the coordinator").
 
 | Umbrella chart | Makefile | What is deployed |
 |---|---|---|
@@ -229,11 +232,14 @@ and, with it, a way to query the warehouse **as themselves**.
   directory the first time only (`cp -n`), so a user's edits survive restarts. The quickstart
   connects with `trino.auth.JWTAuthentication(os.environ["TRINO_TOKEN"])`, asserts
   `SELECT current_user` equals the hub user, lists schemas and queries `warehouse.demo.trips`.
-* **Endpoint.** `singleuser.extraEnv.TRINO_URL` is the *public HTTPS* origin
-  (`https://trino.<baseDomain>:443`), not the in-cluster Service: over plain HTTP Trino only
-  accepts its password authenticator (`http-server.authentication.allow-insecure-over-http`), so a
-  bearer token needs TLS. Issue #80 adds TLS to the coordinator; until then notebooks need the
-  ingress path. The values are not templated, so another domain overrides `TRINO_URL`.
+* **Endpoint.** With an IdP the hub overrides `TRINO_URL` at spawn
+  (`25-notebook-trino` in `hub.extraConfig`) to the coordinator's **in-cluster HTTPS**
+  endpoint, `https://trino.stardelt.svc.cluster.local:8443`, and points the `trino` Python
+  client's `REQUESTS_CA_BUNDLE` at the internal CA that signs it
+  (`manifests/trino-tls.yaml`, mounted from Secret `trino-ca`). No public hostname, no
+  hairpin through the ingress, and no disabled certificate check. Without an IdP the static
+  `singleuser.extraEnv.TRINO_URL` — the public HTTPS origin — applies, because there is no
+  TLS listener and no certificate.
 * **Lifetime.** The realm's `jupyterhub` client gets `access.token.lifespan=28800` (8 h) — a
   notebook holds the token in its environment for a whole session, where the realm's 5-minute
   default would mean 401s minutes after spawn. Restarting the server re-mints it
@@ -265,13 +271,65 @@ plain development default when it does not.
 | `web-ui.authentication.type=oauth2` | the Trino web UI redirects to Keycloak; `<trino host>/oauth2/callback` is the registered redirect |
 | `http-server.authentication.oauth2.issuer` / `client-id=trino` / `client-secret` | validates the caller's **own** Keycloak access token and sets `current_user` to its `preferred_username` |
 | `…oidc.use-userinfo-endpoint=false` | local JWT validation against the realm JWKS, so the `aud` claim is enforced |
-| `http-server.authentication.allow-insecure-over-http=true` | TLS terminates at the ingress, so the pod speaks HTTP (with `process-forwarded`) |
+| `server.config.https` (port 8443, PKCS12 keystore mounted from Secret `trino-coordinator-tls`) | the in-cluster TLS listener; clients carry the user's bearer token to it (`manifests/trino-tls.yaml`) |
+| `http-server.authentication.allow-insecure-over-http=false` | a plain-HTTP statement is refused (403, no query id) **before** any authenticator runs, so the insecure authenticator — the one that trusts `X-Trino-User` — is unreachable |
+| `http-server.process-forwarded=true` | the ingress still terminates Let's Encrypt TLS and forwards HTTP to 8080 with `X-Forwarded-Proto`, which Trino treats as secure; the public path is unchanged |
 | `internal-communication.shared-secret=${ENV:…}` | required as soon as an authenticator is enabled |
 
 **One token, several resources.** Trino trusts audience `trino` (its own client id); client `nova`
 carries an `aud-trino` mapper, so the token Nova forwards — the user's, not a service account's —
 is accepted at Trino and names the person in the query audit trail (`NOVA_FORWARD_IDENTITY=1`,
 set in both the manifest and the chart). A token without `aud: trino` is rejected with `401`.
+
+#### TLS on the coordinator (why the in-cluster path is safe)
+
+Two listeners, one behavior:
+
+```text
+browser / BI  ──https──▶  ingress-nginx  ──http + X-Forwarded-Proto──▶  coordinator :8080
+                              (Let's Encrypt)     (process-forwarded → "secure", 401 without credentials)
+
+Nova, notebook pods  ──https──▶  coordinator :8443   (PKCS12 keystore from cert-manager)
+```
+
+*The in-cluster listener* is what makes a bearer token usable inside the cluster, and it is why
+`allow-insecure-over-http=false` could be turned on: before this, a plain-HTTP request to 8080 ran
+only the insecure authenticator, which trusts the caller's `X-Trino-User` — any pod could submit
+SQL as anybody (`anonymous → 200`), while the ingress path was protected. A plain-HTTP statement
+is now refused before an authenticator runs, and in-cluster clients use the HTTPS endpoint with
+the user's own token. The HTTP listener stays because workers talk to the coordinator over it
+(internal communication uses the shared secret, never the user authenticators) and because the
+public path must keep working; changing it would not close the in-cluster hole.
+
+*What signs the certificate:* the public issuer cannot. `letsencrypt-prod` is HTTP-01 only and
+never covers `trino.stardelt.svc.cluster.local`, so a public certificate would force in-cluster
+clients to resolve the public name and hairpin through the ingress (and fail on an air-gapped
+install). `manifests/trino-tls.yaml` instead creates a namespace-local chain with cert-manager:
+`Issuer/trino-selfsigned` → `Certificate/trino-ca` (a 5-year CA, Secret `trino-ca`) →
+`Issuer/trino-ca` → `Certificate/trino-coordinator-tls` (90 days, DNS names `trino`,
+`trino.stardelt`, `trino.stardelt.svc`, `trino.stardelt.svc.cluster.local`). cert-manager writes
+the PKCS12 keystore into Secret `trino-coordinator-tls`; its password is Secret
+`trino-tls-keystore`, generated once by `scripts/trino-tls-secret.sh` (`make trino` runs it).
+
+*How clients trust it, without weakening anything:* each client gets that one anchor.
+Nova reads Secret `trino-ca` (`tls.crt`) as `NOVA_TRINO_CA_PEM` and adds it to its TLS roots on
+top of the public WebPKI roots; the notebook pods mount the same key as `ca.crt` and pass it as
+`REQUESTS_CA_BUNDLE`; nothing sets `verify=False` and no global trust store is replaced.
+Superset keeps the public host (`trino.<baseDomain>:443`) with the `superset` service account —
+moving it to the in-cluster endpoint is a follow-up, and it is unaffected by this change.
+
+*Rotation.* The leaf renews 30 days before its 90-day expiry and the CA renews a year before its
+5-year expiry; a renewed **keystore** is loaded at startup, so pick it up with
+`kubectl -n stardelt rollout restart deploy/trino-coordinator` — deliberately not automatic,
+because a rollout kills running queries. Nova and the notebook pods read the CA as a file, so a CA
+rotation is a restart of those clients.
+
+```sh
+# the in-cluster half: refusal over http and https, the certificate chain, and a
+# real user token over the in-cluster TLS endpoint
+NAMESPACE=stardelt TRINO_VERIFY_USER=analyst TRINO_VERIFY_USER_PASSWORD=… \
+  bash scripts/verify-trino-tls.sh
+```
 
 Machine clients use the file password authenticator: user `superset` with a bcrypt hash in
 Secret `trino-password-db` (key `password.db`, generated by `scripts/identity-bootstrap.sh`).
@@ -299,14 +357,15 @@ kubectl -n stardelt get secret trino-password-db -o jsonpath='{.data.superset-pa
 Superset queries as the **`superset` service account**: the tracked datasource URI points at the
 public host (`trino.<baseDomain>:443`) and the init Job rewrites it to
 `trino://superset:<password>@trino.<baseDomain>:443/warehouse` from Secret `trino-password-db`
-(key `superset-password`) — the password never reaches a tracked file, and the public host is
-needed because the driver forces HTTPS for password auth (in-cluster TLS is the follow-up). The
-umbrella chart needs the same Trino overlay nested under `trino:` (the file above is flat for the
-per-component install) — still a follow-up. To rotate the service account: delete Secret
-`trino-password-db`, re-run `scripts/identity-bootstrap.sh` (`make install-identity` calls it),
-and re-run the Superset init Job so the datasource picks up the new password. Without
-`make install-identity` there is no service account and no Trino authentication, so the
-datasource stays credential-free and the init Job says so.
+(key `superset-password`) — the password never reaches a tracked file. The public host is a
+deliberate choice: the driver needs TLS for password auth, and Superset's path did not have to
+move for the in-cluster hole to close (`manifests/trino-tls.yaml`); pointing it at the in-cluster
+TLS endpoint is a follow-up. The umbrella chart needs the same Trino overlay nested under `trino:`
+(the file above is flat for the per-component install) — still a follow-up. To rotate the service
+account: delete Secret `trino-password-db`, re-run `scripts/identity-bootstrap.sh`
+(`make install-identity` calls it), and re-run the Superset init Job so the datasource picks up the
+new password. Without `make install-identity` there is no service account and no Trino
+authentication, so the datasource stays credential-free and the init Job says so.
 
 ### Turning on sign-in
 

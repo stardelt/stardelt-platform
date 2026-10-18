@@ -149,10 +149,19 @@ echo "› ConfigMap keycloak-env (KC_HOSTNAME=https://id.${BASE_DOMAIN})"
 # rather than in the Deployment so re-applying manifests/nova-deployment.yaml cannot turn
 # authentication off by accident — it did, once, and the cluster silently went back to
 # no-login.
+#
+# `trinoUrl` is the query engine's in-cluster TLS endpoint, which exists under
+# exactly the same condition as the IdP: `make trino` adds the HTTPS listener and
+# the internal-CA certificate (manifests/trino-tls.yaml) only when this ConfigMap
+# is present. Nova reads it for NOVA_TRINO_URL; without the key its built-in
+# plain-HTTP default applies, which is what a dev install without identity runs.
+# The key has to live in this ConfigMap rather than in Nova's manifest because
+# `kubectl apply` of the ConfigMap would otherwise prune it again.
 apply_configmap stardelt-identity \
   --from-literal=issuerUrl="https://id.${BASE_DOMAIN}/realms/stardelt" \
   --from-literal=groupClaim=groups \
   --from-literal=adminGroup=stardelt-admins \
   --from-literal=authMode=oidc \
-  --from-literal=publicUrl="https://${BASE_DOMAIN}"
+  --from-literal=publicUrl="https://${BASE_DOMAIN}" \
+  --from-literal=trinoUrl="https://trino.${NAMESPACE}.svc.cluster.local:8443"
 echo "› ConfigMap stardelt-identity (issuer https://id.${BASE_DOMAIN}/realms/stardelt)"
