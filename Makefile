@@ -27,7 +27,7 @@ TRINO_EXTRA := $(if $(filter 1,$(SLIM)),-f helm-values/slim/trino.yaml,)
 #   make chart-template CHART_EXTRA="-f chart/values-slim.yaml"
 CHART_EXTRA ?=
 
-.PHONY: help deps lint install install-core install-notebooks install-operator upgrade uninstall build-superset-image push-superset-image pf dev-up dev-down dev-dns dev-dns-down
+.PHONY: help deps lint install install-core install-notebooks install-operator upgrade uninstall build-superset-image push-superset-image pf pin dev-up dev-down dev-dns dev-dns-down
 .PHONY: chart-deps chart-template chart-install
 
 help: ## Show this help
@@ -223,6 +223,9 @@ chart-install: ## Install/upgrade the umbrella chart as release `stardelt`
 # ---------------------------------------------------------------------------
 # Superset image
 # ---------------------------------------------------------------------------
+pin: ## Pin a deployment to the newest published digest: make pin APP=nova NS=stardelt TAG=dev
+	@APP="$(APP)" NS="$(NAMESPACE)" TAG="$(TAG)" bash scripts/pin-image.sh
+
 build-superset-image: ## Build the Superset image (ghcr.io/stardelt/superset:dev)
 	@echo "› building $(SUPERSET_IMAGE)"
 	@docker build -t $(SUPERSET_IMAGE) -f images/superset/Dockerfile images/superset
