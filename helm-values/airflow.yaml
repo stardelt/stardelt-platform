@@ -89,8 +89,10 @@ triggerer:
     requests: { cpu: "50m",  memory: "256Mi" }
     limits:   { cpu: "1",    memory: "512Mi" }
 
-# Static admin user for the dev environment. Same convention as the
-# static-dev-user in Nova (Stage 3): no real auth in MVP.
+# DEV ONLY. fernetKey, jwtSecret and this webserverSecretKey are fixed values committed
+# to a public repo, and the chart's create-user job also creates its default login
+# admin / admin (it is not set in this file). Treat all of them as public: do not expose
+# Airflow beyond a trusted network without overriding them and putting real auth in front.
 webserverSecretKey: "stardelt-mvp-webserver-key"
 
 # Plain-value envs on every Airflow container (including spawned K8s task pods).

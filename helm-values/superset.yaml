@@ -53,6 +53,8 @@ extraConfigs:
       tables: []
 
 # init Job creates admin user + imports the datasource above.
+# DEV ONLY: admin / admin is committed to a public repo. Change it (or put real auth in
+# front) before Superset is reachable from anywhere you do not trust.
 init:
   adminUser:
     username: admin

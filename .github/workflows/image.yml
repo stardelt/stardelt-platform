@@ -68,12 +68,17 @@ jobs:
 
       - name: Job summary
         if: github.event_name != 'pull_request'
+        # Values go through env, not `${{ }}` inside the script: tag names are
+        # attacker-influenced strings and must never be spliced into shell source.
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           {
             echo "### ghcr.io/stardelt/superset"
             echo
             echo '```'
-            echo "${{ steps.meta.outputs.tags }}"
-            echo "digest: ${{ steps.build.outputs.digest }}"
+            echo "$TAGS"
+            echo "digest: $DIGEST"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
