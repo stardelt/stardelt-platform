@@ -21,6 +21,13 @@ Your `kubectl` current-context determines the target cluster. Verify with:
 kubectl config current-context
 ```
 
+Every installing or uninstalling `make` target prints the context it is about to act on.
+Set `EXPECT_CONTEXT` to make it refuse any other cluster:
+
+```sh
+EXPECT_CONTEXT=stardelt-dev make install-core
+```
+
 ---
 
 ## S3 credentials (required before install)
@@ -248,8 +255,13 @@ them in the package settings (the API refuses), so the cluster needs a pull secr
 named `ghcr-creds` in the namespace:
 
 ```sh
-./dev/ghcr-pull-secret.sh          # requires gh with write:packages
+./dev/ghcr-pull-secret.sh          # uses your `gh auth token`
+GHCR_TOKEN=<read:packages PAT> ./dev/ghcr-pull-secret.sh   # preferred
 ```
+
+The secret lives in the cluster, so give it a token that can only read packages
+(`GHCR_TOKEN`) rather than your full `gh` login token. It acts on the current kube-context
+(or `KUBE_CONTEXT`) and prints it first.
 
 Alternatively, make the packages public in the GitHub package settings and drop the
 `imagePullSecrets` entry. `nova:dev` is a mutable tag — pin by digest for reproducible installs.

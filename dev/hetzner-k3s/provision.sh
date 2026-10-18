@@ -30,17 +30,45 @@ SSH_PRIVATE_KEY="${SSH_PRIVATE_KEY:-$HOME/.ssh/id_ed25519}"
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-$HOME/.kube/stardelt-dev.yaml}"
 INGRESS_HOST="${INGRESS_HOST:-alpha.dev.stardelt.io}"
 
-ALLOW_IPV4="${ALLOW_IPV4:-$(curl -4 -fsS https://ifconfig.me)/32}"
-ALLOW_IPV6="${ALLOW_IPV6:-$(curl -6 -fsS https://ifconfig.me 2>/dev/null || true)}"
+# SSH (22) and the Kubernetes API (6443) are firewalled to these networks. Plain addresses
+# get a /32 (/128); a CIDR is taken as given. Anything that does not look like an address
+# aborts here instead of producing a firewall rule that is wrong or silently open.
+ALLOW_IPV4="${ALLOW_IPV4:-$(curl -4 -fsS --max-time 10 https://ifconfig.me)}"
+[[ "$ALLOW_IPV4" == */* ]] || ALLOW_IPV4="${ALLOW_IPV4}/32"
+[[ "$ALLOW_IPV4" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]] || {
+  echo "ALLOW_IPV4 must be an IPv4 address or CIDR (got '${ALLOW_IPV4}')" >&2
+  exit 1
+}
+ALLOW_IPV6="${ALLOW_IPV6:-$(curl -6 -fsS --max-time 10 https://ifconfig.me 2>/dev/null || true)}"
+if [ -n "$ALLOW_IPV6" ]; then
+  [[ "$ALLOW_IPV6" == */* ]] || ALLOW_IPV6="${ALLOW_IPV6}/128"
+  if [[ ! "$ALLOW_IPV6" =~ ^[0-9a-fA-F:]+/[0-9]{1,3}$ ]]; then
+    echo "ignoring ALLOW_IPV6 '${ALLOW_IPV6}': not an IPv6 address or CIDR" >&2
+    ALLOW_IPV6=""
+  fi
+fi
 ALLOWED="      - ${ALLOW_IPV4}"
 if [ -n "$ALLOW_IPV6" ]; then
   ALLOWED="${ALLOWED}
-      - ${ALLOW_IPV6}/128"
+      - ${ALLOW_IPV6}"
 fi
 
 CFG="$HERE/cluster.yaml"
-mkdir -p "$(dirname "$KUBECONFIG_PATH")"
+
+# cluster.yaml is the only record destroy.sh has of what to delete. Re-rendering it for a
+# different CLUSTER_NAME would orphan the running cluster (and keep billing for it).
+if [ -f "$CFG" ]; then
+  existing="$(awk -F': *' '/^cluster_name:/ { print $2; exit }' "$CFG")"
+  if [ -n "$existing" ] && [ "$existing" != "$CLUSTER_NAME" ]; then
+    echo "refusing: $CFG already describes cluster '$existing', but CLUSTER_NAME is '$CLUSTER_NAME'." >&2
+    echo "  Overwriting it would orphan '$existing'. Run 'make dev-down' first, or delete" >&2
+    echo "  the file if that cluster is already gone." >&2
+    exit 1
+  fi
+fi
+
 umask 077
+mkdir -p "$(dirname "$KUBECONFIG_PATH")"
 cat > "$CFG" <<EOF
 ---
 hetzner_token: ${HCLOUD_TOKEN}
@@ -115,6 +143,8 @@ chmod 600 "$CFG"
 echo "› creating cluster '${CLUSTER_NAME}' (${NODE_TYPE} @ ${LOCATION}, k3s ${K3S_VERSION})"
 hetzner-k3s create --config "$CFG" --quiet
 
+# The kubeconfig carries cluster-admin credentials: keep it private.
+if [ -f "$KUBECONFIG_PATH" ]; then chmod 600 "$KUBECONFIG_PATH"; fi
 export KUBECONFIG="$KUBECONFIG_PATH"
 kubectl get nodes
 

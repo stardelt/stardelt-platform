@@ -14,7 +14,8 @@ install is pinned upstream charts + this repo's values (master spec §6).
 
 The running development environment is the Hetzner k3s cluster
 (`alpha.dev.stardelt.io`), provisioned by `dev/hetzner-k3s/` (`make dev-up`, needs
-`HCLOUD_TOKEN`). `kubectl`'s current-context selects the target cluster — pin it.
+`HCLOUD_TOKEN`). `kubectl`'s current-context selects the target cluster — pin it
+(`EXPECT_CONTEXT=<ctx> make …` refuses any other; targets print the context they use).
 
 ## Layout
 
@@ -56,7 +57,7 @@ CI (`.github/workflows/ci.yml`): yamllint on `helm-values/` + `manifests/`,
 - Images are `ghcr.io/stardelt/*` and **built by CI** (`Image` workflow: PR builds, merge to
   `main` publishes `dev` + `sha-<short>`). `nova` and `stardelt-operator` packages are public;
   `superset` is private, so the cluster needs the `ghcr-creds` pull secret on
-  `./dev/ghcr-pull-secret.sh` (needs `gh` logged in with `write:packages`).
+  `./dev/ghcr-pull-secret.sh` (`GHCR_TOKEN=<read:packages PAT>`, else your `gh` login token).
 - `make install` needs the `stardelt-s3-creds` Secret (template:
   `manifests/s3-credentials.example.yaml`); `install-core` applies the dev secret itself.
 - `SLIM=1` adds `-f helm-values/slim/trino.yaml` (install-core only).

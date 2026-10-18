@@ -1,6 +1,10 @@
 *.kubeconfig
 .env
 .env.local
+# Credential files must live outside the repo (~/.config/stardelt/); never stage a copy.
+*.env
+*.pem
+*.key
 *.log
 dev/hetzner-k3s/cluster.yaml
 

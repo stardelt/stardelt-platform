@@ -23,6 +23,7 @@ forward() {
   fi
 }
 
+echo "kube-context: $(kubectl config current-context 2>/dev/null || echo none)"
 echo "Port-forwards (Ctrl-C to stop):"
 forward nova       8080 8080
 forward trino      8081 8080

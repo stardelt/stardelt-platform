@@ -43,7 +43,9 @@ s3:
   port: 8333
   enableAuth: true
   # Pin credentials so they match the existing s3-creds Secret instead of
-  # auto-generating random ones.
+  # auto-generating random ones. DEV ONLY: these values are committed to a public repo
+  # (and duplicated in manifests/s3-credentials.dev.yaml) — rotate both before any
+  # environment holds data you care about.
   credentials:
     admin:
       accessKey: stardelt-access-key
