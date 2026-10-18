@@ -20,11 +20,22 @@ images:
     tag: dev
     pullPolicy: IfNotPresent
 
-# Stable Fernet/JWT/internal-API secret (kind-only, NEVER use in real envs).
-# Without these the chart auto-generates, but a re-install would invalidate
-# the database; pinning here makes upgrades safe.
-fernetKey: "5oYDV8KzcRrChx4tWN5gP1NQXMRr9CkBaVYU6jLDB2I="
-jwtSecret: "stardelt-mvp-jwt-do-not-use-in-prod"
+# No secrets in this file: scripts/app-secrets.sh generates them per cluster
+# (the install targets run it before this chart) and keeps them across installs
+# and uninstalls. These are the chart's own Secret-reference fields and the key
+# each one reads:
+#   fernetKeySecretName          → `fernet-key`
+#   apiSecretKeySecretName       → `api-secret-key`   (Airflow 3: [api] secret_key)
+#   webserverSecretKeySecretName → `webserver-secret-key` (Airflow <3 only; same
+#                                  Secret, so a chart/app rollback still finds a
+#                                  stable key — the chart ignores it on 3.x)
+#   jwtSecretName                → `jwt-secret`
+# Rotating the fernet key invalidates every connection Airflow encrypted in its
+# metadata DB; rotating the API/JWT keys only ends sessions.
+fernetKeySecretName: airflow-fernet-key
+apiSecretKeySecretName: airflow-webserver-key
+webserverSecretKeySecretName: airflow-webserver-key
+jwtSecretName: airflow-jwt-secret
 
 # DAGs come from the image, not gitSync
 dags:
@@ -89,12 +100,6 @@ triggerer:
     requests: { cpu: "50m",  memory: "256Mi" }
     limits:   { cpu: "1",    memory: "512Mi" }
 
-# DEV ONLY. fernetKey, jwtSecret and this webserverSecretKey are fixed values committed
-# to a public repo, and the chart's create-user job also creates its default login
-# admin / admin (it is not set in this file). Treat all of them as public: do not expose
-# Airflow beyond a trusted network without overriding them and putting real auth in front.
-webserverSecretKey: "stardelt-mvp-webserver-key"
-
 # Plain-value envs on every Airflow container (including spawned K8s task pods).
 env:
   - name: CATALOG_URI
@@ -136,6 +141,34 @@ extraEnv: |
 migrateDatabaseJob:
   useHelmHooks: false
   applyCustomEnv: false
+
+# The chart has no Secret reference for createUserJob.defaultUser — its args
+# template interpolates the literal `password` value. So the args are replaced
+# with the same command reading username and password from the airflow-admin
+# Secret through `createUserJob.env` (a supported chart field); role, email and
+# names are not credentials and stay literal.
 createUserJob:
   useHelmHooks: false
   applyCustomEnv: false
+  env:
+    - name: AIRFLOW_ADMIN_USERNAME
+      valueFrom:
+        secretKeyRef:
+          name: airflow-admin
+          key: username
+    - name: AIRFLOW_ADMIN_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: airflow-admin
+          key: password
+  args:
+    - "bash"
+    - "-c"
+    - |
+      exec airflow users create \
+        --role Admin \
+        --username "$AIRFLOW_ADMIN_USERNAME" \
+        --email admin@stardelt.local \
+        --firstname stardelt \
+        --lastname Admin \
+        --password "$AIRFLOW_ADMIN_PASSWORD"

@@ -490,9 +490,22 @@ superset:
       # ENABLE_PROXY_FIX so x-forwarded headers are honored when iframed.
       ENABLE_PROXY_FIX = True
 
-  # Pin Superset's secret key (MVP only — generate a real one for prod).
-  extraSecretEnv:
-    SUPERSET_SECRET_KEY: "stardelt-mvp-superset-secret-do-not-use-in-prod-32-chars"
+  # No secrets in this file: scripts/app-secrets.sh generates them per cluster
+  # (`make chart-install` runs it first) and keeps them across installs. The
+  # Superset chart has no `supersetSecretKeySecretName` field and writes
+  # `extraSecretEnv` values as literals, so the key goes through extraEnvRaw,
+  # which reaches every pod including the init Job.
+  extraEnvRaw:
+    - name: SUPERSET_SECRET_KEY
+      valueFrom:
+        secretKeyRef:
+          name: superset-secret-key
+          key: secret-key
+    - name: SUPERSET_ADMIN_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: superset-admin
+          key: password
 
   # Pre-import the Trino database connection on init.
   extraConfigs:
@@ -502,14 +515,42 @@ superset:
         sqlalchemy_uri: trino://stardelt-dev@trino:8080/warehouse
         tables: []
 
-  # init Job creates admin user + imports the datasource above.
+  # init Job creates admin user + imports the datasource above. The chart's
+  # `init.adminUser.password` is a literal interpolated into the init script, so
+  # the script is overridden (a supported values field) to read the password from
+  # SUPERSET_ADMIN_PASSWORD, i.e. the superset-admin Secret. Username/profile are
+  # not credentials and stay here.
   init:
     adminUser:
       username: admin
       firstname: stardelt
       lastname: Admin
       email: admin@stardelt.local
-      password: admin
+    initscript: |
+      #!/bin/sh
+      set -eu
+      echo "Upgrading DB schema..."
+      superset db upgrade
+      echo "Initializing roles..."
+      superset init
+      {{ if .Values.init.createAdmin }}
+      echo "Creating admin user..."
+      superset fab create-admin \
+                      --username {{ .Values.init.adminUser.username }} \
+                      --firstname {{ .Values.init.adminUser.firstname }} \
+                      --lastname {{ .Values.init.adminUser.lastname }} \
+                      --email {{ .Values.init.adminUser.email }} \
+                      --password "$SUPERSET_ADMIN_PASSWORD" \
+                      || true
+      {{- end }}
+      {{ if .Values.init.loadExamples }}
+      echo "Loading examples..."
+      superset load_examples
+      {{- end }}
+      if [ -f "{{ .Values.extraConfigMountPath }}/import_datasources.yaml" ]; then
+        echo "Importing database connections.... "
+        superset import_datasources -p {{ .Values.extraConfigMountPath }}/import_datasources.yaml
+      fi
     loadExamples: false
 
   # Components
@@ -579,6 +620,32 @@ airflow:
   createUserJob:
     useHelmHooks: false
     applyCustomEnv: false
+    # createUserJob.defaultUser has no Secret reference: the chart interpolates
+    # the literal password into the job args. Replace the args with the same
+    # command reading username and password from the airflow-admin Secret.
+    env:
+      - name: AIRFLOW_ADMIN_USERNAME
+        valueFrom:
+          secretKeyRef:
+            name: airflow-admin
+            key: username
+      - name: AIRFLOW_ADMIN_PASSWORD
+        valueFrom:
+          secretKeyRef:
+            name: airflow-admin
+            key: password
+    args:
+      - "bash"
+      - "-c"
+      - |
+        exec airflow users create \
+          --role Admin \
+          --username "$AIRFLOW_ADMIN_USERNAME" \
+          --email admin@stardelt.local \
+          --firstname stardelt \
+          --lastname Admin \
+          --password "$AIRFLOW_ADMIN_PASSWORD"
+
   # DAG-based orchestrator (chart: airflow 1.21.0, appVersion 3.2.0).
   #
   # kind tuning:
@@ -605,11 +672,21 @@ airflow:
       tag: dev
       pullPolicy: IfNotPresent
 
-  # Stable Fernet/JWT/internal-API secret (kind-only, NEVER use in real envs).
-  # Without these the chart auto-generates, but a re-install would invalidate
-  # the database; pinning here makes upgrades safe.
-  fernetKey: "5oYDV8KzcRrChx4tWN5gP1NQXMRr9CkBaVYU6jLDB2I="
-  jwtSecret: "stardelt-mvp-jwt-do-not-use-in-prod"
+  # No secrets in this file: scripts/app-secrets.sh generates them per cluster
+  # (`make chart-install` runs it first) and keeps them across installs. Chart
+  # fields and the key each one reads:
+  #   fernetKeySecretName          → `fernet-key`
+  #   apiSecretKeySecretName       → `api-secret-key`   (Airflow 3: [api] secret_key)
+  #   webserverSecretKeySecretName → `webserver-secret-key` (Airflow <3 only; the
+  #                                  chart ignores it on 3.x, kept so a rollback
+  #                                  still finds a stable key)
+  #   jwtSecretName                → `jwt-secret`
+  # Rotating the fernet key invalidates every connection Airflow encrypted in its
+  # metadata DB; rotating the API/JWT keys only ends sessions.
+  fernetKeySecretName: airflow-fernet-key
+  apiSecretKeySecretName: airflow-webserver-key
+  webserverSecretKeySecretName: airflow-webserver-key
+  jwtSecretName: airflow-jwt-secret
 
   # DAGs come from the image, not gitSync
   dags:
@@ -673,10 +750,6 @@ airflow:
     resources:
       requests: { cpu: "50m",  memory: "256Mi" }
       limits:   { cpu: "1",    memory: "512Mi" }
-
-  # Static admin user for the dev environment. Same convention as the
-  # static-dev-user in Nova: no real auth in MVP.
-  webserverSecretKey: "stardelt-mvp-webserver-key"
 
   # Plain-value envs on every Airflow container (including spawned K8s task pods).
   env:

@@ -42,9 +42,23 @@ configOverrides:
     # ENABLE_PROXY_FIX so x-forwarded headers are honored when iframed.
     ENABLE_PROXY_FIX = True
 
-# Pin Superset's secret key (MVP only — generate a real one for prod).
-extraSecretEnv:
-  SUPERSET_SECRET_KEY: "stardelt-mvp-superset-secret-do-not-use-in-prod-32-chars"
+# No secrets in this file: scripts/app-secrets.sh generates them per cluster
+# (the install targets run it before this chart) and keeps them across installs
+# and uninstalls. `superset 0.15.5` has no `supersetSecretKeySecretName` field,
+# and `extraSecretEnv` writes its values into a Secret as literals (a `valueFrom`
+# map would render as garbage), so the key is passed as a raw env entry instead:
+# `extraEnvRaw` reaches every Superset pod and the init Job.
+extraEnvRaw:
+  - name: SUPERSET_SECRET_KEY
+    valueFrom:
+      secretKeyRef:
+        name: superset-secret-key
+        key: secret-key
+  - name: SUPERSET_ADMIN_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: superset-admin
+        key: password
 
 # Pre-import the Trino database connection on init.
 extraConfigs:
@@ -55,15 +69,43 @@ extraConfigs:
       tables: []
 
 # init Job creates admin user + imports the datasource above.
-# DEV ONLY: admin / admin is committed to a public repo. Change it (or put real auth in
-# front) before Superset is reachable from anywhere you do not trust.
+# The chart only offers `init.adminUser.password`, a literal that is interpolated
+# into the init script, so it cannot come from a Secret. `init.initscript` is a
+# supported values field: below is the chart 0.15.5 default script with the
+# `--password` argument read from SUPERSET_ADMIN_PASSWORD (extraEnvRaw above,
+# from the superset-admin Secret). Username and profile are not credentials and
+# stay in values.
 init:
   adminUser:
     username: admin
     firstname: stardelt
     lastname: Admin
     email: admin@stardelt.local
-    password: admin
+  initscript: |
+    #!/bin/sh
+    set -eu
+    echo "Upgrading DB schema..."
+    superset db upgrade
+    echo "Initializing roles..."
+    superset init
+    {{ if .Values.init.createAdmin }}
+    echo "Creating admin user..."
+    superset fab create-admin \
+                    --username {{ .Values.init.adminUser.username }} \
+                    --firstname {{ .Values.init.adminUser.firstname }} \
+                    --lastname {{ .Values.init.adminUser.lastname }} \
+                    --email {{ .Values.init.adminUser.email }} \
+                    --password "$SUPERSET_ADMIN_PASSWORD" \
+                    || true
+    {{- end }}
+    {{ if .Values.init.loadExamples }}
+    echo "Loading examples..."
+    superset load_examples
+    {{- end }}
+    if [ -f "{{ .Values.extraConfigMountPath }}/import_datasources.yaml" ]; then
+      echo "Importing database connections.... "
+      superset import_datasources -p {{ .Values.extraConfigMountPath }}/import_datasources.yaml
+    fi
   loadExamples: false
 
 # Components
