@@ -40,6 +40,8 @@ cp manifests/s3-credentials.example.yaml manifests/s3-credentials.yaml
 kubectl apply -f manifests/s3-credentials.yaml
 ```
 
+`make install-core` creates the dev Secret only when no `stardelt-s3-creds` Secret exists, so a Secret applied beforehand is kept.
+
 ---
 
 ## Quickstart
@@ -94,6 +96,8 @@ For a small single node (cx33 / 8 GB), `chart/values-slim.yaml` mirrors
 ```sh
 make chart-install CHART_EXTRA="-f chart/values-slim.yaml"
 ```
+
+With ingress.enabled=true only Nova (and Keycloak in identity.mode=platform) get an Ingress; list components in ingress.exposeUnauthenticated (e.g. [trino]) to expose a UI that has no sign-in.
 
 The default `stardelt-s3-creds` Secret holds the dev credentials that match the
 SeaweedFS sub-chart (as `make install-core` does). For a real install override
@@ -212,6 +216,15 @@ for the `nova` client already.
 Two deliberate behaviours: the render **fails** when `nova.auth.mode=oidc` is set without
 an issuer (rather than shipping a pod that crash-loops), and `dev` stays the default
 everywhere, because CI, `make demo` and the kind gate have no IdP.
+
+JupyterHub is behind that same login: `helm-values/jupyterhub.yaml` (and the chart's
+`jupyterhub:` block) uses `GenericOAuthenticator` with the realm's `jupyterhub` client,
+reads the issuer from `stardelt-identity` and the client secret from `stardelt-oidc-clients`
+(key `jupyterhub`), and admits the admin group (`allowed_groups`/`admin_groups`,
+`stardelt-admins`) only. No password is in the values files; without an issuer the hub starts
+but signs nobody in. Keycloak's own admin console is not published — the `id.` Ingress (and the
+chart's keycloak Ingress) carries just `/realms/stardelt`, `/resources` and `/robots.txt`, so
+use `kubectl -n stardelt port-forward svc/keycloak 8080:8080` to administer the realm.
 
 Rotating the session secret logs everyone out: delete the Secret and re-run the installer
 (the chart regenerates it and keeps it across upgrades — `helm.sh/resource-policy: keep`).
