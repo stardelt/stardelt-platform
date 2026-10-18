@@ -52,6 +52,7 @@ CI (`.github/workflows/ci.yml`): yamllint on `helm-values/` + `manifests/`,
 - Chart bumps arrive as Renovate PRs; README tables and `ci.yml` carry hand-maintained
   copies of the pins — keep them in sync.
 - Read the master spec first; never add a component without a contract and a license.
+- Never commit a default credential. `scripts/check-no-default-secrets.sh` (CI) fails on the known ones; generate values at install time instead.
 
 ## Gotchas
 
