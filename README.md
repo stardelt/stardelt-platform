@@ -283,9 +283,17 @@ NAMESPACE=stardelt TRINO_URL=https://trino.alpha.dev.stardelt.io \
 kubectl -n stardelt get secret trino-password-db -o jsonpath='{.data.superset-password}' | base64 -d
 ```
 
-Not yet wired: the umbrella chart needs the same overlay nested under `trino:` (the file above
-is flat for the per-component install), and Superset's pre-imported datasource
-(`helm-values/superset.yaml`) must move to the `superset` service account — tracked as a follow-up.
+Superset queries as the **`superset` service account**: the tracked datasource URI points at the
+public host (`trino.<baseDomain>:443`) and the init Job rewrites it to
+`trino://superset:<password>@trino.<baseDomain>:443/warehouse` from Secret `trino-password-db`
+(key `superset-password`) — the password never reaches a tracked file, and the public host is
+needed because the driver forces HTTPS for password auth (in-cluster TLS is the follow-up). The
+umbrella chart needs the same Trino overlay nested under `trino:` (the file above is flat for the
+per-component install) — still a follow-up. To rotate the service account: delete Secret
+`trino-password-db`, re-run `scripts/identity-bootstrap.sh` (`make install-identity` calls it),
+and re-run the Superset init Job so the datasource picks up the new password. Without
+`make install-identity` there is no service account and no Trino authentication, so the
+datasource stays credential-free and the init Job says so.
 
 ### Turning on sign-in
 
