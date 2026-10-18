@@ -1,0 +1,30 @@
+{{- $mode := include "stardelt.identityMode" . }}
+{{- if eq $mode "external" }}
+{{- if not .Values.identity.issuerUrl }}
+{{- fail "identity.mode=external needs identity.issuerUrl (e.g. https://login.microsoftonline.com/<tenant>/v2.0)" }}
+{{- end }}
+{{- if not (hasPrefix "https://" .Values.identity.issuerUrl) }}
+{{- fail "identity.issuerUrl must be an https:// URL" }}
+{{- end }}
+{{- end }}
+{{- if eq $mode "platform" }}
+{{- if not .Values.platform.baseDomain }}
+{{- fail "identity.mode=platform needs platform.baseDomain (Keycloak at id.<baseDomain>, client redirects on the app subdomains)" }}
+{{- end }}
+{{- end }}
+{{- if ne $mode "none" }}
+# The identity contract every building block reads (docs: architecture/identity).
+# Same keys whether the IdP is the platform Keycloak or an external provider.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: stardelt-identity
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/part-of: stardelt
+    stardelt.io/identity-mode: {{ $mode }}
+data:
+  issuerUrl: {{ include "stardelt.issuerUrl" . | quote }}
+  groupClaim: {{ .Values.identity.groupClaim | quote }}
+  adminGroup: {{ .Values.identity.adminGroup | quote }}
+{{- end }}

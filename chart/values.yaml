@@ -82,6 +82,48 @@ images:
   #   global.imagePullSecrets        (SeaweedFS reads the Helm-standard global)
   pullSecrets: []
 
+identity:
+  # Who authenticates users (docs: architecture/identity, the identity contract).
+  #   none     — nothing deployed, no ConfigMap; components keep their dev auth.
+  #   platform — deploy Keycloak (realm `stardelt`) at id.<platform.baseDomain>
+  #              (or ingress.hosts.keycloak) with its own CNPG Postgres, and
+  #              publish ConfigMap `stardelt-identity`. Needs platform.baseDomain
+  #              and the CNPG operator (cloudnative-pg above, or an existing one).
+  #   external — bring your own OIDC provider (Entra ID, Okta, a corporate
+  #              Keycloak): deploys nothing, only publishes `stardelt-identity`
+  #              from issuerUrl below. Register the clients there yourself.
+  mode: none
+  # Required for `external`; ignored for `platform` (derived from the host:
+  # https://id.<baseDomain>/realms/stardelt).
+  issuerUrl: ""
+  groupClaim: groups
+  adminGroup: stardelt-admins
+
+  keycloak:
+    # Equivalent to manifests/keycloak.yaml (+ scripts/identity-bootstrap.sh).
+    # Official image, Apache-2.0. Tag mirrors KEYCLOAK_VERSION in the Makefile
+    # (scripts/check-version-parity.sh).
+    image:
+      repository: quay.io/keycloak/keycloak
+      tag: "26.8.1"
+      pullPolicy: IfNotPresent
+    # Small single-node sizing (fits next to install-core on a cx33).
+    resources:
+      requests: { cpu: "100m", memory: "512Mi" }
+      limits:   { cpu: "1",    memory: "1Gi"   }
+    # The admin password, the realm `admin` user's password and the client
+    # secrets are generated on first install into Secrets keycloak-admin,
+    # stardelt-realm-admin and stardelt-oidc-clients, kept across upgrades
+    # (lookup) and on uninstall (helm.sh/resource-policy: keep). Nothing here
+    # holds a credential.
+    postgres:
+      instances: 1
+      storage:
+        size: 1Gi
+      resources:
+        requests: { cpu: "50m",  memory: "128Mi" }
+        limits:   { cpu: "500m", memory: "256Mi" }
+
 # ===========================================================================
 # Core stack
 # ===========================================================================

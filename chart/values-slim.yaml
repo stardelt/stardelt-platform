@@ -32,3 +32,9 @@ trino:
         type: UseG1GC
     additionalJVMConfig:
       - "-Xms512m"
+
+# Platform IdP (Keycloak) fits the slim profile as-is: the defaults in
+# chart/values.yaml are already single-node sized (Keycloak 512Mi request / 1Gi
+# limit, its Postgres 128Mi / 256Mi, ~640Mi requested in total). Enable it with
+#   --set identity.mode=platform --set platform.baseDomain=<your domain>
+# It stays off here so the slim profile keeps the same shape as install-core.

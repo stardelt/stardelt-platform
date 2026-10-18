@@ -22,7 +22,7 @@ The running development environment is the Hetzner k3s cluster
 - `Makefile` — single source of truth: chart versions pinned as `<COMPONENT>_VERSION`
   (Renovate updates them via `renovate.json`) and every install target.
 - `helm-values/` — one values file per chart; `helm-values/slim/` = small-node overrides.
-- `manifests/` — CNPG Postgres, Lakekeeper bootstrap, Nova deployment, S3 cred templates.
+- `manifests/` — CNPG Postgres, Lakekeeper bootstrap, Nova deployment, S3 cred templates, Keycloak (`keycloak.yaml`).
 - `scripts/` — `check-deps.sh` (`make deps`), `lint.sh` (`make lint`), port-forwards.
 - `dev/` — Hetzner k3s provisioning, playground ingress/DNS, `ghcr-pull-secret.sh`.
 - `images/superset/` — Superset image (+psycopg2, Trino driver).
@@ -35,6 +35,7 @@ make lint               # bash -n every script under scripts/ + dev/ (+ shellche
 make install            # full stack
 make install-core       # storage+catalog+query+Nova; SLIM=1 for 8 GB nodes (cx33)
 make install-notebooks  # JupyterHub
+make install-identity   # optional platform IdP (Keycloak); BASE_DOMAIN=…, secrets generated
 make pf                 # port-forwards to in-cluster services
 make uninstall          # reverse-order teardown (PVCs intentionally left in place)
 make dev-up / dev-down / dev-dns
