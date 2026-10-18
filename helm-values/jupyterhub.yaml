@@ -11,6 +11,20 @@ hub:
   config:
     JupyterHub:
       authenticator_class: dummy
+      # Nova embeds this hub in its Notebooks page, which the hub refuses by default:
+      # JupyterHub 5 sends `Content-Security-Policy: frame-ancestors 'none'` (its
+      # clickjacking default since 4.1). The override allows exactly one origin —
+      # Nova — and keeps the report-uri, so framing from anywhere else stays blocked.
+      #
+      # Trade-off, stated rather than implied: a notebook is not a dashboard. Whoever
+      # controls the embedding origin can clickjack the hub inside their frame, which
+      # is why this is a deliberate value and not a built-in default. Leave it out and
+      # Nova shows a notice quoting the header instead — it reads the header, it does
+      # not guess.
+      tornado_settings:
+        headers:
+          Content-Security-Policy: "frame-ancestors 'self' https://alpha.dev.stardelt.io; report-uri /hub/security/csp-report"
+
     DummyAuthenticator:
       # DEV ONLY. Replace with Keycloak OIDC before anything real.
       password: stardelt

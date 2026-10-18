@@ -691,6 +691,20 @@ airflow:
           key: region
 
 jupyterhub:
+  # Embedding in Nova. JupyterHub 5 refuses framing by default
+  # (`Content-Security-Policy: frame-ancestors 'none'`), so Nova's Notebooks page shows a
+  # notice quoting that header instead of a blank frame. To let Nova embed the hub, allow
+  # exactly its origin (values files are not templated, so write your domain out):
+  #
+  #   hub:
+  #     config:
+  #       JupyterHub:
+  #         tornado_settings:
+  #           headers:
+  #             Content-Security-Policy: "frame-ancestors 'self' https://<baseDomain>; report-uri /hub/security/csp-report"
+  #
+  # A notebook is not a dashboard: whoever controls the embedding origin can clickjack
+  # the hub, which is why this is an explicit value rather than a default.
   # Multi-user notebooks (chart: jupyterhub 4.4.3, appVersion 5.5.3).
   #
   # Dev shape: DummyAuthenticator (no IdP yet), ephemeral per-user storage, small

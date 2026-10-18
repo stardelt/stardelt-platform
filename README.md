@@ -122,6 +122,15 @@ make install-identity BASE_DOMAIN=alpha.dev.stardelt.io     # Keycloak at https:
 # or: make chart-install CHART_EXTRA="--set identity.mode=platform --set platform.baseDomain=example.com"
 ```
 
+### Embedding JupyterHub in Nova
+
+Nova's Notebooks page embeds the hub, and the hub refuses framing by default
+(`frame-ancestors 'none'`, its clickjacking protection since JupyterHub 4.1) — so Nova reports
+`embed.state: blocked` with the exact header rather than showing a blank iframe. `helm-values/jupyterhub.yaml`
+carries the narrow override that allows **only** Nova's origin, and the umbrella chart documents it
+under `jupyterhub:` for admins who want the same. Without it, nothing breaks: the page explains
+itself and the hub stays unembeddable.
+
 ### Turning on sign-in
 
 Deploying the IdP does not put anything behind a login: that is Nova's decision
