@@ -143,6 +143,21 @@ postgres:
   instances: 1
   storage:
     size: 2Gi
+  # Continuous WAL archiving plus a daily base backup into the platform's object
+  # store — equivalent to manifests/cnpg-postgres.yaml (spec.backup) and
+  # manifests/cnpg-backup-schedule.yaml. Needs the destination bucket to exist:
+  # the bundled SeaweedFS creates `backups` below, but with
+  # `s3Credentials.create=false` (BYO S3) your store must already have it, and
+  # the credentials above must be allowed to write there.
+  backup:
+    # off = no spec.backup and no ScheduledBackup (no WAL archiving at all)
+    enabled: true
+    # Bucket under `s3Credentials.endpoint` that receives the WAL and base
+    # backups. Keep in sync with the `backups` entry in `seaweedfs.s3.createBuckets`.
+    bucket: backups
+    retentionPolicy: "14d"
+    # CloudNativePG cron, seconds first: 02:30 every day.
+    schedule: "0 30 2 * * *"
   resources:
     requests: { cpu: "50m", memory: "256Mi" }
     limits:   { cpu: "1",   memory: "512Mi" }
@@ -242,6 +257,11 @@ seaweedfs:
         secretKey: stardelt-secret-key
     createBuckets:
       - name: lakehouse
+        anonymousRead: false
+      # Destination for the catalog's continuous backups (`postgres.backup`
+      # above). Unused when `postgres.backup.enabled=false`. Renaming this means
+      # setting `postgres.backup.bucket` to the same name.
+      - name: backups
         anonymousRead: false
     resources:
       requests: { cpu: "100m", memory: "256Mi" }
