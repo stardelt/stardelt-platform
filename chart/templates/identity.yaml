@@ -27,6 +27,10 @@ data:
   issuerUrl: {{ include "stardelt.issuerUrl" . | quote }}
   groupClaim: {{ .Values.identity.groupClaim | quote }}
   adminGroup: {{ .Values.identity.adminGroup | quote }}
+  # Nova reads these two to switch sign-in on; the chart sets Nova's env directly, so
+  # they are here for parity with the manifest path (scripts/identity-bootstrap.sh).
+  authMode: {{ .Values.nova.auth.mode | quote }}
+  publicUrl: {{ .Values.nova.auth.publicUrl | default (printf "https://%s" (include "stardelt.appHost" (list . "nova" ""))) | quote }}
 ---
 # Signs Nova's session cookie. Nova refuses to start below 32 bytes, so this is
 # generated rather than left to a human to invent; it is kept across upgrades and

@@ -84,8 +84,14 @@ echo "› ConfigMap keycloak-env (KC_HOSTNAME=https://id.${BASE_DOMAIN})"
 
 # The identity contract every component reads — same keys as the chart's
 # `identity.mode: platform|external` ConfigMap.
+# `authMode` and `publicUrl` are what Nova reads to switch sign-in on. They live here
+# rather than in the Deployment so re-applying manifests/nova-deployment.yaml cannot turn
+# authentication off by accident — it did, once, and the cluster silently went back to
+# no-login.
 apply_configmap stardelt-identity \
   --from-literal=issuerUrl="https://id.${BASE_DOMAIN}/realms/stardelt" \
   --from-literal=groupClaim=groups \
-  --from-literal=adminGroup=stardelt-admins
+  --from-literal=adminGroup=stardelt-admins \
+  --from-literal=authMode=oidc \
+  --from-literal=publicUrl="https://${BASE_DOMAIN}"
 echo "› ConfigMap stardelt-identity (issuer https://id.${BASE_DOMAIN}/realms/stardelt)"
