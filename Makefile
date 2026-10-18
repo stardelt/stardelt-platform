@@ -43,6 +43,7 @@ BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 
 .PHONY: _context help deps lint install install-core install-notebooks install-identity install-operator upgrade uninstall build-superset-image push-superset-image pf pin pin-images dev-up dev-down dev-dns dev-dns-down
 .PHONY: chart-deps chart-template chart-install
+.PHONY: verify-backups verify-backup-config
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | \
@@ -66,6 +67,24 @@ _context:
 
 lint: ## Syntax-check (bash -n) + ShellCheck the scripts under scripts/ and dev/
 	@bash scripts/lint.sh
+
+# ---------------------------------------------------------------------------
+# Backup guards (issue #59): a client-side `kubectl apply` from a stale checkout
+# silently strips spec.backup from the live Cluster, which turns WAL archiving
+# into a successful no-op — every operator-visible signal stays green while the
+# bucket stops growing. verify-backup-config is the post-apply guard the install
+# targets run; verify-backups is the full bucket-vs-database check, to run after
+# any change to the backup path (a scheduled wrapper is future work on #59).
+# ---------------------------------------------------------------------------
+SKIP_OBJECTS    ?=
+MAX_AGE_SECONDS ?= 900
+
+verify-backup-config: _context ## Assert the live Cluster still declares spec.backup (post-apply guard)
+	@NAMESPACE=$(NAMESPACE) bash scripts/verify-backups.sh --config-only
+
+verify-backups: _context ## Verify WAL archiving for real: config + a fresh object in the bucket + agreement with pg_stat_archiver. SKIP_OBJECTS=1 drops the S3 half
+	@NAMESPACE=$(NAMESPACE) SKIP_OBJECTS="$(SKIP_OBJECTS)" MAX_AGE_SECONDS="$(MAX_AGE_SECONDS)" \
+	  bash scripts/verify-backups.sh
 
 # ---------------------------------------------------------------------------
 # Helm repo setup
@@ -93,6 +112,8 @@ install: deps _context _helm-repos ## Install all stardelt components (idempoten
 
 	@echo "› [2/9] CNPG Cluster (Lakekeeper Postgres)"
 	@kubectl apply -f manifests/cnpg-postgres.yaml
+	@echo "› [2/9] guard: the live Cluster must still declare its backup config"
+	@$(MAKE) --no-print-directory verify-backup-config
 
 	@echo "› [3/9] SeaweedFS"
 	@helm upgrade --install seaweedfs seaweedfs/seaweedfs \
@@ -151,6 +172,8 @@ install-core: deps _context _helm-repos ## Install the core only (storage+catalo
 
 	@echo "› [3/7] CNPG Cluster (Lakekeeper Postgres)"
 	@kubectl apply -f manifests/cnpg-postgres.yaml
+	@echo "› [3/7] guard: the live Cluster must still declare its backup config"
+	@$(MAKE) --no-print-directory verify-backup-config
 	@kubectl -n $(NAMESPACE) wait --for=condition=Ready --timeout=300s cluster/lakekeeper-pg
 
 	@echo "› [4/7] SeaweedFS"
