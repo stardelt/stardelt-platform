@@ -20,9 +20,14 @@
 # second bucket in the same store, which covers the realistic accidents (a dropped
 # bucket, a bad lifecycle rule, `aws s3 rm --recursive`). For an archive that survives
 # losing the cluster, use SeaweedFS' own replication to a remote cluster, or run the
-# sync from whatever holds the off-site credentials — `aws s3 sync` also refuses to
-# help there, and rclone (the obvious alternative) hangs against this S3 endpoint in
-# our testing, so that is a real gap rather than a footnote.
+# sync from whatever holds the off-site credentials.
+#
+# Correction (stardelt-docs#61): this comment used to say rclone "hangs against this
+# S3 endpoint". Re-verified 2026-10-18: rclone 1.68.2 and 1.75.2 both work against
+# this endpoint — small PUTs in 3-5 s, multipart uploads too; the hang was observed
+# with rclone 1.69.1 specifically. The shipped job uses `aws s3 sync` (one endpoint
+# per invocation), so the two-endpoint copy stays possible via rclone from whatever
+# host holds the off-site credentials.
 apiVersion: batch/v1
 kind: CronJob
 metadata:

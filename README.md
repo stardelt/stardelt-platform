@@ -201,6 +201,8 @@ login responses outgrow nginx's default 4k header buffer.
 | `lint` | `bash -n` + ShellCheck every script under `scripts/` and `dev/` (ShellCheck only if installed) |
 | `install` | Add helm repos, deploy the full stack (9 steps) |
 | `install-core` | Core only (storage + catalog + query + Nova) — fits a small node; `SLIM=1` for 8 GB |
+| `verify-backup-config` | Post-apply guard (also run by both install targets): the live `lakekeeper-pg` Cluster must still declare `spec.backup`, or the command fails loudly |
+| `verify-backups` | Full WAL check: `spec.backup` + the newest object in `s3://backups/lakekeeper-pg/wals/` is younger than `MAX_AGE_SECONDS` (900) + it matches `pg_stat_archiver.last_archived_wal`. `SKIP_OBJECTS=1` skips the S3 half |
 | `install-notebooks` | JupyterHub (notebooks) |
 | `install-identity` | Platform IdP: Keycloak + CNPG Postgres + realm `stardelt` (`BASE_DOMAIN=…`, see [Identity](#identity-optional-platform-idp)) |
 | `install-operator` | Install the stardelt Operator from `../stardelt-operator/chart` (dev path) |
@@ -255,6 +257,7 @@ scripts/
   lint.sh               bash -n + ShellCheck the shell scripts (make lint)
   port-forwards.sh      Background port-forwards to all services
   protect-branches.sh   Apply `main` branch protection in all five stardelt repos
+  verify-backups.sh     Backup guards: post-apply spec.backup assert + bucket-vs-database WAL check
   helm-plugins/
     stardelt-dedupe/    Helm v4 post-renderer: deduplicates env lists
 ```
