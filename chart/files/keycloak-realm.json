@@ -46,6 +46,42 @@
       },
       "protocolMappers": [
         {
+          "name": "aud-nova",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "nova",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "aud-trino",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "trino",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "aud-lakekeeper",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "lakekeeper",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
           "name": "groups",
           "protocol": "openid-connect",
           "protocolMapper": "oidc-group-membership-mapper",
@@ -79,6 +115,18 @@
       },
       "protocolMappers": [
         {
+          "name": "aud-trino",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "trino",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
           "name": "groups",
           "protocol": "openid-connect",
           "protocolMapper": "oidc-group-membership-mapper",
@@ -99,9 +147,7 @@
       "name": "Lakekeeper",
       "enabled": true,
       "protocol": "openid-connect",
-      "publicClient": false,
-      "clientAuthenticatorType": "client-secret",
-      "secret": "${STARDELT_LAKEKEEPER_CLIENT_SECRET}",
+      "publicClient": true,
       "standardFlowEnabled": true,
       "implicitFlowEnabled": false,
       "directAccessGrantsEnabled": false,
@@ -113,6 +159,18 @@
         "post.logout.redirect.uris": "https://__LAKEKEEPER_HOST__/*"
       },
       "protocolMappers": [
+        {
+          "name": "aud-lakekeeper",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "lakekeeper",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
         {
           "name": "groups",
           "protocol": "openid-connect",
@@ -148,6 +206,18 @@
       },
       "protocolMappers": [
         {
+          "name": "aud-superset",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "superset",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
           "name": "groups",
           "protocol": "openid-connect",
           "protocolMapper": "oidc-group-membership-mapper",
@@ -182,6 +252,18 @@
       },
       "protocolMappers": [
         {
+          "name": "aud-airflow",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "airflow",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
           "name": "groups",
           "protocol": "openid-connect",
           "protocolMapper": "oidc-group-membership-mapper",
@@ -215,6 +297,18 @@
         "post.logout.redirect.uris": "https://__JUPYTER_HOST__/*"
       },
       "protocolMappers": [
+        {
+          "name": "aud-jupyterhub",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "jupyterhub",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
         {
           "name": "groups",
           "protocol": "openid-connect",

@@ -6,7 +6,7 @@
 # creates first —
 #   Secret    keycloak-admin          master-realm bootstrap admin (generated)
 #   Secret    stardelt-realm-admin    `admin` user of realm stardelt (generated)
-#   Secret    stardelt-oidc-clients   client secrets nova/lakekeeper/superset/airflow/jupyterhub (generated)
+#   Secret    stardelt-oidc-clients   client secrets nova/superset/airflow/jupyterhub (generated)
 #   ConfigMap keycloak-realm          realm import, hosts rendered from the base domain
 #   ConfigMap keycloak-env            KC_HOSTNAME (https://id.<baseDomain>)
 #
@@ -101,8 +101,6 @@ spec:
               valueFrom: { secretKeyRef: { name: stardelt-realm-admin, key: password } }
             - name: STARDELT_NOVA_CLIENT_SECRET
               valueFrom: { secretKeyRef: { name: stardelt-oidc-clients, key: nova } }
-            - name: STARDELT_LAKEKEEPER_CLIENT_SECRET
-              valueFrom: { secretKeyRef: { name: stardelt-oidc-clients, key: lakekeeper } }
             - name: STARDELT_SUPERSET_CLIENT_SECRET
               valueFrom: { secretKeyRef: { name: stardelt-oidc-clients, key: superset } }
             - name: STARDELT_AIRFLOW_CLIENT_SECRET
