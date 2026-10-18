@@ -5,7 +5,7 @@
 # Why a derived image instead of `spark.jars.packages`: the platform installs
 # from pinned artifacts, not from Maven Central at pod startup (master spec §4,
 # "sovereign by default"). The jars are fetched once, at image build time,
-# verified against the SHA-512 checksums Maven Central publishes, and then
+# verified against the SHA-256 checksums Maven Central publishes, and then
 # delivered by the registry like every other layer.
 #
 # Built by .github/workflows/image.yml; a push to main publishes `dev` and
@@ -25,14 +25,14 @@ USER root
 # the Iceberg SQL syntax extension Spark loads through spark.sql.extensions.
 # A mismatched Scala/Spark ABI is the common failure here, which is why the
 # artifact name carries both (`-4.1_2.13-`) and the version is pinned.
-ADD --checksum=sha512:ac1e2cb00970309f0c6bf241fabf334aef373c1f3e3b443181d429d5f2c0903ace47df9cfc1d55c95807a096cf405ae0a8868831b9e9eb5696dfdb6380587f38 \
+ADD --checksum=sha256:3123c3798af642dd537230923548e013ef41cc28b6626e5225808cf5670a0f82 \
     https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-spark-runtime-4.1_2.13/${ICEBERG_VERSION}/iceberg-spark-runtime-4.1_2.13-${ICEBERG_VERSION}.jar \
     /opt/spark/jars/iceberg-spark-runtime.jar
 
 # S3FileIO and the AWS SDK v2 it needs. The REST catalog is configured without
 # vended credentials (Lakekeeper's `allowall` dev shape), so the client signs
 # its own S3 requests with the credentials from Secret stardelt-s3-creds.
-ADD --checksum=sha512:b01456f80142c8837004e31329a0f40db8a9d44917a4a694cb7d8d6d3a68cb20c61e6f7788fa1bdcb95c0edf724322b49667d6f9ef60fc9cc46da5c24ce5c7de \
+ADD --checksum=sha256:dd7e49ffa4ac9b215bed846581991259e3aec9bb2fa08d6cec029c46cd66d957 \
     https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-aws-bundle/${ICEBERG_VERSION}/iceberg-aws-bundle-${ICEBERG_VERSION}.jar \
     /opt/spark/jars/iceberg-aws-bundle.jar
 
