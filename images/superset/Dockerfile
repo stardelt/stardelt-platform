@@ -17,6 +17,6 @@ ENV UV_CACHE_DIR=/tmp/uv-cache
 RUN uv pip install --python /app/.venv/bin/python --no-cache \
         psycopg2-binary==2.9.10 \
         trino==0.330.0 \
-        authlib>=1.0,<2 \
+        'authlib>=1.0,<2' \
     && rm -rf /tmp/uv-cache
 USER superset
