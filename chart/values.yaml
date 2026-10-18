@@ -865,6 +865,19 @@ jupyterhub:
             c.GenericOAuthenticator.token_url = _issuer + "/protocol/openid-connect/token"
             c.GenericOAuthenticator.userdata_url = _issuer + "/protocol/openid-connect/userinfo"
 
+            # Keycloak must be told the public callback. Left to itself the hub
+            # advertises http://proxy-public/hub/oauth_callback — its internal
+            # service name, which Keycloak has not registered, so the login dies as
+            # invalid_redirect_uri before a code is issued. Host convention here is
+            # jupyter.<base>, and the base is the issuer host minus "id.".
+            _host = _issuer.split("://", 1)[-1].split("/", 1)[0] if _issuer else ""
+            _base = _host.split(".", 1)[1] if "." in _host else ""
+            _callback = os.environ.get("STARDELT_HUB_OAUTH_CALLBACK_URL", "")
+            if not _callback and _base:
+                _callback = "https://jupyter." + _base + "/hub/oauth_callback"
+            if _callback:
+                c.GenericOAuthenticator.oauth_callback_url = _callback
+
         _secret = os.environ.get("STARDELT_OIDC_CLIENT_SECRET", "").strip()
         if _secret:
             c.GenericOAuthenticator.client_secret = _secret
@@ -898,7 +911,8 @@ jupyterhub:
         authenticator_class: generic-oauth
       GenericOAuthenticator:
         client_id: jupyterhub
-        # oauth_callback_url is left unset: JupyterHub derives it from the request.
+        # oauth_callback_url is set explicitly in `10-oidc` above: JupyterHub's
+        # derivation yields the internal service name, which Keycloak rejects.
         login_service: Keycloak
         # One identity: /hub/login goes straight to Keycloak instead of a button.
         auto_login: true
