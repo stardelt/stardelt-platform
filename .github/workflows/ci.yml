@@ -17,7 +17,7 @@ jobs:
     name: Lint (yamllint + shell + renovate.json)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install yamllint + shellcheck
         run: |
@@ -47,10 +47,10 @@ jobs:
     name: Helm lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@v5
         with:
           # Exact version: a partial pin like "3.18.x" makes setup-helm resolve a
           # version through get.helm.sh metadata, which has been returning a
