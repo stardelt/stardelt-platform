@@ -1,21 +1,28 @@
 name: Image
 
-# Build and publish ghcr.io/stardelt/superset — the baseline Superset image plus
-# the python drivers upstream does not ship (psycopg2-binary, trino).
+# Build and publish the stardelt-owned images:
+#   - ghcr.io/stardelt/superset — baseline Superset plus the python drivers
+#     upstream does not ship (psycopg2-binary, trino, authlib);
+#   - ghcr.io/stardelt/spark — Apache Spark plus the Iceberg runtime and the
+#     AWS bundle the upstream image does not ship.
 #
-# On main this pushes `dev` plus an immutable `sha-<short>` tag. Pin the digest
-# (printed in the job summary) when rolling the cluster.
+# On main each job pushes `dev` plus an immutable `sha-<short>` tag. Pin the
+# digest (printed in the job summary) when rolling the cluster.
 #
-# Pull requests that touch images/superset build without pushing.
+# Pull requests that touch an image build it without pushing.
 
 on:
   push:
     branches: [main]
     tags: ["v*"]
-    paths: ["images/superset/**", ".github/workflows/image.yml"]
+    paths:
+      - "images/**"
+      - ".github/workflows/image.yml"
   pull_request:
     branches: [main]
-    paths: ["images/superset/**", ".github/workflows/image.yml"]
+    paths:
+      - "images/**"
+      - ".github/workflows/image.yml"
   workflow_dispatch:
 
 permissions:
@@ -76,6 +83,60 @@ jobs:
         run: |
           {
             echo "### ghcr.io/stardelt/superset"
+            echo
+            echo '```'
+            echo "$TAGS"
+            echo "digest: $DIGEST"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  spark:
+    name: Build and push ghcr.io/stardelt/spark
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/stardelt/spark
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha,prefix=sha-,format=short
+            type=raw,value=dev,enable={{is_default_branch}}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: images/spark
+          file: images/spark/Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Job summary
+        if: github.event_name != 'pull_request'
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            echo "### ghcr.io/stardelt/spark"
             echo
             echo '```'
             echo "$TAGS"

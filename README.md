@@ -335,6 +335,104 @@ login responses outgrow nginx's default 4k header buffer.
 
 ---
 
+## Spark — heavy compute on the same Iceberg tables
+
+Spark is the heavy-compute plug of the master spec (§5 #14): a **Spark Connect**
+endpoint in the cluster, wired to the same `warehouse` catalog as Trino. A table
+written by one engine is a table of the other — no copy, no second catalog, no
+second credential store for table data.
+
+```sh
+make install-spark     # manifests/spark.yaml: Deployment + Service + ConfigMap + RBAC
+```
+
+Endpoint (ClusterIP only — there is deliberately no Ingress):
+
+```text
+sc://spark-connect.stardelt.svc.cluster.local:15002
+```
+
+From a notebook or a scheduled job (PySpark Connect client,
+`pip install pyspark-client==4.1.3`), the catalog is the server-side default:
+
+```python
+from pyspark.sql import SparkSession
+
+spark = SparkSession.builder.remote(
+    "sc://spark-connect.stardelt.svc.cluster.local:15002"
+).getOrCreate()
+
+spark.sql("SELECT borough, count(*) AS n FROM warehouse.demo.trips GROUP BY borough ORDER BY n DESC").show()
+spark.sql("SELECT * FROM warehouse.demo.trips").count()
+```
+
+The image is `ghcr.io/stardelt/spark` (`images/spark/Dockerfile`): Apache Spark 4.1.3
+plus the Iceberg 1.12 runtime and AWS bundle. The jars are baked in at image build
+time (checksum-verified from Maven Central), so a pod never downloads dependencies —
+the install stays air-gap-friendly when the registry is mirrored.
+
+### Shape and the memory budget
+
+One Deployment runs the Connect server as a long-running driver with **Kubernetes as
+the cluster manager**. Executors are pods the driver creates on demand and releases
+when a query finishes (`spark.dynamicAllocation`, shuffle tracking — no shuffle
+service), so an idle platform pays for the driver only:
+
+| Part | Request | Limit | Steady state |
+|------|---------|-------|--------------|
+| Driver (`spark-connect`) | 250m / 1 GiB | 1 CPU / 2 GiB | ~0.7–0.9 GiB |
+| Executor, each (max 2) | 1 CPU / 1.4 GiB | JVM heap `1g` + `384m` overhead | 0.6–1.4 GiB, only while querying |
+
+On the shared 16 GB dev node that is ~1 GiB idle and ~3.5 GiB peak while a query
+runs, well inside the headroom left by Trino, Airflow, Superset and JupyterHub.
+Change the numbers in `manifests/spark.yaml` (ConfigMap `spark-connect-config` +
+the driver's `resources`) and re-run `make install-spark`; the target restarts the
+driver only when the ConfigMap actually changed.
+
+### Catalog wiring
+
+The `spark-defaults.conf` keys mirror `helm-values/trino.yaml`, property for property:
+
+| Spark | Trino | Value |
+|---|---|---|
+| `spark.sql.catalog.warehouse.type` | `iceberg.catalog.type` | `rest` |
+| `spark.sql.catalog.warehouse.uri` | `iceberg.rest-catalog.uri` | `http://lakekeeper.stardelt.svc.cluster.local:8181/catalog` |
+| `spark.sql.catalog.warehouse.warehouse` | `iceberg.rest-catalog.warehouse` | `warehouse` |
+| `spark.sql.catalog.warehouse.s3.endpoint` | `s3.endpoint` | `http://seaweedfs-s3.stardelt.svc.cluster.local:8333` |
+| `spark.sql.catalog.warehouse.s3.path-style-access` | `s3.path-style-access` | `true` |
+
+Lakekeeper runs without vended credentials, so both engines sign their own S3
+requests. Spark gets the credentials from Secret `stardelt-s3-creds` through
+`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` on the driver and through
+`spark.kubernetes.executor.secretKeyRef.*` on every executor; nothing is written
+into a config file.
+
+### Why a Deployment, not the Spark Kubernetes Operator
+
+The Apache Spark Kubernetes Operator is the right controller once several Spark
+applications share a cluster, and it is where the stardelt operator's
+`Workspace`/`Pipeline` reconciliation will point. For one long-running app on one
+node it is not: its controller alone requests 2 GiB by default, permanently, and
+adds CRDs and a webhook to operate a single endpoint Kubernetes can already run.
+The CRD path is the follow-up, not a reason to make this node heavier today.
+
+### Limits
+
+Spark Connect has no built-in authentication (upstream points at authenticating
+proxies). The endpoint is therefore ClusterIP-only: anyone who can create pods in
+`stardelt` can query through it, exactly like the current Lakekeeper `allowall`
+catalog. Wiring Connect behind the platform IdP is a follow-up with the CRD work,
+not something to expose on an Ingress before then.
+
+If the driver is killed hard, its executor pods can outlive it. They are labelled
+and safe to delete:
+
+```sh
+kubectl -n stardelt delete pods -l spark-role=executor
+```
+
+---
+
 ## Makefile targets
 
 | Target | Description |
@@ -347,11 +445,12 @@ login responses outgrow nginx's default 4k header buffer.
 | `verify-backup-config` | Post-apply guard (also run by both install targets): the live `lakekeeper-pg` Cluster must still declare `spec.backup`, or the command fails loudly |
 | `verify-backups` | Full WAL check: `spec.backup` + the newest object in `s3://backups/lakekeeper-pg/wals/` is younger than `MAX_AGE_SECONDS` (900) + it matches `pg_stat_archiver.last_archived_wal`. `SKIP_OBJECTS=1` skips the S3 half |
 | `install-notebooks` | JupyterHub (notebooks) |
+| `install-spark` | Spark Connect endpoint (`manifests/spark.yaml`), wired to the same Lakekeeper catalog as Trino; restarts the driver only when its ConfigMap changed |
 | `install-identity` | Platform IdP: Keycloak + CNPG Postgres + realm `stardelt`, then the live-realm Trino client and the Trino OAuth2 overlay (`BASE_DOMAIN=…`, see [Identity](#identity-optional-platform-idp)) |
 | `trino` | Install/upgrade Trino; adds `helm-values/trino-identity.yaml` (Keycloak OAuth2 + service-account password) when `stardelt-identity` exists |
 | `install-operator` | Install the stardelt Operator from `../stardelt-operator/chart` (dev path) |
-| `pin` | Pin a deployment to the newest published digest **and write it back into `manifests/nova-deployment.yaml`** (`make pin APP=nova`), so a later `kubectl apply` cannot put the mutable tag back |
-| `pin-images` | Pin Nova and the operator to their digests (the install targets do this themselves) |
+| `pin` | Pin a deployment to the newest published digest **and write it back into the manifest** (`make pin APP=nova`, `APP=spark DEPLOY=spark-connect`), so a later `kubectl apply` cannot put the mutable tag back |
+| `pin-images` | Pin Nova, the operator and Spark to their digests (the install targets do this themselves) |
 | `upgrade` | Re-run `install` (helm upgrade is idempotent) |
 | `uninstall` | Remove all helm releases and manifests in reverse order |
 | `chart-deps` | `helm dependency update chart` — fetch/refresh the umbrella chart's sub-charts |
@@ -390,9 +489,11 @@ manifests/            Plain Kubernetes manifests (kubectl apply)
   keycloak.yaml         Platform IdP: Keycloak + its CNPG Cluster (make install-identity)
   lakekeeper-bootstrap.yaml  Job: accept ToS + create default warehouse
   nova-deployment.yaml  stardelt Nova UI + backend
+  spark.yaml            Spark Connect endpoint + Spark configuration (make install-spark)
   s3-credentials.example.yaml  Template for the stardelt-s3-creds Secret
 
 images/
+  spark/Dockerfile      Spark 4.1.3 + Iceberg 1.12 runtime + AWS bundle
   superset/Dockerfile   Superset 5.0.0 + psycopg2 + trino driver
 
 scripts/
@@ -434,6 +535,7 @@ Collaboration/release branches are planned later (issue #38).
 | Trino | 1.42.2 | 480 |
 | Apache Airflow | 1.21.0 | 3.2.0 |
 | Apache Superset | 0.15.5 | 5.0.0 |
+| Apache Spark (image, no chart) | — | 4.1.3 (Iceberg 1.12.0) |
 | Keycloak (image, no chart) | — | 26.8.1 |
 
 ---
@@ -466,6 +568,10 @@ a Renovate PR rather than a manual edit.
 
 Note that the table above and the `--version` flags in `.github/workflows/ci.yml` are still
 hand-maintained copies of the `Makefile` pins — keep them in sync when reviewing a chart bump.
+
+One pin Renovate does not own: `ICEBERG_VERSION` in `images/spark/Dockerfile`. The Iceberg
+runtime is matched to the Spark minor (`iceberg-spark-runtime-4.1_2.13`), so a Spark
+major/minor bump is a deliberate edit of the base image and the runtime together.
 
 ---
 
@@ -510,8 +616,8 @@ cluster: merge to `main` publishes `dev` and an immutable `sha-<short>` tag, and
 job summary prints the digest. **Pin deployments by digest** — a moving tag may keep
 serving a cached layer.
 
-`nova` is public; `operator` and `superset` are internal/private until someone flips
-them in the package settings (the API refuses), so the cluster needs a pull secret
+`nova` and `stardelt-operator` are public; `superset` and `spark` are internal/private until
+someone flips them in the package settings (the API refuses), so the cluster needs a pull secret
 named `ghcr-creds` in the namespace:
 
 ```sh
