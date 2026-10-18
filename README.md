@@ -379,7 +379,9 @@ both; `scripts/keycloak-sync-trino-client.sh` applies them to a running one.
 never printed, the realm ConfigMap only holds `${ENV}` placeholders, and re-runs keep existing
 values. `make uninstall` (and `helm uninstall`) leave the Secrets in place. The realm is imported
 only when it does not exist yet, so later edits to the realm file are not applied to a running
-realm.
+realm — and a regenerated Secret is not either, which is what the sync/verify pair in
+[The client secrets are the source of truth too](#the-client-secrets-are-the-source-of-truth-too)
+repairs.
 
 ### The realm-admin Secret is the source of truth
 
@@ -422,6 +424,42 @@ the existing password first and does nothing when the Secret already works. The 
 `verify-realm-admin` both use client `admin-cli`, Keycloak's per-realm default that allows direct
 access grants (the app clients genuinely need them off), and reach Keycloak through `svc/keycloak`
 — never the public `id.` host. Neither script prints a secret.
+
+### The client secrets are the source of truth too
+
+Secret `stardelt-oidc-clients` holds one secret per confidential client (`nova`, `superset`,
+`airflow`, `jupyterhub`, `trino`); the apps read it (`nova` and `jupyterhub` via environment,
+Superset and Airflow through their Helm values). The realm import substitutes
+`${STARDELT_<CLIENT>_CLIENT_SECRET}` **once**, when it creates realm `stardelt` — so regenerating the
+Secret used to leave the clients on the imported values, and **sign-in failed for every app at once
+while each `/health` returned 200** — that is what happened live on 2026-10-18, when a re-run of the
+identity bootstrap regenerated the Secret while Keycloak kept the imported values (#85). The
+installer now re-applies the Secret instead of leaving the drift for a failed login to reveal:
+
+```sh
+make sync-oidc-clients     # re-apply each client's current Secret value through the admin API
+make verify-oidc-clients   # prove every one of them against the token endpoint, in-cluster
+```
+
+`make install-identity` runs `sync-oidc-clients` (the four app clients), then
+`keycloak-sync-trino-client.sh` (which owns the `trino` client and its token settings), then
+`verify-oidc-clients` (all five); `make chart-install` runs `sync-oidc-clients` and
+`verify-oidc-clients` whenever the release ships Keycloak, next to the realm-admin pair.
+`sync-oidc-clients` delegates `trino` to `keycloak-sync-trino-client.sh` rather than duplicating
+it; `SYNC_TRINO=0` skips that delegation.
+
+Rotation is a supported operation: change a value in `stardelt-oidc-clients` (or delete the Secret
+and re-run `scripts/identity-bootstrap.sh`), then run `make sync-oidc-clients` — or just re-run the
+installer. The sync is idempotent: it asks the token endpoint first and writes nothing when the
+Secret's value already authenticates; a value it does write is read back from the admin API and
+probed again before the script reports `updated`. The verify check is browser-independent — a
+client-credentials token request with a bogus authorization code, which Keycloak answers
+`invalid_grant` for the right secret and `unauthorized_client` for a wrong one — so it names the
+offending client and prints the fix instead of waiting for a user to hit the login page.
+`verify-oidc-clients` fails when a client is missing from the realm as well; `sync-oidc-clients`
+then stops instead of creating a half-configured client (creation belongs to the realm import and
+`keycloak-sync-trino-client.sh`). Like the realm-admin pair, both reach Keycloak through
+`svc/keycloak` and never print a secret value.
 
 ### Managing users
 
@@ -600,10 +638,12 @@ kubectl -n stardelt delete pods -l spark-role=executor
 | `verify-backups` | Full WAL check: `spec.backup` + the newest object in `s3://backups/lakekeeper-pg/wals/` is younger than `MAX_AGE_SECONDS` (900) + it matches `pg_stat_archiver.last_archived_wal`. `SKIP_OBJECTS=1` skips the S3 half |
 | `install-notebooks` | JupyterHub (notebooks) |
 | `install-spark` | Spark Connect endpoint (`manifests/spark.yaml`), wired to the same Lakekeeper catalog as Trino; restarts the driver only when its ConfigMap changed |
-| `install-identity` | Platform IdP: Keycloak + CNPG Postgres + realm `stardelt`, then the realm-admin sync + guard, the user-management roles/brute-force sync, the live-realm Trino client and the Trino OAuth2 overlay (`BASE_DOMAIN=…`, see [Identity](#identity-optional-platform-idp)) |
+| `install-identity` | Platform IdP: Keycloak + CNPG Postgres + realm `stardelt`, then the realm-admin sync + guard, the user-management roles/brute-force sync, the client-secret sync + guard, the live-realm Trino client and the Trino OAuth2 overlay (`BASE_DOMAIN=…`, see [Identity](#identity-optional-platform-idp)) |
 | `sync-realm-admin` | Point realm `stardelt`'s `admin` at Secret `stardelt-realm-admin` through the master-realm API; idempotent, runs as part of `install-identity`/`chart-install` (#81) |
 | `verify-realm-admin` | Prove the realm-admin Secret still signs in — a real password grant as that user through `svc/keycloak`; fails with the fix in the message |
 | `sync-realm-user-management` | Grant `stardelt-admins` the four `realm-management` user-management roles and enforce brute-force protection on the live realm; idempotent, runs with both install paths |
+| `sync-oidc-clients` | Point the realm's confidential clients (`nova`, `superset`, `airflow`, `jupyterhub`; delegates `trino`) at Secret `stardelt-oidc-clients`; probe-first, idempotent, never prints a value (#85) |
+| `verify-oidc-clients` | Prove every client secret still authenticates at the token endpoint (`invalid_grant` vs `unauthorized_client`) and matches what the realm stores; names the drifting clients and the fix |
 | `trino` | Install/upgrade Trino; adds `helm-values/trino-identity.yaml` (Keycloak OAuth2 + service-account password) when `stardelt-identity` exists |
 | `install-operator` | Install the stardelt Operator from `../stardelt-operator/chart` (dev path) |
 | `pin` | Pin a deployment to the newest published digest **and write it back into the manifest** (`make pin APP=nova`, `APP=spark DEPLOY=spark-connect`), so a later `kubectl apply` cannot put the mutable tag back |
@@ -667,8 +707,10 @@ scripts/
   protect-branches.sh   Apply `main` branch protection in all five stardelt repos
   sync-realm-admin.sh   Re-apply Secret stardelt-realm-admin to the live realm's admin (import skips an existing realm)
   sync-realm-user-management.sh  Grant stardelt-admins the user-management roles + enforce brute force on the live realm
+  sync-oidc-clients.sh  Re-apply Secret stardelt-oidc-clients to the live realm's clients (import skips an existing realm; trino delegated)
   verify-backups.sh     Backup guards: post-apply spec.backup assert + bucket-vs-database WAL check
   verify-notebook-identity.py  Headless hub login + run the quickstart in the pod (positive and 401 negative)
+  verify-oidc-clients.sh Assert every client secret in Secret stardelt-oidc-clients authenticates at the token endpoint
   verify-realm-admin.sh Assert the realm-admin Secret still signs in to realm `stardelt`
   verify-trino-auth.sh  Assert Trino refuses anonymous SQL and accepts user tokens + the service account
   helm-plugins/

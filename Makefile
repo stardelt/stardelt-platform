@@ -45,6 +45,7 @@ BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 .PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator trino upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-up dev-down dev-dns dev-dns-down
 .PHONY: chart-deps chart-template chart-install
 .PHONY: verify-backups verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
+.PHONY: sync-oidc-clients verify-oidc-clients
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | \
@@ -286,6 +287,11 @@ trino: deps _context ## Install/upgrade Trino, with OAuth2 when a platform IdP i
 # re-applies the Secret's current value through the master-realm API (idempotent,
 # reaches Keycloak through the Service), and verify-realm-admin proves it with a
 # real password grant. install-identity runs both, in that order.
+#
+# The same import-time snapshot applies to the four app clients' secrets in
+# Secret stardelt-oidc-clients and cost every app its sign-in on 2026-10-18
+# (#85). sync-oidc-clients/verify-oidc-clients are that guard; install-identity
+# runs them too, around keycloak-sync-trino-client.sh.
 # ---------------------------------------------------------------------------
 sync-realm-admin: _context ## Point realm `stardelt`'s admin password at Secret stardelt-realm-admin (idempotent)
 	@NAMESPACE=$(NAMESPACE) bash scripts/sync-realm-admin.sh
@@ -296,31 +302,52 @@ verify-realm-admin: _context ## Prove the realm-admin Secret still signs in to r
 sync-realm-user-management: _context ## Grant realm `stardelt` admins the Users roles and enforce brute-force protection (idempotent)
 	@NAMESPACE=$(NAMESPACE) bash scripts/sync-realm-user-management.sh
 
+# The OIDC-client guard (#85): `--import-realm` substitutes the client secrets
+# once, while Secret stardelt-oidc-clients can be regenerated later — the two
+# then disagree and sign-in fails for every app that uses those clients while
+# their /health stays green (happened live on 2026-10-18). sync-oidc-clients
+# re-applies the Secret's values through the admin API (idempotent, probes the
+# token endpoint first, delegates `trino` to keycloak-sync-trino-client.sh), and
+# verify-oidc-clients proves each one with a real client-credentials request.
+# install-identity runs both, with trino's own script in between.
+SYNC_TRINO ?= 1
+sync-oidc-clients: _context ## Point the realm's confidential clients at Secret stardelt-oidc-clients (idempotent)
+	@NAMESPACE=$(NAMESPACE) SYNC_TRINO=$(SYNC_TRINO) bash scripts/sync-oidc-clients.sh
+
+verify-oidc-clients: _context ## Prove every confidential client's secret still authenticates (token endpoint, in-cluster)
+	@NAMESPACE=$(NAMESPACE) bash scripts/verify-oidc-clients.sh
+
 install-identity: deps _context ## Install the platform IdP (Keycloak) at id.$(BASE_DOMAIN)
 	@kubectl get crd clusters.postgresql.cnpg.io >/dev/null 2>&1 || { \
 	  echo "CloudNative-PG CRDs not found — run 'make install-core' first" >&2; exit 1; }
-	@echo "› [1/6] Secrets + realm/identity ConfigMaps (base domain $(BASE_DOMAIN))"
+	@echo "› [1/10] Secrets + realm/identity ConfigMaps (base domain $(BASE_DOMAIN))"
 	@NAMESPACE=$(NAMESPACE) BASE_DOMAIN=$(BASE_DOMAIN) bash scripts/identity-bootstrap.sh
-	@echo "› [2/6] CNPG Cluster (Keycloak Postgres)"
+	@echo "› [2/10] CNPG Cluster (Keycloak Postgres)"
 	@kubectl apply -f manifests/keycloak.yaml
 	@kubectl -n $(NAMESPACE) wait --for=condition=Ready --timeout=300s cluster/keycloak-pg
-	@echo "› [3/6] Keycloak $(KEYCLOAK_VERSION)"
+	@echo "› [3/10] Keycloak $(KEYCLOAK_VERSION)"
 	@kubectl -n $(NAMESPACE) rollout status deploy/keycloak --timeout=10m
-	@echo "› [4/7] Heal realm-admin drift: the Secret is the source of truth, not the import"
+	@echo "› [4/10] Heal realm-admin drift: the Secret is the source of truth, not the import"
 	@$(MAKE) --no-print-directory sync-realm-admin
-	@echo "› [4/7] guard: the documented realm admin must still sign in"
+	@echo "› [5/10] guard: the documented realm admin must still sign in"
 	@$(MAKE) --no-print-directory verify-realm-admin
-	@echo "› [5/7] Realm admins manage users (roles + brute force on a live realm)"
+	@echo "› [6/10] Realm admins manage users (roles + brute force on a live realm)"
 	@$(MAKE) --no-print-directory sync-realm-user-management
-	@echo "› [6/7] Sync the live realm's Trino client (import skips an existing realm)"
+	@echo "› [7/10] Heal app-client drift: Secret stardelt-oidc-clients is the source of truth too"
+	@$(MAKE) --no-print-directory sync-oidc-clients SYNC_TRINO=0
+	@echo "› [8/10] Sync the live realm's Trino client (import skips an existing realm)"
 	@NAMESPACE=$(NAMESPACE) TRINO_PUBLIC_URL=https://trino.$(BASE_DOMAIN) \
 	  bash scripts/keycloak-sync-trino-client.sh
-	@echo "› [7/7] Put the query engine behind the platform identity"
+	@echo "› [9/10] guard: every client secret must authenticate at the token endpoint"
+	@$(MAKE) --no-print-directory verify-oidc-clients
+	@echo "› [10/10] Put the query engine behind the platform identity"
 	@$(MAKE) --no-print-directory trino
 	@echo "Keycloak installed. Issuer: https://id.$(BASE_DOMAIN)/realms/stardelt"
 	@echo "Admin console: https://id.$(BASE_DOMAIN)/admin/stardelt/console/ (sign in as admin, then Users)"
 	@echo "Realm admin password: kubectl -n $(NAMESPACE) get secret stardelt-realm-admin -o jsonpath='{.data.password}' | base64 -d"
 	@echo "  (the install re-applies it: rotate by changing the Secret, then 'make sync-realm-admin')"
+	@echo "Client secrets: Secret stardelt-oidc-clients, one key per client; the install re-applies it,"
+	@echo "  so 'make sync-oidc-clients' is all a rotation needs — 'make verify-oidc-clients' proves it"
 
 # ---------------------------------------------------------------------------
 # Control plane — the stardelt Operator (dev: from the sibling checkout).
@@ -388,12 +415,15 @@ chart-install: _context ## Install/upgrade the umbrella chart as release `starde
 	  --namespace $(NAMESPACE) --create-namespace \
 	  $(CHART_EXTRA)
 	@# identity.mode=platform ships Keycloak; the same import-time drift applies to
-	@# the chart path, so re-apply the Secret afterwards too (#81), then the
-	@# user-management roles and brute-force settings.
+	@# the chart path, so re-apply the Secret afterwards too — the realm admin
+	@# (#81) and the OIDC client secrets (#85) — then the user-management roles
+	@# and brute-force settings.
 	@if kubectl -n $(NAMESPACE) get deploy keycloak >/dev/null 2>&1; then \
 	  $(MAKE) --no-print-directory sync-realm-admin; \
 	  $(MAKE) --no-print-directory verify-realm-admin; \
 	  $(MAKE) --no-print-directory sync-realm-user-management; \
+	  $(MAKE) --no-print-directory sync-oidc-clients; \
+	  $(MAKE) --no-print-directory verify-oidc-clients; \
 	fi
 	@echo ""
 	@echo "stardelt installed from chart/. Run 'make pf' to open port-forwards."
