@@ -25,6 +25,64 @@
 #     or the other per namespace, never both.
 
 # ===========================================================================
+# Platform settings — the knobs an administrator sets for their cluster.
+#
+# Everything below is optional and off by default: a stock cluster with a
+# default StorageClass and no ingress controller installs as-is, and you add
+# reachability when you want it. Nothing here is Hetzner-, k3s- or
+# ingress-nginx-specific.
+# ===========================================================================
+
+platform:
+  # Base domain for Nova's deep links and for the ingresses below, e.g.
+  # `example.com` → Nova at example.com, Trino at trino.example.com.
+  # Empty = Nova shows no external links (it still reports live status).
+  baseDomain: ""
+
+ingress:
+  # Render Ingress objects for the components this release installs.
+  # false = bring your own ingress (or use kubectl port-forward); the Services
+  # stay ClusterIP either way.
+  enabled: false
+  # IngressClass name, e.g. nginx, traefik, alb. Empty = the cluster default.
+  className: ""
+  annotations: {}
+  tls:
+    # Requires cert-manager. Leave off when TLS terminates elsewhere (a cloud
+    # load balancer, an edge proxy, an existing Certificate).
+    enabled: false
+    # Name of a cert-manager ClusterIssuer; added as the per-Ingress annotation.
+    issuer: ""
+    # One secret per host; `{host}` expands to the hostname with dots → dashes.
+    secretNameTemplate: "{host}-tls"
+  # Per-service host overrides, e.g. { trino: sql.example.net }. Anything not
+  # listed is derived from platform.baseDomain and the service's subdomain.
+  hosts: {}
+
+storage:
+  # StorageClass for the volumes this chart creates itself (the Postgres
+  # Cluster). Empty = the cluster default StorageClass, which is what most
+  # distributions provide — check with `kubectl get storageclass`.
+  #
+  # Sub-charts take their own key, because Helm cannot template a values file:
+  #   seaweedfs.master.data.storageClass / seaweedfs.volume.dataDirs[0].storageClass
+  #   seaweedfs.filer.data.storageClass  / jupyterhub.singleuser.storage.dynamic.storageClass
+  # All of them default to "" (= cluster default) in this file.
+  className: ""
+
+images:
+  # Pull secrets for the stardelt-built images (Nova). Empty works: the published
+  # images are public. For a private registry or an air-gap mirror, use
+  # Kubernetes' own shape:
+  #   pullSecrets:
+  #     - name: my-registry-creds
+  #
+  # Sub-charts take their own key, so a private registry also needs:
+  #   trino.imagePullSecrets / lakekeeper.imagePullSecrets / superset.imagePullSecrets
+  #   global.imagePullSecrets        (SeaweedFS reads the Helm-standard global)
+  pullSecrets: []
+
+# ===========================================================================
 # Core stack
 # ===========================================================================
 
@@ -74,11 +132,24 @@ seaweedfs:
   # playground ingresses expect.
   fullnameOverride: seaweedfs
 
+  global:
+    seaweedfs:
+      # The chart's swap/migration hook needs a cluster-scoped ClusterRole
+      # (`seaweedfs-rw-cr`) that grants `pods: delete` in a hardcoded namespace.
+      # Cluster-scoped means it can only exist once per cluster, so leaving it on
+      # makes a second SeaweedFS release (another namespace, another lakehouse)
+      # impossible to install. stardelt expects several instances to coexist, so
+      # the default is off; set it to true if you need the chart's migration hook
+      # and run a single instance.
+      createClusterRole: false
+
   master:
     replicas: 1
     data:
       type: persistentVolumeClaim
       size: 1Gi
+      # Empty = the cluster's default StorageClass.
+      storageClass: ""
     defaultReplication: "000"
     resources:
       requests: { cpu: "50m", memory: "128Mi" }
@@ -93,6 +164,8 @@ seaweedfs:
       - name: data
         type: persistentVolumeClaim
         size: 20Gi
+        # Empty = the cluster's default StorageClass.
+        storageClass: ""
         maxVolumes: 0
     resources:
       requests: { cpu: "200m", memory: "512Mi" }
@@ -103,6 +176,8 @@ seaweedfs:
     data:
       type: persistentVolumeClaim
       size: 1Gi
+      # Empty = the cluster's default StorageClass.
+      storageClass: ""
     resources:
       requests: { cpu: "50m", memory: "128Mi" }
       limits:   { cpu: "1",   memory: "256Mi" }
@@ -252,10 +327,10 @@ nova:
     tag: dev
     pullPolicy: Always
 
-  # GHCR packages are private by default; see dev/ghcr-pull-secret.sh.
-  # Set to [] when the images are public.
-  imagePullSecrets:
-    - ghcr-creds
+  # Per-component override of the global `images.pullSecrets` (platform
+  # settings at the top of this file). Unset = use the global default.
+  # imagePullSecrets:
+  #   - ghcr-creds
 
   # Rendered with `tpl`, so `{{ .Release.Namespace }}` expands.
   trinoURL: "http://trino.{{ .Release.Namespace }}.svc.cluster.local:8080"
@@ -548,6 +623,12 @@ jupyterhub:
   # `make install` deployment creates, so the playground ingress keeps working.
   # Do not set fullnameOverride here: the chart prefixes everything with it.
   enabled: false
+
+  # Per-user notebook volumes. Empty = the cluster's default StorageClass.
+  singleuser:
+    storage:
+      dynamic:
+        storageClass: ""
 
   hub:
     config:

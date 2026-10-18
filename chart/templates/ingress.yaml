@@ -1,0 +1,78 @@
+{{- if .Values.ingress.enabled }}
+{{- /*
+  One Ingress per installed component, so an administrator gets reachability
+  without hand-writing YAML. Deliberately generic: the class, the host pattern
+  and TLS are all settings, and nothing here assumes a particular controller.
+
+  Host resolution, per service: `ingress.hosts.<name>` wins; otherwise
+  `<sub>.<platform.baseDomain>`; otherwise nothing is rendered for that service
+  (a reachable-only-by-Service setup stays valid).
+*/}}
+{{- $base := .Values.platform.baseDomain | default "" }}
+{{- $tls := .Values.ingress.tls }}
+{{- $extraAnnotations := .Values.ingress.annotations }}
+{{- $overrides := .Values.ingress.hosts | default dict }}
+{{- $services := list
+      (dict "name" "nova"       "service" "nova"               "port" 8080 "sub" ""           "enabled" .Values.nova.enabled)
+      (dict "name" "trino"      "service" "trino"              "port" 8080 "sub" "trino"      "enabled" .Values.trino.enabled)
+      (dict "name" "lakekeeper" "service" "lakekeeper"         "port" 8181 "sub" "lakekeeper" "enabled" .Values.lakekeeper.enabled)
+      (dict "name" "superset"   "service" "superset"           "port" 8088 "sub" "superset"   "enabled" .Values.superset.enabled)
+      (dict "name" "airflow"    "service" "airflow-api-server" "port" 8080 "sub" "airflow"    "enabled" .Values.airflow.enabled)
+      (dict "name" "jupyterhub" "service" "proxy-public"       "port" 80   "sub" "jupyter"    "enabled" .Values.jupyterhub.enabled)
+}}
+{{- range $services }}
+{{- if .enabled }}
+{{- $host := "" }}
+{{- $overridden := index $overrides .name | default "" }}
+{{- if $overridden }}
+{{- $host = $overridden }}
+{{- else if $base }}
+{{- if .sub }}
+{{- $host = printf "%s.%s" .sub $base }}
+{{- else }}
+{{- $host = $base }}
+{{- end }}
+{{- end }}
+{{- if $host }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    app.kubernetes.io/part-of: stardelt
+  {{- if or $extraAnnotations (and $tls.enabled $tls.issuer) }}
+  annotations:
+    {{- with $extraAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- if and $tls.enabled $tls.issuer }}
+    cert-manager.io/cluster-issuer: {{ $tls.issuer | quote }}
+    {{- end }}
+  {{- end }}
+spec:
+  {{- with $.Values.ingress.className }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  {{- if $tls.enabled }}
+  tls:
+    - hosts:
+        - {{ $host | quote }}
+      secretName: {{ $tls.secretNameTemplate | replace "{host}" (replace "." "-" $host) | quote }}
+  {{- end }}
+  rules:
+    - host: {{ $host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .service }}
+                port:
+                  number: {{ .port }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
