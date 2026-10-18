@@ -60,6 +60,14 @@ NAMESPACE=my-namespace make install
 
 ---
 
+### Who may use notebooks
+
+The hub is default-closed. Two groups are admitted: `stardelt-admins`, and
+**`stardelt-users` — the realm's default group**, so an account created in the
+Keycloak console can open a notebook without an administrator doing anything.
+`make sync-realm-user-management` guarantees the group exists and stays a default
+group; membership is the only switch.
+
 ## Helm chart (baseline)
 
 `chart/` is the declarative alternative to `make install`: one umbrella chart

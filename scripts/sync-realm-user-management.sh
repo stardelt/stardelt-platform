@@ -236,4 +236,42 @@ print("› realm admin %r can list users: HTTP 200, %d user(s): %s" % (
 ' "$tmp/users.json" "$realm_admin" \
   || fail "the users endpoint answered 200 without a user list"
 
+# --- the group every user joins -------------------------------------------------
+# Notebooks are default-closed (the hub's `allowed_groups`), so an account created in
+# the console could sign in to Nova and nothing else. `stardelt-users` is the realm's
+# default group: Keycloak puts every new user in it, and the hub admits it. Create it
+# when missing and keep it a default group; change nothing when it already is one.
+users_group="${USERS_GROUP:-stardelt-users}"
+group_code="$("${CURL_SOFT[@]}" -o "$tmp/groups.json" -w '%{http_code}' "${HEAD[@]}" "${AUTH[@]}" \
+  "$API/groups?search=$users_group&exact=true")"
+[ "$group_code" = 200 ] || fail "cannot list groups (HTTP $group_code)"
+if [ "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$tmp/groups.json")" = 0 ]; then
+  "${CURL_SOFT[@]}" -o /dev/null -w '' "${HEAD[@]}" "${AUTH[@]}" \
+    -H 'Content-Type: application/json' -X POST "$API/groups" \
+    --data "{\"name\":\"$users_group\"}" || fail "cannot create group $users_group"
+  echo "› created group $users_group"
+else
+  echo "› group $users_group exists"
+fi
+
+# Realm-level read and write run as the *master* admin on purpose. The realm-admin
+# credential is deliberately user-management-only, and Keycloak filters the realm
+# representation for it — `defaultGroups` comes back empty, so a PUT built from that
+# view would be guessing at the rest of the realm. Do not "simplify" this to the
+# realm token: it silently rewrites fields the caller cannot see.
+realm_code="$("${CURL_SOFT[@]}" -o "$tmp/realm.json" -w '%{http_code}' "${HEAD[@]}" "${AUTH[@]}" "$API")"
+[ "$realm_code" = 200 ] || fail "cannot read realm $REALM as the master admin (HTTP $realm_code)"
+if python3 "$(dirname "$0")/default-group-needs-change.py" "$tmp/realm.json" "/$users_group"; then
+  echo "› $users_group is already a default group"
+else
+  "${CURL_SOFT[@]}" -o /dev/null -w '' "${HEAD[@]}" "${AUTH[@]}" \
+    -H 'Content-Type: application/json' -X PUT "$API" --data-binary "@$tmp/realm.json.new" \
+    || fail "cannot make $users_group a default group"
+  "${CURL_SOFT[@]}" -o "$tmp/realm-after.json" -w '' "${HEAD[@]}" "${AUTH[@]}" "$API" \
+    || fail "cannot re-read realm $REALM after the update"
+  python3 "$(dirname "$0")/default-group-needs-change.py" "$tmp/realm-after.json" "/$users_group" \
+    || fail "$users_group did not become a default group"
+  echo "› $users_group is now a default group (new users join it)"
+fi
+
 echo "sync-realm-user-management: OK — $ADMIN_GROUP can manage users in realm $REALM; brute force is on"
