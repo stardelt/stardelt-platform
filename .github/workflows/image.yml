@@ -1,7 +1,8 @@
 name: Image
 
 # Build and publish ghcr.io/stardelt/superset — the baseline Superset image plus
-# the python drivers upstream does not ship (psycopg2-binary, trino).
+# the python packages upstream does not ship (authlib for FAB OAuth login,
+# psycopg2-binary, trino).
 #
 # On main this pushes `dev` plus an immutable `sha-<short>` tag. Pin the digest
 # (printed in the job summary) when rolling the cluster.
