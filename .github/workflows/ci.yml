@@ -142,3 +142,8 @@ jobs:
               echo "expected render failure for --set $bad" >&2; exit 1
             fi
           done
+          # ingress.exposeUnauthenticated (#49): unauthenticated UIs render only when asked.
+          n=$(helm template stardelt chart -n stardelt --set ingress.enabled=true --set platform.baseDomain=example.com | grep -c '^kind: Ingress')
+          [ "$n" = 1 ] || { echo "expected only the nova Ingress, got $n" >&2; exit 1; }
+          n=$(helm template stardelt chart -n stardelt --set ingress.enabled=true --set platform.baseDomain=example.com --set 'ingress.exposeUnauthenticated={trino}' | grep -c '^kind: Ingress')
+          [ "$n" = 2 ] || { echo "expected nova + trino Ingresses, got $n" >&2; exit 1; }

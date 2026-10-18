@@ -4,6 +4,9 @@
   without hand-writing YAML. Deliberately generic: the class, the host pattern
   and TLS are all settings, and nothing here assumes a particular controller.
 
+  Components without a sign-in of their own (trino, lakekeeper, superset,
+  airflow, jupyterhub) render only when named in `ingress.exposeUnauthenticated`.
+
   Host resolution, per service: `ingress.hosts.<name>` wins; otherwise
   `<sub>.<platform.baseDomain>`; otherwise nothing is rendered for that service
   (a reachable-only-by-Service setup stays valid).
@@ -12,6 +15,8 @@
 {{- $tls := .Values.ingress.tls }}
 {{- $extraAnnotations := .Values.ingress.annotations }}
 {{- $overrides := .Values.ingress.hosts | default dict }}
+{{- $unauthenticated := list "trino" "lakekeeper" "superset" "airflow" "jupyterhub" }}
+{{- $exposed := .Values.ingress.exposeUnauthenticated | default list }}
 {{- $services := list
       (dict "name" "nova"       "service" "nova"               "port" 8080 "sub" ""           "enabled" .Values.nova.enabled)
       (dict "name" "trino"      "service" "trino"              "port" 8080 "sub" "trino"      "enabled" .Values.trino.enabled)
@@ -22,7 +27,7 @@
       (dict "name" "keycloak"   "service" "keycloak"           "port" 8080 "sub" "id"         "enabled" (eq (include "stardelt.identityMode" .) "platform"))
 }}
 {{- range $services }}
-{{- if .enabled }}
+{{- if and .enabled (or (not (has .name $unauthenticated)) (has .name $exposed)) }}
 {{- $host := "" }}
 {{- $overridden := index $overrides .name | default "" }}
 {{- if $overridden }}

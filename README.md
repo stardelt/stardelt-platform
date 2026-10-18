@@ -95,6 +95,8 @@ For a small single node (cx33 / 8 GB), `chart/values-slim.yaml` mirrors
 make chart-install CHART_EXTRA="-f chart/values-slim.yaml"
 ```
 
+With ingress.enabled=true only Nova (and Keycloak in identity.mode=platform) get an Ingress; list components in ingress.exposeUnauthenticated (e.g. [trino]) to expose a UI that has no sign-in.
+
 The default `stardelt-s3-creds` Secret holds the dev credentials that match the
 SeaweedFS sub-chart (as `make install-core` does). For a real install override
 `s3Credentials.accessKey` / `secretKey`, or set `s3Credentials.create=false` and

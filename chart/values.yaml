@@ -58,6 +58,11 @@ ingress:
   # Per-service host overrides, e.g. { trino: sql.example.net }. Anything not
   # listed is derived from platform.baseDomain and the service's subdomain.
   hosts: {}
+  # Components whose own UI/API has no sign-in wired yet (trino, lakekeeper,
+  # superset, airflow, jupyterhub). Their Ingress is rendered only when listed
+  # here: exposing them bypasses the platform IdP. Nova is always rendered;
+  # Keycloak only when identity.mode=platform. Example: exposeUnauthenticated: [trino]
+  exposeUnauthenticated: []
 
 storage:
   # StorageClass for the volumes this chart creates itself (the Postgres
