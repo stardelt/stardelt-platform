@@ -1,0 +1,71 @@
+# Trino authentication overlay — the platform's "one identity" rule applied to
+# the query engine (master spec §7). Applied on top of helm-values/trino.yaml by
+# `make trino` / `make install-identity` **only when the platform has an IdP**
+# (the `stardelt-identity` ConfigMap exists); without that ConfigMap Trino stays
+# on the development default, where anyone can submit SQL.
+#
+#   helm upgrade --install trino trino/trino --version <pin> \
+#     -f helm-values/trino.yaml -f helm-values/trino-identity.yaml
+#
+# What it enforces, tested against Trino 480:
+#
+#   * Every statement needs credentials. OAUTH2 accepts the caller's **own**
+#     Keycloak access token — the browser flow, trino-cli, JDBC, and Nova's
+#     forwarded `Authorization: Bearer` — and names the query
+#     `current_user = preferred_username` of the token's subject.
+#     Trino trusts audience `trino` (its own client id) plus
+#     `http-server.authentication.oauth2.additional-audiences`; the realm's
+#     `aud-trino` mapper on client `nova` is what makes a Nova-issued token
+#     valid here (chart/files/keycloak-realm.json).
+#   * PASSWORD keeps machine clients (Superset) working from one service
+#     account; users never see a password prompt.
+#   * Anonymous requests get 401 with no query id.
+#
+# Why the properties are split the way they are:
+#
+#   * `server.config.authenticationType` renders `http-server.authentication.type`
+#     on the coordinator only, and `server.config.authenticationType` containing
+#     PASSWORD makes the chart generate `password-authenticator.properties`
+#     pointing at /etc/trino/auth/password/password.db.
+#   * Everything else goes through `server.coordinatorExtraConfig`: the chart's
+#     `additionalConfigProperties` is rendered into the **worker** configmap too,
+#     and a worker rejects UI/OAuth2 keys it does not bind (startup fails with
+#     "Configuration property … was not used").
+#   * `additionalConfigProperties` keeps only what the worker also binds:
+#     the forwarded-header switch and the internal-communication secret.
+#   * TLS terminates at the ingress (`http-server.process-forwarded=true`), so
+#     Trino is served over HTTP inside the cluster and the OAuth2 endpoints are
+#     built from the forwarded proto/host. `allow-insecure-over-http` is what
+#     lets an authenticator run without a keystore in the pod.
+
+server:
+  config:
+    # PASSWORD first: tried before OAUTH2, so a Basic header from a service
+    # account is not parsed as a bearer token.
+    authenticationType: "PASSWORD,OAUTH2"
+  coordinatorExtraConfig: |
+    http-server.authentication.allow-insecure-over-http=true
+    web-ui.authentication.type=oauth2
+    http-server.authentication.oauth2.issuer=${ENV:TRINO_OIDC_ISSUER}
+    http-server.authentication.oauth2.client-id=trino
+    http-server.authentication.oauth2.client-secret=${ENV:TRINO_CLIENT_SECRET}
+    http-server.authentication.oauth2.principal-field=preferred_username
+    http-server.authentication.oauth2.scopes=openid
+    # Validate access tokens locally against the realm JWKS (`exp`, `iss`, `aud`)
+    # instead of asking Keycloak's /userinfo, which would accept any valid token
+    # from the realm regardless of audience and would put a network round trip in
+    # front of every query.
+    http-server.authentication.oauth2.oidc.use-userinfo-endpoint=false
+
+# The service-account password file: `superset:<bcrypt>`, generated on the
+# cluster by scripts/identity-bootstrap.sh (never committed) and mounted by the
+# chart at /etc/trino/auth/password/password.db.
+auth:
+  passwordAuthSecret: trino-password-db
+
+additionalConfigProperties:
+  - http-server.process-forwarded=true
+  # Required as soon as an authenticator is enabled (Trino refuses to start
+  # without it) — a random value from Secret trino-internal-secret, shared by the
+  # coordinator and its workers.
+  - internal-communication.shared-secret=${ENV:TRINO_INTERNAL_SHARED_SECRET}

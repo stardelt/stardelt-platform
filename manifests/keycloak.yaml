@@ -107,6 +107,10 @@ spec:
               valueFrom: { secretKeyRef: { name: stardelt-oidc-clients, key: airflow } }
             - name: STARDELT_JUPYTERHUB_CLIENT_SECRET
               valueFrom: { secretKeyRef: { name: stardelt-oidc-clients, key: jupyterhub } }
+            # Trino authenticates its OAuth2 client with this secret (Trino 480
+            # requires a client secret — a public client is rejected at startup).
+            - name: STARDELT_TRINO_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: stardelt-oidc-clients, key: trino } }
           ports:
             - { name: http, containerPort: 8080 }
             - { name: management, containerPort: 9000 }

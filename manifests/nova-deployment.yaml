@@ -105,6 +105,16 @@ spec:
             - name: NOVA_OIDC_ADMIN_GROUP
               valueFrom:
                 configMapKeyRef: { name: stardelt-identity, key: adminGroup, optional: true }
+            # Forward the signed-in user's own access token to Trino (and later the
+            # catalog) instead of letting Nova act as a shared service account.
+            # This is master spec §7 on the query path: the token that signed the
+            # user in is the token Trino authenticates and audits. Trino only
+            # accepts it when it carries audience `trino` — the realm's aud-trino
+            # mapper on client `nova` (scripts/keycloak-sync-trino-client.sh).
+            # Harmless without an IdP: with no session there is no token to send,
+            # and a Trino without authentication ignores the header.
+            - name: NOVA_FORWARD_IDENTITY
+              value: "1"
             # Namespace whose workloads Nova reports (downward API).
             - name: POD_NAMESPACE
               valueFrom:

@@ -40,7 +40,7 @@ metadata:
   annotations: { helm.sh/resource-policy: keep }
 type: Opaque
 data:
-  {{- range list "nova" "superset" "airflow" "jupyterhub" }}
+  {{- range list "nova" "superset" "airflow" "jupyterhub" "trino" }}
   {{ . }}: {{ include "stardelt.secretValue" (list $ "stardelt-oidc-clients" .) | quote }}
   {{- end }}
 ---
@@ -164,7 +164,7 @@ spec:
               valueFrom: { secretKeyRef: { name: keycloak-admin, key: password } }
             - name: STARDELT_REALM_ADMIN_PASSWORD
               valueFrom: { secretKeyRef: { name: stardelt-realm-admin, key: password } }
-            {{- range list "nova" "superset" "airflow" "jupyterhub" }}
+            {{- range list "nova" "superset" "airflow" "jupyterhub" "trino" }}
             - name: {{ printf "STARDELT_%s_CLIENT_SECRET" (upper .) }}
               valueFrom: { secretKeyRef: { name: stardelt-oidc-clients, key: {{ . }} } }
             {{- end }}
