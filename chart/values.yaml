@@ -524,6 +524,19 @@ nova:
     requests: { cpu: "50m",  memory: "64Mi"  }
     limits:   { cpu: "1",    memory: "256Mi" }
 
+  # State store (stardelt-nova#103): a CNPG Cluster `nova-pg` (database `nova`) for saved
+  # queries and settings. Equivalent to manifests/nova-pg.yaml. The password is generated
+  # by the operator into Secret `nova-pg-app`; Nova gets NOVA_DATABASE_URL from its `uri`
+  # key. Backups follow `postgres.backup` above. false = no Cluster and no variable: Nova
+  # runs without a state store, exactly as before.
+  database:
+    enabled: true
+    storage:
+      size: 1Gi
+    resources:
+      requests: { cpu: "50m",  memory: "128Mi" }
+      limits:   { cpu: "500m", memory: "256Mi" }
+
 # ===========================================================================
 # Heavy components — off by default, same as `make install-core`.
 # Enable with `--set <name>.enabled=true` or in your own values file.

@@ -158,11 +158,17 @@ jobs:
           # (Count `destinationPath: s3://` rather than `barmanObjectStore`:
           # the CNPG sub-chart renders CRD schemas that mention the latter.)
           helm template stardelt chart -n stardelt | grep -q 'destinationPath: s3://backups/'
-          test "$(helm template stardelt chart -n stardelt | grep -c '^kind: ScheduledBackup' || true)" = 1
+          # (two: lakekeeper-pg-daily and, since Nova's state store, nova-pg-daily)
+          test "$(helm template stardelt chart -n stardelt | grep -c '^kind: ScheduledBackup' || true)" = 2
           test "$(helm template stardelt chart -n stardelt --set postgres.backup.enabled=false \
                     | grep -c -e '^kind: ScheduledBackup' -e 'destinationPath: s3://' || true)" = 0
           helm template stardelt chart -n stardelt --set postgres.backup.bucket=my-backups \
             | grep -q 'destinationPath: s3://my-backups/'
+          # Nova's state store (stardelt-nova#103): its own Cluster, the URL from the generated
+          # Secret, and `nova.database.enabled=false` removes all of it.
+          helm template stardelt chart -n stardelt | grep -q 'secretKeyRef: { name: nova-pg-app, key: uri }'
+          helm template stardelt chart -n stardelt | grep -q '^  name: nova-pg$'
+          test "$(helm template stardelt chart -n stardelt --set nova.database.enabled=false | grep -c 'nova-pg' || true)" = 0
           # identity.mode: none (default above), platform (Keycloak), external (issuer only)
           helm template stardelt chart -n stardelt -f chart/values-slim.yaml \
             --set identity.mode=platform --set platform.baseDomain=example.com --set ingress.enabled=true > /dev/null
