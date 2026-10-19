@@ -126,6 +126,10 @@ env:
   - name: TRINO_CLIENT_SECRET
     valueFrom: { secretKeyRef: { name: stardelt-oidc-clients, key: trino, optional: true } }
   # Authenticates coordinator <-> worker traffic once an authenticator is on.
+  # Bearer token for the query-log event listener (helm-values/trino-query-log.yaml);
+  # optional so a cluster without the query log installs the same pod.
+  - name: NOVA_EVENTS_TOKEN
+    valueFrom: { secretKeyRef: { name: nova-events, key: token, optional: true } }
   - name: TRINO_INTERNAL_SHARED_SECRET
     valueFrom: { secretKeyRef: { name: trino-internal-secret, key: shared-secret, optional: true } }
   # Issuer of the platform IdP, from the identity contract ConfigMap. Keycloak

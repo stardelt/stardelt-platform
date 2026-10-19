@@ -34,6 +34,8 @@ JUPYTER_IMAGE  := ghcr.io/stardelt/jupyter-singleuser:dev
 
 # SLIM=1 applies the small-node overrides in helm-values/slim/ (for cx33 / 8 GB).
 TRINO_EXTRA := $(if $(filter 1,$(SLIM)),-f helm-values/slim/trino.yaml,)
+# Query-log feed (stardelt-nova#116): Trino's event listener posts to Nova's internal port.
+TRINO_QUERYLOG := -f helm-values/trino-query-log.yaml
 
 # Extra `-f`/`--set` arguments for the umbrella chart, e.g.
 #   make chart-template CHART_EXTRA="-f chart/values-slim.yaml"
@@ -295,6 +297,7 @@ install-spark: deps _context ## Install the Spark Connect endpoint (Iceberg on t
 # waited for before the upgrade so Trino never starts without its keystore.
 # ---------------------------------------------------------------------------
 trino: deps _context ## Install/upgrade Trino, with OAuth2+TLS when a platform IdP is present
+	@NAMESPACE=$(NAMESPACE) bash scripts/nova-events-token.sh
 	@if kubectl -n $(NAMESPACE) get configmap stardelt-identity >/dev/null 2>&1; then \
 	  echo "› Trino $(TRINO_VERSION) + helm-values/trino-identity.yaml (platform IdP present)"; \
 	  kubectl get crd certificates.cert-manager.io >/dev/null 2>&1 || { \
@@ -320,14 +323,14 @@ trino: deps _context ## Install/upgrade Trino, with OAuth2+TLS when a platform I
 	  helm upgrade --install trino trino/trino \
 	    --version $(TRINO_VERSION) \
 	    $(HELM_FLAGS) \
-	    -f helm-values/trino.yaml $(TRINO_EXTRA) \
+	    -f helm-values/trino.yaml $(TRINO_EXTRA) $(TRINO_QUERYLOG) \
 	    -f helm-values/trino-identity.yaml; \
 	else \
 	  echo "› Trino $(TRINO_VERSION) — no platform IdP, so no authentication (dev only)"; \
 	  helm upgrade --install trino trino/trino \
 	    --version $(TRINO_VERSION) \
 	    $(HELM_FLAGS) \
-	    -f helm-values/trino.yaml $(TRINO_EXTRA); \
+	    -f helm-values/trino.yaml $(TRINO_EXTRA) $(TRINO_QUERYLOG); \
 	fi
 
 # ---------------------------------------------------------------------------
