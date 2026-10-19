@@ -65,6 +65,13 @@ _context:
 	 echo "› kube-context: $$ctx ($$server)"; \
 	 if [ -n "$(EXPECT_CONTEXT)" ] && [ "$$ctx" != "$(EXPECT_CONTEXT)" ]; then \
 	   echo "refusing: current-context is '$$ctx' but EXPECT_CONTEXT is '$(EXPECT_CONTEXT)'" >&2; exit 1; \
+	 fi; \
+	 if git rev-parse --git-dir >/dev/null 2>&1 && git ls-remote --exit-code origin HEAD >/dev/null 2>&1; then \
+	   git fetch -q origin 2>/dev/null || true; \
+	   behind="$$(git rev-list --count HEAD..origin/main 2>/dev/null || echo 0)"; \
+	   if [ "$$behind" -gt 0 ]; then \
+	     echo "› warning: this checkout is $$behind commit(s) behind origin/main — 'git pull' before applying, or an older revision may strip live fields (#62)" >&2; \
+	   fi; \
 	 fi
 
 lint: ## Syntax-check (bash -n) + ShellCheck the scripts under scripts/ and dev/
