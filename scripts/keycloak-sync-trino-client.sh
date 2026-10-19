@@ -21,7 +21,8 @@
 #      code_challenge; with PKCE required, login fails with
 #      "Missing parameter: code_challenge_method"), redirect URIs
 #      <TRINO_PUBLIC_URL>/oauth2/callback + /ui/login.html, post-logout
-#      <TRINO_PUBLIC_URL>/ui/logout/logout.html;
+#      <TRINO_PUBLIC_URL>/ui/logout/logout.html, and the same three paths on
+#      https://localhost:8443 (the administrators' port-forward to the engine UI);
 #   3. clients `nova` and `jupyterhub`: add the aud-trino mapper when missing.
 #      That mapper is the moat: it is what makes the tokens those clients issue —
 #      the user's own — carry a valid audience at Trino. Nova forwards its token
@@ -111,14 +112,19 @@ fi
 python3 - "$TRINO_PUBLIC_URL" > "$tmp/trino-client.json" <<'PY'
 import json, sys
 url = sys.argv[1].rstrip("/")
+# Administrators open the engine UI through `kubectl port-forward svc/trino 8443:8443`
+# (the public host publishes no /ui, platform#181); Trino then asks Keycloak to return
+# to this origin, so it has to be registered.
+PF = "https://localhost:8443"
 print(json.dumps({
     "publicClient": False,
     "clientAuthenticatorType": "client-secret",
     "standardFlowEnabled": True,
     "directAccessGrantsEnabled": False,
-    "redirectUris": [f"{url}/oauth2/callback", f"{url}/ui/login.html"],
+    "redirectUris": [f"{url}/oauth2/callback", f"{url}/ui/login.html",
+                     f"{PF}/oauth2/callback", f"{PF}/ui/login.html"],
     "webOrigins": [url],
-    "attributes": {"post.logout.redirect.uris": f"{url}/ui/logout/logout.html"},
+    "attributes": {"post.logout.redirect.uris": f"{url}/ui/logout/logout.html##{PF}/ui/logout/logout.html"},
 }))
 PY
 python3 - "$tmp/trino-secret" > "$tmp/trino-secret.json" <<'PY'

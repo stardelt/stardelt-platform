@@ -145,6 +145,9 @@ jobs:
           # identity.mode: none (default above), platform (Keycloak), external (issuer only)
           helm template stardelt chart -n stardelt -f chart/values-slim.yaml \
             --set identity.mode=platform --set platform.baseDomain=example.com --set ingress.enabled=true > /dev/null
+          # client trino accepts the administrators' port-forward origin (#181): exactly one callback URI
+          test "$(helm template stardelt chart -n stardelt --set identity.mode=platform --set platform.baseDomain=example.com \
+                    | grep -c 'https://localhost:8443/oauth2/callback')" = 1
           helm template stardelt chart -n stardelt \
             --set identity.mode=external --set identity.issuerUrl=https://login.example.com/realms/x > /dev/null
           # invalid identity settings must fail the render (`!` alone is ignored by `set -e`)
