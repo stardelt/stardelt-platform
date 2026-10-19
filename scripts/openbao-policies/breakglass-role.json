@@ -1,0 +1,10 @@
+{
+  "role_type": "jwt",
+  "bound_audiences": ["openbao"],
+  "user_claim": "sub",
+  "groups_claim": "groups",
+  "bound_claims": { "azp": "nova", "groups": ["__ADMIN_GROUP__"] },
+  "token_policies": ["connections-breakglass"],
+  "token_ttl": "15m",
+  "token_max_ttl": "15m"
+}

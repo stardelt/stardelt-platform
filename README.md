@@ -373,6 +373,17 @@ local OpenBao in dev mode; it needs the `bao` binary (2.7.x), for example
 `gh release download v2.7.0 --repo openbao/openbao --pattern 'openbao_2.7.0_linux_amd64.tar.gz'` (verify it against
 the release's `checksums.txt`).
 
+*Break-glass (decision D27, platform#225).* An administrator can read the value of a *group* connection in an
+emergency — the owner left, the credential must be recovered or checked — but never quietly: the sign-in role
+`breakglass` only accepts tokens issued to **Nova** (bound claim `azp` = `nova`, a member of the admin group), it
+issues a 15 minute token that cannot be renewed, and `connections-breakglass` reads `connections/group/*` and nothing
+else, so personal and managed values stay unreadable for everybody. The endpoint that demands the reason and notifies
+the group is Nova's (stardelt-nova#151); this repository ships the role and the policy. Every sign-in and every read
+is recorded by the audit device in `helm-values/openbao.yaml`, which writes one JSON object per line to the pod's
+standard output: `kubectl -n stardelt logs openbao-0`, filter for `"role":"breakglass"`. In this sandbox the log is
+only as durable as the pod's log — a log shipper is a later step, and the first alert should fire on a break-glass
+sign-in (stardelt-platform#94).
+
 *External Secrets and one store per owner group (platform#220).* External Secrets Operator
 (Apache-2.0) is the one contract between the platform and any store: it syncs a store path into a
 Kubernetes Secret, so workflows read a Secret and never the store itself (decision D23). Opt-in,
