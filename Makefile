@@ -408,6 +408,12 @@ sync-pipeline-runner-client: _context ## Converge the live realm's pipeline-runn
 sync-dev-client: _context ## Converge the live realm's stardelt-dev client (device grant, PKCE, loopback redirects; idempotent)
 	@NAMESPACE=$(NAMESPACE) DEV_CLIENT_ENABLED=$(or $(DEV_CLIENT_ENABLED),true) bash scripts/keycloak-sync-dev-client.sh
 
+# The audience `openbao` on the tokens of Nova, the notebook hub and the developer client, so the
+# secret store's JWT sign-in accepts them (platform#160, decision D27).
+.PHONY: sync-store-audience
+sync-store-audience: _context ## Converge the live realm so Nova, hub and dev-client tokens carry the secret store's audience (idempotent)
+	@NAMESPACE=$(NAMESPACE) bash scripts/keycloak-sync-store-audience.sh
+
 # The sandbox secret store (decision D23, platform#160): OpenBao, opt-in, never part of `install`. Production
 # installs use the customer's own store through External Secrets and do not run this. The seal key and the
 # volume belong together: never delete Secret openbao-seal-key while the volume of pod openbao-0 exists.
@@ -454,6 +460,8 @@ install-identity: deps _context ## Install the platform IdP (Keycloak) at id.$(B
 	@$(MAKE) --no-print-directory sync-pipeline-runner-client
 	@echo "› [9/11] Sync the live realm's developer sign-in client (stardelt-dev, platform#157)"
 	@$(MAKE) --no-print-directory sync-dev-client
+	@echo "› [9/11] Sync the live realm's secret-store audience (platform#160)"
+	@$(MAKE) --no-print-directory sync-store-audience
 	@echo "› [10/11] guard: every client secret must authenticate at the token endpoint"
 	@$(MAKE) --no-print-directory verify-oidc-clients
 	@echo "› [11/11] Put the query engine behind the platform identity (TLS on the coordinator)"
