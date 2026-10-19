@@ -117,6 +117,18 @@
           }
         },
         {
+          "name": "aud-openbao",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "openbao",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
           "name": "aud-lakekeeper",
           "protocol": "openid-connect",
           "protocolMapper": "oidc-audience-mapper",
@@ -388,6 +400,18 @@
           }
         },
         {
+          "name": "aud-openbao",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "openbao",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
           "name": "aud-jupyterhub",
           "protocol": "openid-connect",
           "protocolMapper": "oidc-audience-mapper",
@@ -489,6 +513,18 @@
           "consentRequired": false,
           "config": {
             "included.client.audience": "trino",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "aud-openbao",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "openbao",
             "id.token.claim": "false",
             "access.token.claim": "true",
             "introspection.token.claim": "true"
