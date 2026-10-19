@@ -20,6 +20,7 @@ TRINO_VERSION      := 1.42.2
 AIRFLOW_VERSION    := 1.21.0
 RELOADER_VERSION   := 2.2.18
 OPENBAO_VERSION    := 0.30.4
+EXTERNAL_SECRETS_VERSION := 2.13.0
 SUPERSET_VERSION   := 0.15.5
 JUPYTERHUB_VERSION := 4.4.3
 
@@ -50,6 +51,7 @@ BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 .PHONY: chart-deps chart-template chart-install
 .PHONY: verify-backups verify-backups-identity verify-backups-nova verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
 .PHONY: sync-oidc-clients verify-oidc-clients verify-trino-tls sync-trino-groups sync-trino-group-sync-client sync-pipeline-runner-client sync-dev-client openbao test-openbao-policies
+.PHONY: external-secrets eso-stores
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | \
@@ -128,6 +130,7 @@ _helm-repos:
 	@helm repo add jupyterhub     https://jupyterhub.github.io/helm-chart/           2>/dev/null || true
 	@helm repo add stakater       https://stakater.github.io/stakater-charts         2>/dev/null || true
 	@helm repo add openbao        https://openbao.github.io/openbao-helm            2>/dev/null || true
+	@helm repo add external-secrets https://charts.external-secrets.io             2>/dev/null || true
 	@helm repo update
 
 # ---------------------------------------------------------------------------
@@ -414,6 +417,10 @@ sync-dev-client: _context ## Converge the live realm's stardelt-dev client (devi
 sync-store-audience: _context ## Converge the live realm so Nova, hub and dev-client tokens carry the secret store's audience (idempotent)
 	@NAMESPACE=$(NAMESPACE) bash scripts/keycloak-sync-store-audience.sh
 
+# External Secrets Operator (decision D23): syncs a secret store into Kubernetes Secrets. Opt-in.
+external-secrets: deps _context _helm-repos ## Install External Secrets Operator (opt-in)
+	@helm upgrade --install external-secrets external-secrets/external-secrets --version $(EXTERNAL_SECRETS_VERSION) $(HELM_FLAGS) -f helm-values/external-secrets.yaml
+
 # The sandbox secret store (decision D23, platform#160): OpenBao, opt-in, never part of `install`. Production
 # installs use the customer's own store through External Secrets and do not run this. The seal key and the
 # volume belong together: never delete Secret openbao-seal-key while the volume of pod openbao-0 exists.
@@ -425,6 +432,12 @@ openbao: deps _context _helm-repos ## Install the sandbox secret store (OpenBao,
 
 test-openbao-policies: ## Prove the connection policies against a throwaway local OpenBao (needs the bao binary)
 	@bash scripts/test-openbao-policies.sh
+
+# One SecretStore per owner group (and one for `managed`), each with its own role that reads only
+# that group's path (decisions D23/D27, platform#220). Opt-in, needs `make external-secrets` first.
+STORE_GROUPS ?=
+eso-stores: ## Create one External Secrets store per owner group and for managed connections
+	@NAMESPACE=$(NAMESPACE) bash scripts/eso-openbao-store.sh managed $(STORE_GROUPS)
 
 # platform#80: the in-cluster path must refuse plain HTTP and authenticate a
 # bearer token over TLS. TRINO_VERIFY_USER_PASSWORD=… adds the user check.
@@ -524,6 +537,7 @@ uninstall: _context ## Uninstall all stardelt components (reverse order)
 	@kubectl delete -f manifests/airflow-pipelines.yaml --ignore-not-found
 	@helm uninstall airflow    --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@helm uninstall reloader   --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
+	@helm uninstall external-secrets --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@helm uninstall openbao    --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@helm uninstall trino      --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@helm uninstall lakekeeper --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
