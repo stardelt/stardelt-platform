@@ -23,7 +23,7 @@ images:
     # would silently redeploy a different DAG image.
     repository: ghcr.io/stardelt/airflow
     tag: demo
-    digest: sha256:0849ca361cbc542c8d66b95c09327cd704456aaf1664803413d881085fd91b3e
+    digest: sha256:580c8bd367f363499e8dbefd0741e5f312e5f2a4fa3025c7f70b8e0dad89f946
     pullPolicy: IfNotPresent
 
 # No secrets in this file: scripts/app-secrets.sh generates them per cluster
@@ -193,8 +193,22 @@ triggerer:
 airflowPodAnnotations:
   secret.reloader.stakater.com/reload: "stardelt-s3-creds"
 
+# Task logs go to the object store so they outlive the task pod (scheduled jobs J0, platform#118):
+# a KubernetesExecutor pod writes its log to s3://backups/airflow-logs/ when the task ends, and
+# the API server reads it from there. Needs the Amazon provider in the image (stardelt-demos).
+config:
+  logging:
+    remote_logging: "True"
+    remote_base_log_folder: s3://backups/airflow-logs
+    remote_log_conn_id: stardelt_s3
+
 # Plain-value envs on every Airflow container (including spawned K8s task pods).
 env:
+  # Connection `stardelt_s3`: the object store speaks S3 with path-style addressing. The endpoint
+  # is not a secret; the credentials come from the standard AWS variables (extraEnv below), which
+  # the connection falls back to because it carries no login.
+  - name: AIRFLOW_CONN_STARDELT_S3
+    value: '{"conn_type":"aws","extra":{"endpoint_url":"http://seaweedfs-s3.stardelt.svc.cluster.local:8333","region_name":"us-east-1","config_kwargs":{"s3":{"addressing_style":"path"}}}}'
   - name: CATALOG_URI
     value: http://lakekeeper.stardelt.svc.cluster.local:8181/catalog
   - name: CATALOG_WAREHOUSE
@@ -209,7 +223,7 @@ env:
   - name: AIRFLOW__KUBERNETES_EXECUTOR__WORKER_CONTAINER_REPOSITORY
     value: ghcr.io/stardelt/airflow
   - name: AIRFLOW__KUBERNETES_EXECUTOR__WORKER_CONTAINER_TAG
-    value: "demo@sha256:0849ca361cbc542c8d66b95c09327cd704456aaf1664803413d881085fd91b3e"
+    value: "demo@sha256:580c8bd367f363499e8dbefd0741e5f312e5f2a4fa3025c7f70b8e0dad89f946"
 
 # Secret-backed envs use extraEnv (templated string accepting valueFrom).
 extraEnv: |
@@ -233,6 +247,19 @@ extraEnv: |
       secretKeyRef:
         name: stardelt-s3-creds
         key: region
+  # The same credentials under the names the AWS SDK reads (connection stardelt_s3 above).
+  - name: AWS_ACCESS_KEY_ID
+    valueFrom:
+      secretKeyRef:
+        name: stardelt-s3-creds
+        key: access-key
+  - name: AWS_SECRET_ACCESS_KEY
+    valueFrom:
+      secretKeyRef:
+        name: stardelt-s3-creds
+        key: secret-key
+  - name: AWS_DEFAULT_REGION
+    value: us-east-1
   # Scheduled pipelines (platform#118, phase J0): the loader DAG in the image
   # (stardelt-demos dags/pipeline_loader.py) runs `sql` tasks on the query engine as the
   # service-account client `pipeline-runner` (scripts/keycloak-sync-pipeline-runner-client.sh).
