@@ -373,6 +373,18 @@ local OpenBao in dev mode; it needs the `bao` binary (2.7.x), for example
 `gh release download v2.7.0 --repo openbao/openbao --pattern 'openbao_2.7.0_linux_amd64.tar.gz'` (verify it against
 the release's `checksums.txt`).
 
+*External Secrets and one store per owner group (platform#220).* External Secrets Operator
+(Apache-2.0) is the one contract between the platform and any store: it syncs a store path into a
+Kubernetes Secret, so workflows read a Secret and never the store itself (decision D23). Opt-in,
+never part of `install`: `make external-secrets` installs the operator, `make eso-stores
+STORE_GROUPS="analytics finance"` creates one `SecretStore` per owner group plus `openbao-managed`,
+each with its own ServiceAccount, Kubernetes sign-in role and policy that may read only that
+group's prefix (`connections/group/<g>/`, `connections/managed/`). Isolation is the role, not the
+name: an `ExternalSecret` that points at `openbao-finance` but names
+`connections/group/analytics/…` ends in `SecretSyncedError` and creates no Secret. A `SecretStore`
+is namespaced, so it can only be used by `ExternalSecret`s in its own namespace — the stores live in
+the workload namespace, and personal paths (`connections/user/`) never reach a Kubernetes Secret.
+
 *Developer sign-in (platform#157).* Tools on a laptop (an editor extension, a notebook kernel, a
 script) sign in as the person with the public client `stardelt-dev`: **device grant** (the tool shows a
 code, the person approves it in a browser) or the authorization code flow with PKCE to a loopback
