@@ -12,3 +12,6 @@ dev/hetzner-k3s/cluster.yaml
 # (helm dependency update chart). Versions are pinned in chart/Chart.yaml.
 chart/charts/
 chart/Chart.lock
+
+# Python bytecode (notebook helper tests run locally too)
+__pycache__/
