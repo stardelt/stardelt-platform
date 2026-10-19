@@ -170,3 +170,28 @@ jobs:
           assert (c['access-key'], c['secret-key']) == (k['accessKey'], k['secretKey']) and len(c['access-key']) >= 16, 'S3 key pairs differ or are too short'
           PY
           ! grep -q 'name: seaweedfs-s3-secret' /tmp/umbrella.yaml || { echo "SeaweedFS must read seaweedfs-s3-config, not generate its own secret" >&2; exit 1; }
+
+  # ---------------------------------------------------------------------------
+  # Notebook helper (images/jupyter/stardelt): install the package, run pytest
+  # ---------------------------------------------------------------------------
+  notebook-helper:
+    name: Notebook helper (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the package and its test dependencies
+        # Same pins the notebook image ships (images/jupyter/Dockerfile), so
+        # the tests run against what the notebooks import. Installing the
+        # package first also proves the build backend works.
+        run: |
+          pip install ./images/jupyter
+          pip install pytest
+
+      - name: Run stardelt package tests
+        run: python -m pytest images/jupyter/tests -q

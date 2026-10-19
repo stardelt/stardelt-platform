@@ -260,6 +260,10 @@ singleuser:
   # depends on the public name or the ingress.
   extraEnv:
     TRINO_URL: https://trino.alpha.dev.stardelt.io:443
+    # Spark Connect's ClusterIP endpoint for `stardelt.spark()` (default when
+    # the pod does not override it). Reachable through the egress rule below;
+    # Spark has no authentication of its own, so this stays cluster-internal.
+    SPARK_REMOTE: sc://spark-connect.stardelt.svc.cluster.local:15002
   # Seed the quickstart into the home directory on every spawn, never
   # overwriting a user's edited copy (`cp -n`). postStart always exits 0: a
   # failing hook would make kubelet restart the container in a loop.

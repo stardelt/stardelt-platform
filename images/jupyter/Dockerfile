@@ -40,6 +40,17 @@ RUN python3 -m pip install --no-cache-dir --upgrade-strategy only-if-needed \
 # newer image replaces the source without touching the user's copy.
 COPY --chown=${NB_UID}:${NB_GID} notebooks/ /opt/stardelt/notebooks/
 
+# The stardelt notebook helper (`import stardelt`: sql, write_df, spark, and
+# the connection() stub). Pure Python, MIT, tested in CI (images/jupyter/tests/
+# plus the `notebook-helper` job in .github/workflows/ci.yml). Installed rather
+# than copied so every notebook imports it with no sys.path tweak; the import
+# check fails the build here, not in a user's first cell.
+COPY --chown=${NB_UID}:${NB_GID} stardelt/ /tmp/stardelt-pkg-build/stardelt/
+COPY --chown=${NB_UID}:${NB_GID} pyproject.toml /tmp/stardelt-pkg-build/pyproject.toml
+RUN python3 -m pip install --no-cache-dir /tmp/stardelt-pkg-build/ \
+    && rm -rf /tmp/stardelt-pkg-build \
+    && python3 -c "import stardelt; print('stardelt', stardelt.__version__)"
+
 # The single-user server's framing policy (Nova's origin, passed at spawn) —
 # see the file's docstring for why this exists and what happens without it.
 COPY jupyter_server_config.py /usr/local/etc/jupyter/jupyter_server_config.py
