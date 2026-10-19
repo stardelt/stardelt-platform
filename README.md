@@ -284,6 +284,7 @@ plain development default when it does not.
 |---|---|
 | `http-server.authentication.type=PASSWORD,OAUTH2` | every statement needs credentials; anonymous `POST /v1/statement` answers `401` with no query id |
 | `web-ui.authentication.type=oauth2` | the Trino web UI redirects to Keycloak; `<trino host>/oauth2/callback` is the registered redirect |
+| `web-ui.preview.enabled=false` | the preview UI (`/ui/preview/`) is off; the classic UI at `/ui/` stays, for administrators |
 | `http-server.authentication.oauth2.issuer` / `client-id=trino` / `client-secret` | validates the caller's **own** Keycloak access token and sets `current_user` to its `preferred_username` |
 | `…oidc.use-userinfo-endpoint=false` | local JWT validation against the realm JWKS, so the `aud` claim is enforced |
 | `server.config.https` (port 8443, PKCS12 keystore mounted from Secret `trino-coordinator-tls`) | the in-cluster TLS listener; clients carry the user's bearer token to it (`manifests/trino-tls.yaml`) |
@@ -292,6 +293,23 @@ plain development default when it does not.
 | `internal-communication.shared-secret=${ENV:…}` | required as soon as an authenticator is enabled |
 | `accessControl` (file `rules.json`: admins everything, everyone else `execute`) | query visibility is owner-only: each user sees and kills only their own queries, members of `stardelt-admins` see and kill all (viewing/killing one's own needs no rule — it is built-in) |
 | `coordinator.additionalConfigFiles` (`group-provider.properties`) + `trino-groups` volume | the file group provider reads `stardelt-admins` membership from ConfigMap `trino-group-file` (written by `scripts/sync-trino-groups.sh`, never committed); `file.refresh-period=30s` picks remounts up with no restart |
+
+**What the public host serves (platform#181).** The `trino.<baseDomain>` Ingress
+(`dev/playground/ingress.yaml`, and `chart/templates/ingress.yaml` when `trino` is listed in
+`ingress.exposeUnauthenticated`) publishes only `/v1/statement` (SQL clients) and `/oauth2`
+(the token and callback endpoints of `--external-authentication`). The engine UI, `/v1/query` and
+`/v1/info` answer the ingress controller's `404`. Administrators open the UI through a
+port-forward to the TLS listener:
+
+```sh
+kubectl -n stardelt port-forward svc/trino 8443:8443   # then open https://localhost:8443/ui/
+```
+
+The browser warns about the certificate (it comes from the namespace-local CA and does not list
+`localhost`): accept it for the session, then sign in as a member of `stardelt-admins`. Keycloak
+client `trino` has `https://localhost:8443/oauth2/callback` registered for this. Use 8443, not the
+plain-HTTP port 8080 that `make pf` forwards: Trino answers statements there with `403`, and the
+UI's sign-in would return to an origin Keycloak does not know.
 
 **One token, several resources.** Trino trusts audience `trino` (its own client id); client `nova`
 carries an `aud-trino` mapper, so the token Nova forwards — the user's, not a service account's —

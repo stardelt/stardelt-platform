@@ -101,6 +101,15 @@ jobs:
             --namespace stardelt \
             -f helm-values/trino.yaml > /dev/null
 
+      - name: helm template — trino identity overlay (preview UI off, #181)
+        run: |
+          helm template trino trino/trino \
+            --version 1.42.2 \
+            --namespace stardelt \
+            -f helm-values/trino.yaml \
+            -f helm-values/trino-identity.yaml > /tmp/trino-identity.yaml
+          test "$(grep -c 'web-ui.preview.enabled=false' /tmp/trino-identity.yaml)" = 1
+
       - name: helm template — airflow
         run: |
           helm template airflow apache-airflow/airflow \
@@ -161,6 +170,12 @@ jobs:
           [ "$n" = 1 ] || { echo "expected only the nova Ingress, got $n" >&2; exit 1; }
           n=$(helm template stardelt chart -n stardelt --set ingress.enabled=true --set platform.baseDomain=example.com --set 'ingress.exposeUnauthenticated={trino}' | grep -c '^kind: Ingress')
           [ "$n" = 2 ] || { echo "expected nova + trino Ingresses, got $n" >&2; exit 1; }
+          # Trino Ingress (#181): only the SQL-client paths, never "/" (nova's Ingress is the one "/").
+          helm template stardelt chart -n stardelt --set ingress.enabled=true --set platform.baseDomain=example.com \
+            --set 'ingress.exposeUnauthenticated={trino}' > /tmp/umbrella-trino-ingress.yaml
+          test "$(grep -c 'path: "/"$' /tmp/umbrella-trino-ingress.yaml)" = 1
+          grep -q 'path: "/v1/statement"' /tmp/umbrella-trino-ingress.yaml
+          grep -q 'path: "/oauth2"' /tmp/umbrella-trino-ingress.yaml
           # S3 credentials (#100): one generated key pair in both Secrets, and SeaweedFS
           # reads it instead of generating a secret of its own.
           helm template stardelt chart -n stardelt > /tmp/umbrella.yaml

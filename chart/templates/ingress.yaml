@@ -7,7 +7,9 @@
   Components without a sign-in of their own (trino, lakekeeper, superset,
   airflow, jupyterhub) render only when named in `ingress.exposeUnauthenticated`.
 
-  Paths default to `/`; Keycloak publishes the realm's public surface
+  Paths default to `/`; Trino publishes only what external SQL clients need
+  (`/v1/statement`, `/oauth2`), never its web UI or `/v1/info` (platform#181);
+  Keycloak publishes the realm's public surface
   (`/realms/stardelt`, `/resources`, `/robots.txt`) plus the `stardelt` realm's
   admin console and its REST API. Its paths are ingress-nginx regexes
   (`regex: true` adds `use-regex`), each anchored to its exact path segment
@@ -27,7 +29,7 @@
 {{- $exposed := .Values.ingress.exposeUnauthenticated | default list }}
 {{- $services := list
       (dict "name" "nova"       "service" "nova"               "port" 8080 "sub" ""           "enabled" .Values.nova.enabled)
-      (dict "name" "trino"      "service" "trino"              "port" 8080 "sub" "trino"      "enabled" .Values.trino.enabled)
+      (dict "name" "trino"      "service" "trino"              "port" 8080 "sub" "trino"      "enabled" .Values.trino.enabled "paths" (list "/v1/statement" "/oauth2"))
       (dict "name" "lakekeeper" "service" "lakekeeper"         "port" 8181 "sub" "lakekeeper" "enabled" .Values.lakekeeper.enabled)
       (dict "name" "superset"   "service" "superset"           "port" 8088 "sub" "superset"   "enabled" .Values.superset.enabled)
       (dict "name" "airflow"    "service" "airflow-api-server" "port" 8080 "sub" "airflow"    "enabled" .Values.airflow.enabled)

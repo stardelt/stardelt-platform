@@ -49,8 +49,19 @@ spec:
   rules:
     - host: trino.alpha.dev.stardelt.io
       http:
+        # Only what external SQL clients need (platform#181): statements, and the
+        # OAuth2 token/callback endpoints of `--external-authentication`. The
+        # engine UI, /v1/query and /v1/info fall through to nginx's 404;
+        # administrators open the UI through a port-forward (README, "Trino").
         paths:
-          - path: /
+          - path: /v1/statement
+            pathType: Prefix
+            backend:
+              service:
+                name: trino
+                port:
+                  number: 8080
+          - path: /oauth2
             pathType: Prefix
             backend:
               service:
