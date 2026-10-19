@@ -154,6 +154,16 @@ spec:
                   name: stardelt-platform-config
                   key: baseDomain
                   optional: true
+            # The state store (stardelt-nova#103): CloudNative-PG generates Secret
+            # `nova-pg-app` for the Cluster in manifests/nova-pg.yaml and its `uri` key is
+            # a complete postgresql:// URL. Deliberately NOT optional: a missing Secret
+            # keeps the new pod in CreateContainerConfigError (the old pod keeps serving)
+            # instead of starting a Nova that silently runs without its database, because
+            # an optional reference is read once, at container start. Apply
+            # manifests/nova-pg.yaml and wait for the Cluster before applying this file.
+            - name: NOVA_DATABASE_URL
+              valueFrom:
+                secretKeyRef: { name: nova-pg-app, key: uri }
             - name: RUST_LOG
               value: info,tower_http=info
           readinessProbe:

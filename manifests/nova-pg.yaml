@@ -1,0 +1,62 @@
+# Nova's state store (stardelt-nova#103): saved queries, personal settings and, later, the
+# query log. A CloudNative-PG Cluster of its own, so Nova never shares a database with the
+# catalog or the identity provider. Applied by `make install` / `make install-core` before
+# manifests/nova-deployment.yaml; the umbrella chart renders the same objects from
+# chart/templates/nova-pg.yaml.
+#
+# The operator generates the credentials: Secret `nova-pg-app` (keys username, password,
+# uri, ...) holds a random password. Nothing in git holds one. Nova reads the complete URL
+# from the `uri` key (NOVA_DATABASE_URL in nova-deployment.yaml).
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: nova-pg
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+spec:
+  instances: 1
+  storage:
+    size: 1Gi
+  # Same continuous backup as the other two clusters; CNPG writes under
+  # <bucket>/nova-pg/, so the three share the `backups` bucket without colliding.
+  backup:
+    retentionPolicy: "14d"
+    barmanObjectStore:
+      destinationPath: s3://backups/
+      endpointURL: http://seaweedfs-s3.stardelt.svc.cluster.local:8333
+      s3Credentials:
+        accessKeyId:
+          name: stardelt-s3-creds
+          key: access-key
+        secretAccessKey:
+          name: stardelt-s3-creds
+          key: secret-key
+        region:
+          name: stardelt-s3-creds
+          key: region
+      wal:
+        compression: gzip
+        maxParallel: 2
+      data:
+        compression: gzip
+  bootstrap:
+    initdb:
+      database: nova
+      owner: nova
+  resources:
+    requests: { cpu: "50m", memory: "128Mi" }
+    limits: { cpu: "500m", memory: "256Mi" }
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: nova-pg-daily
+  namespace: stardelt
+spec:
+  schedule: "0 0 3 * * *"       # 15 minutes after keycloak-pg-daily (02:45), 30 after lakekeeper-pg-daily (02:30)
+  immediate: true
+  backupOwnerReference: self
+  method: barmanObjectStore
+  cluster:
+    name: nova-pg

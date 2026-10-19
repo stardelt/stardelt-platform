@@ -134,6 +134,15 @@ spec:
             # Empty = no links. Defaults to platform.baseDomain.
             - name: NOVA_BASE_DOMAIN
               value: {{ .Values.nova.baseDomain | default .Values.platform.baseDomain | quote }}
+            {{- if .Values.nova.database.enabled }}
+            # The state store: CloudNative-PG generates Secret `nova-pg-app` for the
+            # Cluster in templates/nova-pg.yaml; `uri` is a complete postgresql:// URL.
+            # Not optional on purpose: until the Secret exists the pod waits in
+            # CreateContainerConfigError instead of starting without its database.
+            - name: NOVA_DATABASE_URL
+              valueFrom:
+                secretKeyRef: { name: nova-pg-app, key: uri }
+            {{- end }}
             - name: RUST_LOG
               value: {{ .Values.nova.logLevel | quote }}
           readinessProbe:

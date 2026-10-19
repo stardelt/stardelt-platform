@@ -1,0 +1,65 @@
+{{- if and .Values.nova.enabled .Values.nova.database.enabled }}
+# CloudNative-PG Cluster for Nova's state store (stardelt-nova#103): saved queries,
+# personal settings, later the query log. Equivalent to manifests/nova-pg.yaml.
+# The operator generates Secret `nova-pg-app` (random password; nothing in git or in
+# values holds one) and Nova reads its `uri` key (templates/nova.yaml).
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: nova-pg
+  namespace: {{ .Release.Namespace }}
+  labels: { app.kubernetes.io/part-of: stardelt }
+spec:
+  instances: 1
+  storage:
+    size: {{ .Values.nova.database.storage.size }}
+    {{- with .Values.storage.className }}
+    storageClass: {{ . }}
+    {{- end }}
+  {{- if .Values.postgres.backup.enabled }}
+  # Same continuous backup as the other clusters (templates/cnpg-postgres.yaml); CNPG
+  # writes under <bucket>/nova-pg/, so they share the `backups` bucket.
+  backup:
+    retentionPolicy: {{ .Values.postgres.backup.retentionPolicy | quote }}
+    barmanObjectStore:
+      destinationPath: s3://{{ .Values.postgres.backup.bucket }}/
+      endpointURL: {{ tpl .Values.s3Credentials.endpoint . | quote }}
+      s3Credentials:
+        accessKeyId:
+          name: {{ .Values.s3Credentials.name }}
+          key: access-key
+        secretAccessKey:
+          name: {{ .Values.s3Credentials.name }}
+          key: secret-key
+        region:
+          name: {{ .Values.s3Credentials.name }}
+          key: region
+      wal:
+        compression: gzip
+        maxParallel: 2
+      data:
+        compression: gzip
+  {{- end }}
+  bootstrap:
+    initdb:
+      database: nova
+      owner: nova
+  resources:
+    {{- toYaml .Values.nova.database.resources | nindent 4 }}
+{{- if .Values.postgres.backup.enabled }}
+---
+# Daily base backup, 03:00 (lakekeeper-pg 02:30, keycloak-pg 02:45): the three never overlap.
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: nova-pg-daily
+  namespace: {{ .Release.Namespace }}
+spec:
+  schedule: "0 0 3 * * *"
+  immediate: true
+  backupOwnerReference: self
+  method: barmanObjectStore
+  cluster:
+    name: nova-pg
+{{- end }}
+{{- end }}
