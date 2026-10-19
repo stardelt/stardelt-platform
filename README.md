@@ -286,6 +286,18 @@ carries an `aud-trino` mapper, so the token Nova forwards — the user's, not a 
 is accepted at Trino and names the person in the query audit trail (`NOVA_FORWARD_IDENTITY=1`,
 set in both the manifest and the chart). A token without `aud: trino` is rejected with `401`.
 
+*Continuous group sync (platform#167).* `make trino` writes the group file once, but membership
+changes between applies used to wait for the next one — a removed admin kept their all-queries
+view with no bound. CronJob `trino-group-sync` (`manifests/trino-group-sync.yaml`, every
+5 minutes) re-runs the sync from `scripts/trino-group-sync-job.py` and rewrites ConfigMap
+`trino-group-file` when members changed, so both directions land within 10 minutes with no
+apply and no restart. It authenticates as the dedicated `trino-group-sync` service-account
+client with exactly `view-users` on `realm-management` (converged by
+`scripts/keycloak-sync-trino-group-sync-client.sh`, run by `make install-identity`; the realm
+import declares the client for fresh installs) — read-only group membership, nothing broader —
+and its RBAC may only read that client secret and converge that one ConfigMap. Its logs state
+counts, never principals.
+
 #### TLS on the coordinator (why the in-cluster path is safe)
 
 Two listeners, one behavior:

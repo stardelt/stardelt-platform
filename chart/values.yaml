@@ -344,9 +344,11 @@ trino:
   # per-component install, whose values are flat; the umbrella chart needs the
   # same keys nested under `trino:` — tracked as a follow-up, together with the
   # coordinator TLS listener in manifests/trino-tls.yaml that gives in-cluster
-  # clients an authenticated HTTPS endpoint, platform#80). Without the overlay,
-  # Trino accepts anonymous SQL, which is only acceptable for an unreachable dev
-  # stack.
+  # clients an authenticated HTTPS endpoint, platform#80). The continuous
+  # group-file sync (CronJob trino-group-sync, platform#167) rides with that
+  # same follow-up: it converges a ConfigMap only the overlay consumes.
+  # Without the overlay, Trino accepts anonymous SQL, which is only acceptable
+  # for an unreachable dev stack.
   additionalConfigProperties:
     - http-server.process-forwarded=true
 

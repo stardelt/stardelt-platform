@@ -50,6 +50,16 @@
           "temporary": false
         }
       ]
+    },
+    {
+      "username": "service-account-trino-group-sync",
+      "enabled": true,
+      "serviceAccountClientId": "trino-group-sync",
+      "clientRoles": {
+        "realm-management": [
+          "view-users"
+        ]
+      }
     }
   ],
   "clients": [
@@ -391,6 +401,22 @@
           }
         }
       ]
+    },
+    {
+      "clientId": "trino-group-sync",
+      "name": "Trino group sync",
+      "description": "Continuous sync of the stardelt-admins group file (platform#167): a CronJob reads group membership through this client's service account. Read-only by design — exactly view-users on realm-management, no flows, no mappers, no redirect URIs.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${STARDELT_TRINO_GROUP_SYNC_CLIENT_SECRET}",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "attributes": {},
+      "protocolMappers": []
     }
   ],
   "defaultGroups": [

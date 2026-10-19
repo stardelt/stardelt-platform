@@ -45,7 +45,7 @@ BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 .PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator trino upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-up dev-down dev-dns dev-dns-down
 .PHONY: chart-deps chart-template chart-install
 .PHONY: verify-backups verify-backups-identity verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
-.PHONY: sync-oidc-clients verify-oidc-clients verify-trino-tls sync-trino-groups
+.PHONY: sync-oidc-clients verify-oidc-clients verify-trino-tls sync-trino-groups sync-trino-group-sync-client
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | \
@@ -294,6 +294,10 @@ trino: deps _context ## Install/upgrade Trino, with OAuth2+TLS when a platform I
 	  fi; \
 	  echo "› Trino group file: sync stardelt-admins into ConfigMap trino-group-file (platform#125)"; \
 	  NAMESPACE=$(NAMESPACE) bash scripts/sync-trino-groups.sh; \
+	  echo "› Trino group sync: refresh the job script and apply the 5-minute CronJob (platform#167)"; \
+	  kubectl -n $(NAMESPACE) create configmap trino-group-sync-script --from-file=job.py=scripts/trino-group-sync-job.py \
+	    --dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
+	  kubectl apply -f manifests/trino-group-sync.yaml; \
 	  helm upgrade --install trino trino/trino \
 	    --version $(TRINO_VERSION) \
 	    $(HELM_FLAGS) \
@@ -355,8 +359,20 @@ verify-oidc-clients: _context ## Prove every confidential client's secret still 
 # ConfigMap trino-group-file before the upgrade; file.refresh-period picks a
 # remounted file up with no restart, so only a values change needs the
 # coordinator restart below (which drops running queries — pick a quiet moment).
+# Between applies, CronJob trino-group-sync (platform#167) keeps that ConfigMap
+# converged every 5 minutes — membership changes land without any apply.
 sync-trino-groups: _context ## Sync the live realm's stardelt-admins membership into ConfigMap trino-group-file (idempotent)
 	@NAMESPACE=$(NAMESPACE) bash scripts/sync-trino-groups.sh
+
+# platform#167: the group file above went stale between applies — a removed
+# admin kept their all-queries view with no bound. The CronJob in
+# manifests/trino-group-sync.yaml re-runs the sync every 5 minutes as the
+# dedicated `trino-group-sync` service-account client (exactly view-users on
+# realm-management, converged here; the import only declares it for fresh
+# realms). install-identity runs this before `trino` so the client exists when
+# the CronJob starts ticking.
+sync-trino-group-sync-client: _context ## Converge the live realm's trino-group-sync client (secret + read-only grant, idempotent)
+	@NAMESPACE=$(NAMESPACE) bash scripts/keycloak-sync-trino-group-sync-client.sh
 
 # platform#80: the in-cluster path must refuse plain HTTP and authenticate a
 # bearer token over TLS. TRINO_VERIFY_USER_PASSWORD=… adds the user check.
@@ -366,29 +382,31 @@ verify-trino-tls: _context ## Prove the in-cluster Trino path is TLS-only and to
 install-identity: deps _context ## Install the platform IdP (Keycloak) at id.$(BASE_DOMAIN)
 	@kubectl get crd clusters.postgresql.cnpg.io >/dev/null 2>&1 || { \
 	  echo "CloudNative-PG CRDs not found — run 'make install-core' first" >&2; exit 1; }
-	@echo "› [1/10] Secrets + realm/identity ConfigMaps (base domain $(BASE_DOMAIN))"
+	@echo "› [1/11] Secrets + realm/identity ConfigMaps (base domain $(BASE_DOMAIN))"
 	@NAMESPACE=$(NAMESPACE) BASE_DOMAIN=$(BASE_DOMAIN) bash scripts/identity-bootstrap.sh
-	@echo "› [2/10] CNPG Cluster (Keycloak Postgres)"
+	@echo "› [2/11] CNPG Cluster (Keycloak Postgres)"
 	@kubectl apply -f manifests/keycloak.yaml
-	@echo "› [2/10] guard: the live Cluster must still declare its backup config"
+	@echo "› [2/11] guard: the live Cluster must still declare its backup config"
 	@$(MAKE) --no-print-directory verify-backup-config PG_CLUSTER=keycloak-pg
 	@kubectl -n $(NAMESPACE) wait --for=condition=Ready --timeout=300s cluster/keycloak-pg
-	@echo "› [3/10] Keycloak $(KEYCLOAK_VERSION)"
+	@echo "› [3/11] Keycloak $(KEYCLOAK_VERSION)"
 	@kubectl -n $(NAMESPACE) rollout status deploy/keycloak --timeout=10m
-	@echo "› [4/10] Heal realm-admin drift: the Secret is the source of truth, not the import"
+	@echo "› [4/11] Heal realm-admin drift: the Secret is the source of truth, not the import"
 	@$(MAKE) --no-print-directory sync-realm-admin
-	@echo "› [5/10] guard: the documented realm admin must still sign in"
+	@echo "› [5/11] guard: the documented realm admin must still sign in"
 	@$(MAKE) --no-print-directory verify-realm-admin
-	@echo "› [6/10] Realm admins manage users (roles + brute force on a live realm)"
+	@echo "› [6/11] Realm admins manage users (roles + brute force on a live realm)"
 	@$(MAKE) --no-print-directory sync-realm-user-management
-	@echo "› [7/10] Heal app-client drift: Secret stardelt-oidc-clients is the source of truth too"
+	@echo "› [7/11] Heal app-client drift: Secret stardelt-oidc-clients is the source of truth too"
 	@$(MAKE) --no-print-directory sync-oidc-clients SYNC_TRINO=0
-	@echo "› [8/10] Sync the live realm's Trino client (import skips an existing realm)"
+	@echo "› [8/11] Sync the live realm's Trino client (import skips an existing realm)"
 	@NAMESPACE=$(NAMESPACE) TRINO_PUBLIC_URL=https://trino.$(BASE_DOMAIN) \
 	  bash scripts/keycloak-sync-trino-client.sh
-	@echo "› [9/10] guard: every client secret must authenticate at the token endpoint"
+	@echo "› [9/11] Sync the live realm's group-sync client (read-only service account, platform#167)"
+	@$(MAKE) --no-print-directory sync-trino-group-sync-client
+	@echo "› [10/11] guard: every client secret must authenticate at the token endpoint"
 	@$(MAKE) --no-print-directory verify-oidc-clients
-	@echo "› [10/10] Put the query engine behind the platform identity (TLS on the coordinator)"
+	@echo "› [11/11] Put the query engine behind the platform identity (TLS on the coordinator)"
 	@$(MAKE) --no-print-directory trino
 	@# Nova reads its Trino endpoint from the identity ConfigMap (authMode turned
 	@# sign-in on, trinoUrl turns on the in-cluster TLS endpoint) and both are
@@ -429,6 +447,8 @@ upgrade: install ## Upgrade all components (same as install)
 # ---------------------------------------------------------------------------
 uninstall: _context ## Uninstall all stardelt components (reverse order)
 	@echo "› removing manifests"
+	@kubectl delete -f manifests/trino-group-sync.yaml          --ignore-not-found
+	@kubectl -n $(NAMESPACE) delete configmap trino-group-sync-script --ignore-not-found
 	@kubectl delete -f manifests/spark.yaml                   --ignore-not-found
 	@kubectl delete -f manifests/trino-tls.yaml               --ignore-not-found
 	@kubectl delete -f manifests/nova-deployment.yaml        --ignore-not-found
