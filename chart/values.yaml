@@ -248,9 +248,11 @@ seaweedfs:
       size: 1Gi
       # Empty = the cluster's default StorageClass.
       storageClass: ""
+    # The filer keeps the metadata of every S3 key in memory-mapped stores; at 256Mi it was OOM-killed in a
+    # loop on the dev cluster (platform#230). 512Mi is the value that held with S3 traffic and the admin UI.
     resources:
       requests: { cpu: "50m", memory: "128Mi" }
-      limits:   { cpu: "1",   memory: "256Mi" }
+      limits:   { cpu: "1",   memory: "512Mi" }
 
   s3:
     enabled: true
