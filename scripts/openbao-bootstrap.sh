@@ -10,9 +10,11 @@
 # 2. Enables the KV v2 engine at `secret/`.
 # 3. Enables the JWT auth method against the platform's identity provider (the issuer is read from
 #    ConfigMap `stardelt-identity`, key `issuerUrl`, or from ISSUER_URL) and the role
-#    `platform-users`: tokens with the audience `openbao`, user = `preferred_username`, groups from
-#    the `groups` claim, 15 minute tokens. Who may read and write which path is decided per owner
-#    group by policies, external groups and group aliases (a later step).
+#    `platform-users`: tokens with the audience `openbao`, user = the token's `sub` (stable; a user
+#    name that is renamed or reused must not inherit a person's secrets), `preferred_username` kept
+#    as alias metadata `username`, groups from the `groups` claim, default policy `connections-user`,
+#    15 minute tokens. Who may read and write which path is decided per owner group by policies,
+#    external groups and group aliases (`scripts/openbao-connections.sh`).
 #
 # Tokens reach the store only through stdin of `kubectl exec`, never through argv or a log line.
 set -euo pipefail
@@ -106,7 +108,8 @@ fi
 bao_root write auth/jwt/config "oidc_discovery_url=$ISSUER" "bound_issuer=$ISSUER" < /dev/null >/dev/null \
   || fail "OpenBao could not read the identity provider's discovery document at $ISSUER"
 bao_root write auth/jwt/role/platform-users role_type=jwt bound_audiences=openbao \
-  user_claim=preferred_username groups_claim=groups token_policies=default token_ttl=15m < /dev/null >/dev/null
-echo "› jwt auth: configured for $ISSUER, role platform-users (audience openbao, groups from the groups claim)"
+  user_claim=sub claim_mappings=preferred_username=username groups_claim=groups \
+  token_policies=connections-user token_ttl=15m < /dev/null >/dev/null
+echo "› jwt auth: configured for $ISSUER, role platform-users (audience openbao, user = the token's sub, preferred_username as metadata username, policy connections-user)"
 
 echo "openbao-bootstrap: OK"

@@ -347,12 +347,31 @@ non-permissive component, see the licence page) as the secret store of a sandbox
 platform's connections read (decision D23). It is not part of `make install`; production installs use the customer's own
 store. Standalone with embedded storage on a 10 GiB volume, **auto-unseal by a static key** from Secret
 `openbao-seal-key` (verified by replacing the pod), KV v2 at `secret/`, and JWT sign-in against the platform's identity
-provider (role `platform-users`: audience `openbao`, user from `preferred_username`, groups from the `groups` claim, 15 minute
-tokens). `scripts/openbao-bootstrap.sh` initialises once and is idempotent; the recovery key and the initial root token live
+provider (role `platform-users`: audience `openbao`, user = the token's `sub`, `preferred_username` kept as metadata
+`username`, groups from the `groups` claim, 15 minute tokens, default policy `connections-user`). `scripts/openbao-bootstrap.sh`
+initialises once and is idempotent; the recovery key and the initial root token live
 in Secret `openbao-init`, which is acceptable for a sandbox and for nothing else. The seal key and the volume belong
 together: deleting the Secret while the volume exists makes the data unreadable. `make uninstall` removes the release and keeps
-the volume and both Secrets. Who may write which path (policies, external groups and aliases per owner group) and the
-audience mapper for `openbao` on the clients are separate steps.
+the volume and both Secrets. The audience mapper for `openbao` on the clients is a separate step.
+
+*Connections in the store (platform#160).* Three scopes with different rules, one policy per rule, kept as files in
+`scripts/openbao-policies/` and wired to the groups in the person's token by `scripts/openbao-connections.sh`:
+
+| Path | Who | May |
+|---|---|---|
+| `connections/user/<sub>/…` | the person whose `sub` it is | create, read, update, delete, list |
+| `connections/group/<g>/…` | every member of group `<g>` | create, read, update, delete, list |
+| `connections/managed/…` | the admin group | create and update only (**write-only**, no read), list, inspect metadata, destroy |
+| `connections/managed/…` | platform-run code (policy `connections-platform-read`, attached to a token or role later) | read |
+| any group or personal path | the admin group | list, inspect metadata, destroy; **no read, no write** |
+
+`make openbao OWNER_GROUPS="analytics finance"` writes the three shared policies, gives every owner group an external
+group `owner-<g>` with the group alias `<g>` (the name exactly as the token's `groups` claim carries it) and the policy
+`connections-group-<g>`, and makes `ADMIN_GROUP` (default `stardelt-admins`) the alias of `platform-admins`; it only
+adds and updates, so a second run changes nothing. `make test-openbao-policies` proves every rule against a throwaway
+local OpenBao in dev mode; it needs the `bao` binary (2.7.x), for example
+`gh release download v2.7.0 --repo openbao/openbao --pattern 'openbao_2.7.0_linux_amd64.tar.gz'` (verify it against
+the release's `checksums.txt`).
 
 *Developer sign-in (platform#157).* Tools on a laptop (an editor extension, a notebook kernel, a
 script) sign in as the person with the public client `stardelt-dev`: **device grant** (the tool shows a
