@@ -1,0 +1,34 @@
+{{- if and .Values.jupyterhub.enabled .Values.notebooks.gitHosts }}
+# Egress from single-user notebook pods to the customer's private git servers
+# (top-level `notebooks.gitHosts`). Additive to the chart's own `singleuser`
+# NetworkPolicy: Kubernetes unions the rules of every policy selecting a pod,
+# so this grants exactly TCP 443 to the listed CIDRs and nothing else. DNS
+# stays covered by the chart's policy (`dnsPortsPrivateIPs`). Public git hosts
+# need no entry here — the chart default already allows egress to non-private
+# IPs. Rendered only when the list is non-empty; with no private git server
+# the user pods keep reaching nothing private.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: singleuser-git-egress
+  namespace: {{ .Release.Namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      # The labels z2jh puts on every spawned server (the same selector the
+      # chart's own `singleuser` NetworkPolicy uses).
+      app: jupyterhub
+      component: singleuser-server
+      release: {{ .Release.Name }}
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - port: 443
+          protocol: TCP
+      to:
+        {{- range .Values.notebooks.gitHosts }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+{{- end }}
