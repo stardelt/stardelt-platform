@@ -22,7 +22,7 @@
     {
       "description": "Makefile pin `CNPG_VERSION` -> Helm chart `cloudnative-pg`. datasource=helm because the pin is consumed as `helm upgrade --install cnpg cnpg/cloudnative-pg --version $(CNPG_VERSION)`, so the thing that moves is the chart version. The CloudNative-PG operator image (`ghcr.io/cloudnative-pg/cloudnative-pg:1.2x.y`) and the GitHub release tag use a different numbering than the chart, so docker / github-releases would propose the wrong value.",
       "customType": "regex",
-      "managerFilePatterns": ["/(^|/)Makefile$/"],
+      "fileMatch": ["/(^|/)Makefile$/"],
       "matchStrings": ["CNPG_VERSION\\s*:=\\s*(?<currentValue>[^\\s#]+)"],
       "depNameTemplate": "cloudnative-pg",
       "datasourceTemplate": "helm",
@@ -31,7 +31,7 @@
     {
       "description": "Makefile pin `SEAWEEDFS_VERSION` -> Helm chart `seaweedfs`. datasource=helm because `--version $(SEAWEEDFS_VERSION)` is a chart version (from https://seaweedfs.github.io/seaweedfs/helm). The chart version happens to equal the app version, but Renovate must look the chart up in the chart repo to get a value the chart repo can actually serve.",
       "customType": "regex",
-      "managerFilePatterns": ["/(^|/)Makefile$/"],
+      "fileMatch": ["/(^|/)Makefile$/"],
       "matchStrings": ["SEAWEEDFS_VERSION\\s*:=\\s*(?<currentValue>[^\\s#]+)"],
       "depNameTemplate": "seaweedfs",
       "datasourceTemplate": "helm",
@@ -40,7 +40,7 @@
     {
       "description": "Makefile pin `LAKEKEEPER_VERSION` -> Helm chart `lakekeeper` from the chart repo the Makefile adds (`https://lakekeeper.github.io/lakekeeper-charts`). datasource=helm is load-bearing here: chart 0.11.0 ships application 0.12.2, so a docker or github-releases datasource would propose an app version that no chart version exists for.",
       "customType": "regex",
-      "managerFilePatterns": ["/(^|/)Makefile$/"],
+      "fileMatch": ["/(^|/)Makefile$/"],
       "matchStrings": ["LAKEKEEPER_VERSION\\s*:=\\s*(?<currentValue>[^\\s#]+)"],
       "depNameTemplate": "lakekeeper",
       "datasourceTemplate": "helm",
@@ -49,7 +49,7 @@
     {
       "description": "Makefile pin `TRINO_VERSION` -> Helm chart `trino`. datasource=helm because the chart version (1.42.2) is independent of the Trino server release (480) that the chart deploys; the pin must track the chart.",
       "customType": "regex",
-      "managerFilePatterns": ["/(^|/)Makefile$/"],
+      "fileMatch": ["/(^|/)Makefile$/"],
       "matchStrings": ["TRINO_VERSION\\s*:=\\s*(?<currentValue>[^\\s#]+)"],
       "depNameTemplate": "trino",
       "datasourceTemplate": "helm",
@@ -58,7 +58,7 @@
     {
       "description": "Makefile pin `AIRFLOW_VERSION` -> Helm chart `airflow` from the Apache chart repo (https://airflow.apache.org). datasource=helm because chart 1.21.0 and Airflow 3.2.0 are versioned separately.",
       "customType": "regex",
-      "managerFilePatterns": ["/(^|/)Makefile$/"],
+      "fileMatch": ["/(^|/)Makefile$/"],
       "matchStrings": ["AIRFLOW_VERSION\\s*:=\\s*(?<currentValue>[^\\s#]+)"],
       "depNameTemplate": "airflow",
       "datasourceTemplate": "helm",
@@ -67,7 +67,7 @@
     {
       "description": "Makefile pin `SUPERSET_VERSION` -> Helm chart `superset`. datasource=helm because chart 0.15.5 is unrelated to the Superset image tag (5.0.0) that the companion images/superset/Dockerfile builds on; that image is handled separately by the built-in dockerfile manager.",
       "customType": "regex",
-      "managerFilePatterns": ["/(^|/)Makefile$/"],
+      "fileMatch": ["/(^|/)Makefile$/"],
       "matchStrings": ["SUPERSET_VERSION\\s*:=\\s*(?<currentValue>[^\\s#]+)"],
       "depNameTemplate": "superset",
       "datasourceTemplate": "helm",
@@ -76,7 +76,7 @@
     {
       "description": "Keycloak image pin (no chart: manifests/keycloak.yaml + chart/templates/keycloak.yaml). datasource=docker against quay.io because the official image is the thing that moves. The same tag lives in three places that scripts/check-version-parity.sh keeps equal (Makefile `KEYCLOAK_VERSION`, the manifest `image:` line, `identity.keycloak.image.tag` in chart/values.yaml), so all three are matched here and move in one PR.",
       "customType": "regex",
-      "managerFilePatterns": ["/(^|/)Makefile$/", "/(^|/)manifests/keycloak\\.yaml$/", "/(^|/)chart/values\\.yaml$/"],
+      "fileMatch": ["/(^|/)Makefile$/", "/(^|/)manifests/keycloak\\.yaml$/", "/(^|/)chart/values\\.yaml$/"],
       "matchStrings": [
         "KEYCLOAK_VERSION\\s*:=\\s*(?<currentValue>[^\\s#]+)",
         "image:\\s*quay\\.io/keycloak/keycloak:(?<currentValue>[^\\s\"]+)",
@@ -87,6 +87,13 @@
     }
   ],
   "packageRules": [
+   {
+    "description": "Digests in manifests/*.yaml (`image: repo:dev@sha256:…`, rewritten by `make pin`) are owned by Renovate: the built-in kubernetes manager proposes digest updates, grouped here so a digest PR is recognizable and never mixed with chart bumps. Humans do not hand-edit digests; `make pin` output is the cluster truth until Renovate carries it into the repo (#62).",
+    "matchManagers": ["kubernetes"],
+    "matchUpdateTypes": ["digest"],
+    "matchFileNames": ["manifests/*.yaml"],
+    "groupName": "image digests"
+   },
     {
       "description": "`make install` walks every chart in one pass, so a chart bump is only safe end to end. Group all Helm updates (including the Makefile pins read by the custom managers above) into one PR.",
       "matchDatasources": ["helm"],
