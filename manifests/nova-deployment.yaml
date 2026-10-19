@@ -71,6 +71,8 @@ spec:
           ports:
             - containerPort: 8080
               name: http
+            - containerPort: 8081
+              name: internal
           env:
             # The query engine's in-cluster TLS endpoint, published by the
             # identity contract (ConfigMap stardelt-identity, key trinoUrl —
@@ -164,6 +166,14 @@ spec:
             - name: NOVA_DATABASE_URL
               valueFrom:
                 secretKeyRef: { name: nova-pg-app, key: uri }
+            # Query-log collector (stardelt-nova#116): a second listener that no Ingress
+            # routes, reachable inside the cluster only (Service port `internal`). The bearer
+            # token is Secret `nova-events` (scripts/nova-events-token.sh), shared with Trino's
+            # event listener; optional, so without it the collector stays off.
+            - name: NOVA_INTERNAL_ADDR
+              value: "0.0.0.0:8081"
+            - name: NOVA_EVENTS_TOKEN
+              valueFrom: { secretKeyRef: { name: nova-events, key: token, optional: true } }
             - name: RUST_LOG
               value: info,tower_http=info
           readinessProbe:
@@ -191,3 +201,6 @@ spec:
     - name: http
       port: 8080
       targetPort: http
+    - name: internal
+      port: 8081
+      targetPort: internal

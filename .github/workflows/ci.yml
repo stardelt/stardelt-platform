@@ -172,6 +172,9 @@ jobs:
           helm template stardelt chart -n stardelt | grep -q 'secretKeyRef: { name: nova-pg-app, key: uri }'
           helm template stardelt chart -n stardelt | grep -q '^  name: nova-pg$'
           test "$(helm template stardelt chart -n stardelt --set nova.database.enabled=false | grep -c 'nova-pg' || true)" = 0
+          # Query-log feed (stardelt-nova#116): Nova's internal collector port, not in any Ingress.
+          helm template stardelt chart -n stardelt | grep -q 'name: internal'
+          helm template stardelt chart -n stardelt | grep -q 'name: NOVA_EVENTS_TOKEN'
           # identity.mode: none (default above), platform (Keycloak), external (issuer only)
           helm template stardelt chart -n stardelt -f chart/values-slim.yaml \
             --set identity.mode=platform --set platform.baseDomain=example.com --set ingress.enabled=true > /dev/null
