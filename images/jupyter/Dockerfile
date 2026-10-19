@@ -32,7 +32,13 @@ USER ${NB_UID}
 # `--upgrade-strategy only-if-needed` keeps the base image's conda packages
 # unless one of these genuinely needs a newer version. The build fails here, not
 # in a user's first cell, if an import is broken.
-RUN python3 -m pip install --no-cache-dir --upgrade-strategy only-if-needed \
+# The base image ships `jupyterlab-git` 0.50.1, and upgrading it inside the
+# same `pip install` breaks its prebuilt frontend: pip installs the new
+# dependency (`jupyterlab-git-core`) before it uninstalls the old package, and
+# that late uninstall deletes the new `package.json`, so `labextension list`
+# no longer shows `@jupyterlab/git`. Uninstall first, in its own invocation.
+RUN python3 -m pip uninstall -y jupyterlab-git \
+    && python3 -m pip install --no-cache-dir --upgrade-strategy only-if-needed \
         pandas==2.2.3 \
         pyarrow==18.1.0 \
         'pyspark[connect]==4.2.0' \
