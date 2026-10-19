@@ -95,4 +95,10 @@ done
 group platform-admins connections-admin "$ADMIN_GROUP"
 echo "› admin group $ADMIN_GROUP: group platform-admins, policy connections-admin"
 
+# 6. Break-glass: an administrator may read a group value in an emergency, through a sign-in role that only
+# a token issued to Nova can use (bound claim azp), valid for 15 minutes, every use audited (decision D27).
+bao_root policy write connections-breakglass - < "$POLICIES/connections-breakglass.hcl" >/dev/null
+sed "s/__ADMIN_GROUP__/$ADMIN_GROUP/" "$POLICIES/breakglass-role.json" | bao_root write auth/jwt/role/breakglass - >/dev/null
+echo "› break-glass: role breakglass (token issued to Nova, member of $ADMIN_GROUP, 15 minutes), policy connections-breakglass"
+
 echo "openbao-connections: OK — owner groups: ${groups[*]:-none}"

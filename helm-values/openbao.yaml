@@ -12,6 +12,13 @@ injector:
 csi:
   enabled: false
 server:
+  # The chart puts a checksum of the server config on the pod template only with this flag; without
+  # it a changed config (the audit device of D27) would wait for the next restart before taking
+  # effect. With it, `make openbao` rolls the pod and the static seal opens it again by itself.
+  configAnnotation: true
+  # The chart defaults to OnDelete, so a changed pod template (the config checksum above) would not
+  # replace the pod. One sandbox store can roll normally, and the static seal opens it again.
+  updateStrategyType: RollingUpdate
   resources:
     requests: { cpu: 50m, memory: 64Mi }
     limits: { memory: 256Mi }
@@ -39,4 +46,15 @@ server:
       seal "static" {
         current_key_id = "key1"
         current_key    = "file:///openbao/seal/openbao-seal-key/key"
+      }
+
+      # OpenBao 2.7 refuses to enable an audit device through the API ("use declarative, config-based audit
+      # device management instead"), so it is declared here. Every request and response is written to the pod's
+      # standard output as one JSON line; values are salted hashes, never plain text. Decision D27: sign-ins
+      # to the break-glass role and every read of a group value are recorded with the person.
+      audit "file" "to-stdout" {
+        description = "Write audit information to standard output."
+        options {
+          file_path = "stdout"
+        }
       }

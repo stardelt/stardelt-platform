@@ -38,11 +38,11 @@ export BAO_TOKEN="$ROOT"
 openssl genrsa -out "$tmp/key.pem" 2048 2>/dev/null
 openssl rsa -in "$tmp/key.pem" -pubout -out "$tmp/pub.pem" 2>/dev/null
 b64() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
-mint() { # mint <sub> <groups as JSON list>
+mint() { # mint <sub> <groups as JSON list> [client the token was issued to, default nova]
   local now h p s; now=$(date +%s)
   h=$(printf '{"alg":"RS256","typ":"JWT"}' | b64)
-  p=$(printf '{"iss":"https://id.test/realms/stardelt","aud":"openbao","sub":"%s","groups":%s,"iat":%d,"nbf":%d,"exp":%d}' \
-        "$1" "$2" $((now - 30)) $((now - 30)) $((now + 600)) | b64)
+  p=$(printf '{"iss":"https://id.test/realms/stardelt","aud":"openbao","azp":"%s","sub":"%s","groups":%s,"iat":%d,"nbf":%d,"exp":%d}' \
+        "${3:-nova}" "$1" "$2" $((now - 30)) $((now - 30)) $((now + 600)) | b64)
   s=$(printf '%s.%s' "$h" "$p" | openssl dgst -sha256 -sign "$tmp/key.pem" | b64)
   printf '%s.%s.%s' "$h" "$p" "$s"
 }
@@ -52,6 +52,10 @@ mint() { # mint <sub> <groups as JSON list>
 ACC=$("$BAO" auth list -format=json | python3 -c 'import json,sys;print(json.load(sys.stdin)["jwt/"]["accessor"])')
 "$BAO" write auth/jwt/role/platform-users role_type=jwt bound_audiences=openbao user_claim=sub groups_claim=groups \
   token_policies=connections-user token_ttl=10m >/dev/null
+
+# The break-glass role and its policy, from the shipped files.
+"$BAO" policy write connections-breakglass "$POLICIES/connections-breakglass.hcl" >/dev/null
+sed "s/__ADMIN_GROUP__/stardelt-admins/" "$POLICIES/breakglass-role.json" | "$BAO" write auth/jwt/role/breakglass - >/dev/null
 
 # Policies from the shipped files; the placeholders are the only difference to what the cluster gets.
 "$BAO" policy write connections-user - < <(sed "s/__ACCESSOR__/$ACC/g" "$POLICIES/connections-user.hcl") >/dev/null
@@ -103,6 +107,18 @@ t "admin reads a group secret's metadata"      ok   "$ADMIN" kv metadata get sec
 t "platform reader reads the managed value"    ok   "$PLAT" kv get secret/connections/managed/sftp
 t "platform reader reads a group value"        deny "$PLAT" kv get secret/connections/group/analytics/crm
 t "platform reader writes a managed value"     deny "$PLAT" kv put secret/connections/managed/x a=b
+t "break-glass login: admin token issued to Nova"          ok   ""      write -field=token auth/jwt/login role=breakglass jwt="$(mint sub-admin '["stardelt-admins"]' nova)"
+t "break-glass login: same admin, token of the dev client" deny ""      write -field=token auth/jwt/login role=breakglass jwt="$(mint sub-admin '["stardelt-admins"]' stardelt-dev)"
+t "break-glass login: same admin, token of the hub"        deny ""      write -field=token auth/jwt/login role=breakglass jwt="$(mint sub-admin '["stardelt-admins"]' jupyterhub)"
+t "break-glass login: group member, token issued to Nova"  deny ""      write -field=token auth/jwt/login role=breakglass jwt="$(mint sub-alice '["analytics"]' nova)"
+BG=$("$BAO" write -field=token auth/jwt/login role=breakglass jwt="$(mint sub-admin '["stardelt-admins"]' nova)")
+t "break-glass token reads a group value"                  ok   "$BG"    kv get secret/connections/group/analytics/crm
+t "break-glass token reads the managed value"              deny "$BG"    kv get secret/connections/managed/sftp
+t "break-glass token reads a personal value"               deny "$BG"    kv get secret/connections/user/sub-alice/pat
+t "break-glass token writes a group value"                 deny "$BG"    kv put secret/connections/group/analytics/planted a=b
+bg_ttl=$(BAO_TOKEN=$BG "$BAO" token lookup -format=json | python3 -c 'import json,sys;print(json.load(sys.stdin)["data"]["ttl"])')
+if [ "$bg_ttl" -le 900 ]; then pass=$((pass + 1)); printf 'PASS %-52s %s s\n' "break-glass token lives at most 15 minutes" "$bg_ttl"
+else fail=$((fail + 1)); printf 'FAIL %-52s %s s\n' "break-glass token lives at most 15 minutes" "$bg_ttl"; fi
 t "admin destroys a group secret (incident)"   ok   "$ADMIN" kv metadata delete secret/connections/group/analytics/crm
 t "alice reads it after it was destroyed"      deny "$ALICE" kv get secret/connections/group/analytics/crm
 echo "test-openbao-policies: $pass passed, $fail failed"
