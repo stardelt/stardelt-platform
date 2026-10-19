@@ -119,6 +119,8 @@ backups. The destination bucket must exist — the SeaweedFS sub-chart creates
 first. The #59 backup guards describe a chart install as well; point them at the
 release namespace: `NAMESPACE=<release ns> make verify-backup-config` / `verify-backups`.
 
+Keycloak's database (`keycloak-pg`) is backed up the same way as the catalog (WAL streaming plus a daily base backup into `s3://backups/keycloak-pg/`); check it with `make verify-backups-identity`.
+
 ---
 
 ## Airflow and Superset credentials
@@ -729,6 +731,7 @@ kubectl -n stardelt delete pods -l spark-role=executor
 | `install-core` | Core only (storage + catalog + query + Nova) — fits a small node; `SLIM=1` for 8 GB |
 | `verify-backup-config` | Post-apply guard (also run by both install targets): the live `lakekeeper-pg` Cluster must still declare `spec.backup`, or the command fails loudly |
 | `verify-backups` | Full WAL check: `spec.backup` + the newest object in `s3://backups/lakekeeper-pg/wals/` is younger than `MAX_AGE_SECONDS` (900) + it matches `pg_stat_archiver.last_archived_wal`. `SKIP_OBJECTS=1` skips the S3 half |
+| `verify-backups-identity` | Same full WAL check for `keycloak-pg` (`s3://backups/keycloak-pg/wals/`) |
 | `install-notebooks` | JupyterHub (notebooks) |
 | `install-spark` | Spark Connect endpoint (`manifests/spark.yaml`), wired to the same Lakekeeper catalog as Trino; restarts the driver only when its ConfigMap changed |
 | `install-identity` | Platform IdP: Keycloak + CNPG Postgres + realm `stardelt`, then the realm-admin sync + guard, the user-management roles/brute-force sync, the client-secret sync + guard, the live-realm Trino client and the Trino OAuth2 overlay (`BASE_DOMAIN=…`, see [Identity](#identity-optional-platform-idp)) |

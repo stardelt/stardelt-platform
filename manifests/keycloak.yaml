@@ -26,6 +26,26 @@ spec:
   instances: 1
   storage:
     size: 1Gi
+  backup:
+    retentionPolicy: "14d"
+    barmanObjectStore:
+      destinationPath: s3://backups/
+      endpointURL: http://seaweedfs-s3.stardelt.svc.cluster.local:8333
+      s3Credentials:
+        accessKeyId:
+          name: stardelt-s3-creds
+          key: access-key
+        secretAccessKey:
+          name: stardelt-s3-creds
+          key: secret-key
+        region:
+          name: stardelt-s3-creds
+          key: region
+      wal:
+        compression: gzip
+        maxParallel: 2
+      data:
+        compression: gzip
   bootstrap:
     initdb:
       database: keycloak
@@ -33,6 +53,19 @@ spec:
   resources:
     requests: { cpu: "50m", memory: "128Mi" }
     limits:   { cpu: "500m", memory: "256Mi" }
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: keycloak-pg-daily
+  namespace: stardelt
+spec:
+  schedule: "0 45 2 * * *"      # 15 minutes after lakekeeper-pg-daily so the two do not overlap
+  immediate: true
+  backupOwnerReference: self
+  method: barmanObjectStore
+  cluster:
+    name: keycloak-pg
 ---
 apiVersion: v1
 kind: Service
