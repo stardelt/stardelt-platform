@@ -53,6 +53,11 @@ spec:
       labels: { app.kubernetes.io/name: nova, app.kubernetes.io/part-of: stardelt }
     spec:
       serviceAccountName: nova
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
       {{- $pullSecrets := .Values.nova.imagePullSecrets | default .Values.images.pullSecrets }}
       {{- with $pullSecrets }}
       imagePullSecrets:
@@ -137,6 +142,10 @@ spec:
             periodSeconds: 5
           resources:
             {{- toYaml .Values.nova.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
 ---
 apiVersion: v1
 kind: Service
