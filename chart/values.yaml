@@ -361,6 +361,13 @@ trino:
     additionalJVMConfig:
       - "-Xms1G"
     additionalExposedPorts: {}
+    # Worker-local file-system cache for object-store reads (platform#134).
+    # The directory must exist on the coordinator too, so it gets the mount.
+    additionalVolumes:
+      - name: trino-fscache
+        emptyDir: { sizeLimit: 12Gi }
+    additionalVolumeMounts:
+      - { name: trino-fscache, mountPath: /var/trino/cache }
 
   worker:
     jvm:
@@ -369,6 +376,12 @@ trino:
         type: UseG1GC
     additionalJVMConfig:
       - "-Xms1G"
+    # Same cache volume as the coordinator (see above).
+    additionalVolumes:
+      - name: trino-fscache
+        emptyDir: { sizeLimit: 12Gi }
+    additionalVolumeMounts:
+      - { name: trino-fscache, mountPath: /var/trino/cache }
 
   # Pull S3 creds from the stardelt-s3-creds Secret so catalog properties can
   # substitute ${ENV:S3_ACCESS_KEY} / ${ENV:S3_SECRET_KEY}, plus the three
@@ -407,6 +420,20 @@ trino:
       s3.max-connections=16
       iceberg.split-manager-threads=4
       iceberg.metadata.parallelism=2
+      # Worker-local file-system cache for object-store reads (platform#134,
+      # Trino 480: `fs.cache.*` per catalog; there is no cache-manager setting
+      # in 480). Measured on the dev cluster 2026-10-19 against a 38M-row /
+      # 0.66 GB full scan of nyc_taxi.yellow_trips: repeat scans drop from
+      # 154 S3 GETs + 660 MB to 1 GET + 0 MB, wall time 1.5-1.9s -> 1.2-1.7s.
+      # The win is S3 offload (the single-replica SeaweedFS volume server is
+      # the bottleneck the throttles above protect), not latency — Parquet
+      # decode dominates on one node. Best-effort local cache only: a pod
+      # restart or scale-to-zero (M-02) discards it with the emptyDir, and the
+      # next scan repopulates (cold scan is slower: 5.1s vs 3.2s uncached).
+      fs.cache.enabled=true
+      fs.cache.directories=/var/trino/cache
+      fs.cache.max-sizes=10GB
+      fs.cache.ttl=7d
 
 nova:
   # stardelt Nova — UI + backend in one pod. Equivalent to

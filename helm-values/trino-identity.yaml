@@ -146,8 +146,15 @@ coordinator:
   additionalVolumes:
     - name: trino-groups
       configMap: { name: trino-group-file }
+    # Repeated from helm-values/trino.yaml: Helm replaces lists instead of
+    # merging them, so without this the identity overlay would drop the
+    # file-system cache mount (platform#134) and the coordinator would
+    # CrashLoop with "Cannot write to cache directory /var/trino/cache".
+    - name: trino-fscache
+      emptyDir: { sizeLimit: 12Gi }
   additionalVolumeMounts:
     - { name: trino-groups, mountPath: /etc/trino/groups }
+    - { name: trino-fscache, mountPath: /var/trino/cache }
 
 # The service-account password file: `superset:<bcrypt>`, generated on the
 # cluster by scripts/identity-bootstrap.sh (never committed) and mounted by the
