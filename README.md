@@ -217,7 +217,8 @@ and, with it, a way to query the warehouse **as themselves**.
 * **Image.** `helm-values/jupyterhub.yaml` points the single-user pods at
   `ghcr.io/stardelt/jupyter-singleuser:dev` (built by the `Image` workflow from
   `images/jupyter/Dockerfile`): `scipy-notebook` plus the `trino` Python client,
-  `pyspark[connect]`, `pandas` and `pyarrow`, and the `warehouse-quickstart` notebook under
+  `pyspark[connect]`, `pandas` and `pyarrow`, the git extensions `jupyterlab-git`
+  and `nbgitpuller` (both BSD-3-Clause), and the `warehouse-quickstart` notebook under
   `/opt/stardelt/notebooks/`. `jupyterlab-sql` is deliberately absent — its last release predates
   JupyterLab 4 and it cannot carry the per-user token. The package is private, like Superset, so
   the pod pulls with the `ghcr-creds` secret.
@@ -251,6 +252,17 @@ and, with it, a way to query the warehouse **as themselves**.
   what it found when the endpoint is absent. The singleuser NetworkPolicy grants egress to exactly
   two private destinations — the `spark-connect` pods on 15002 (see "Spark") and the Trino
   coordinator on 8443 (the in-cluster TLS endpoint above) — everything else private stays denied.
+* **Git.** The image ships the `git` binary plus `jupyterlab-git` (Git panel in JupyterLab) and
+  `nbgitpuller` (one-click clone of a repository into the user's home via a hub link, for
+  training sessions). Users authenticate with their **own** tokens, kept in the notebook
+  environment (e.g. `GITHUB_TOKEN` exported in a terminal, or a credential helper) — no token
+  and no repository URL ever enters the image. Public git hosts work out of the box (user pods
+  may egress to public IPs); a *private* git server needs its CIDRs listed — `notebooks.gitHosts`
+  in the umbrella chart, `singleuser.networkPolicy.egress` in `helm-values/jupyterhub.yaml` —
+  granted HTTPS-only (TCP 443), never open-all. The two workflows (a notebook repository cloned
+  into the user's home and pushed from the Git panel; pipeline resources kept in git, validated
+  in CI (`kubectl apply --dry-run=server` against the operator's CRDs) and applied by CI or a
+  GitOps controller) are documented in the developer guide.
 
 `scripts/verify-notebook-identity.py` is the acceptance test for all of this: it signs in at the
 hub headlessly, restarts the server, runs the quickstart inside the pod and then runs it again

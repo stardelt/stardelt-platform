@@ -839,6 +839,23 @@ airflow:
           name: stardelt-s3-creds
           key: region
 
+# Notebooks in git — stardelt-level notebook settings (there is no `notebooks`
+# sub-chart; the servers themselves are configured under `jupyterhub` below).
+notebooks:
+  # CIDRs of the customer's *private* git servers (self-hosted GitLab / Gitea /
+  # GitHub Enterprise) that a single-user pod may reach, over HTTPS only.
+  # Rendered as one TCP/443 egress rule per entry on the single-user pods
+  # (chart/templates/notebooks-git-egress.yaml), additive to the chart's own
+  # NetworkPolicy. Public hosts (github.com, …) need no entry: the chart default
+  # `egressAllowRules.nonPrivateIPs: true` already lets user pods reach public
+  # IPs. A NetworkPolicy `ipBlock` takes CIDRs only, never hostnames — resolve
+  # the server once and list its ranges, e.g. `gitHosts: ["192.0.2.0/24"]`.
+  # Empty by default: user pods reach nothing private. Never list `0.0.0.0/0`
+  # here — that re-opens everything the default closed. The standalone install
+  # (`make install-notebooks`, helm-values/jupyterhub.yaml) carries the same
+  # rule as a documented `singleuser.networkPolicy.egress` entry.
+  gitHosts: []
+
 jupyterhub:
   # Embedding in Nova. Nova's Notebooks page frames the hub, and the hub sends a
   # signed-in person on to their own single-user server — the app that executes
@@ -1022,7 +1039,8 @@ jupyterhub:
 
   singleuser:
     # stardelt's image (images/jupyter/Dockerfile): scipy-notebook + trino,
-    # pyspark[connect], pandas, pyarrow, and the warehouse quickstart under
+    # pyspark[connect], pandas, pyarrow, the git extensions (jupyterlab-git,
+    # nbgitpuller), and the warehouse quickstart under
     # /opt/stardelt/notebooks. Built and published by CI (Image workflow); make
     # the GHCR package public or keep ghcr-creds (ghcr-pull-secret.sh) available
     # in the namespace.
@@ -1075,6 +1093,11 @@ jupyterhub:
     # to every user pod for the same feature. The umbrella chart does not ship
     # Spark (apply `manifests/spark.yaml` or enable it separately); when the
     # pods are absent the rule simply matches nothing.
+    #
+    # Private git servers are not listed here: they come from the top-level
+    # `notebooks.gitHosts` value (rendered by
+    # chart/templates/notebooks-git-egress.yaml as TCP/443 rules), so the git
+    # grant stays a documented list and never an open-all.
     networkPolicy:
       egress:
         - to:

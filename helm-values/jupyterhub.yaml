@@ -239,7 +239,8 @@ proxy:
 
 singleuser:
   # stardelt's image (images/jupyter/Dockerfile): scipy-notebook + trino,
-  # pyspark[connect], pandas, pyarrow, and the warehouse quickstart under
+  # pyspark[connect], pandas, pyarrow, the git extensions (jupyterlab-git,
+  # nbgitpuller), and the warehouse quickstart under
   # /opt/stardelt/notebooks. Built and published by CI (Image workflow), private
   # like Superset, so the spawner pulls with the ghcr-creds Secret.
   image:
@@ -310,6 +311,14 @@ singleuser:
   # (was: ConnectionRefusedError in the quickstart's Spark cell, stardelt-platform#90;
   # the Trino rule arrived with the in-cluster TLS listener, platform#80 — before it,
   # the notebook talked to the public hostname, which is a non-private address.)
+  #
+  # Private git servers (the umbrella chart's `notebooks.gitHosts`) are granted
+  # here, as explicit HTTPS-only entries — one `to.ipBlock` per CIDR, TCP 443,
+  # never `0.0.0.0/0`. A NetworkPolicy `ipBlock` takes CIDRs only, never
+  # hostnames: resolve the server once and list its ranges. Public hosts
+  # (github.com, …) need no entry: the chart default
+  # `egressAllowRules.nonPrivateIPs: true` already lets user pods reach public
+  # IPs. Empty by default: user pods reach nothing private.
   networkPolicy:
     egress:
       - to:
@@ -327,3 +336,10 @@ singleuser:
         ports:
           - port: 8443
             protocol: TCP
+      # Example — uncomment and set the customer's ranges:
+      # - to:
+      #     - ipBlock:
+      #         cidr: 192.0.2.0/24   # customer's Gitea / GitLab / GHES
+      #   ports:
+      #     - port: 443
+      #       protocol: TCP
