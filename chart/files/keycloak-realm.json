@@ -60,6 +60,11 @@
           "view-users"
         ]
       }
+    },
+    {
+      "username": "service-account-pipeline-runner",
+      "enabled": true,
+      "serviceAccountClientId": "pipeline-runner"
     }
   ],
   "clients": [
@@ -425,6 +430,35 @@
       "serviceAccountsEnabled": true,
       "attributes": {},
       "protocolMappers": []
+    },
+    {
+      "clientId": "pipeline-runner",
+      "name": "Pipeline runner",
+      "description": "Service principal scheduled pipelines run as (scheduled jobs J0, platform#118): the pipeline loader fetches a client-credentials token for it and runs sql tasks on the query engine with it.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${STARDELT_PIPELINE_RUNNER_CLIENT_SECRET}",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "attributes": {},
+      "protocolMappers": [
+        {
+          "name": "aud-trino",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "trino",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
     }
   ],
   "defaultGroups": [

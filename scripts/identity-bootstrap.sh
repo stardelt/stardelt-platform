@@ -101,6 +101,9 @@ ensure_secret_key   stardelt-oidc-clients trino=@rand
 # service-account client, so its secret lives here too — same rotation story as
 # `trino`: change the Secret, re-run the sync script.
 ensure_secret_key   stardelt-oidc-clients trino-group-sync=@rand
+# Scheduled pipelines (platform#118) run as the service-account client `pipeline-runner`;
+# same rotation story: change the Secret, re-run scripts/keycloak-sync-pipeline-runner-client.sh.
+ensure_secret_key   stardelt-oidc-clients pipeline-runner=@rand
 # Signs Nova's session cookie; Nova refuses to start with less than 32 bytes.
 ensure_secret stardelt-nova-session session=@rand
 # Trino authentication (helm-values/trino-identity.yaml):
