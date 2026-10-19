@@ -13,6 +13,10 @@ metadata:
   namespace: stardelt
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-prod
+    # Nova (axum default) rejects bodies over 2 MiB and closes the connection while
+    # nginx is still sending, which surfaces as a 502. Cap at the same 2 MiB here so
+    # nginx answers 413 itself (#56).
+    nginx.ingress.kubernetes.io/proxy-body-size: "2m"
 spec:
   ingressClassName: nginx
   tls:
