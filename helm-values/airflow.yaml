@@ -201,6 +201,15 @@ env:
     value: warehouse
   - name: YEARS
     value: "2023"
+  # KubernetesExecutor task pods: the executor builds their image as `<repository>:<tag>` from these two
+  # settings, which override the pod template. A bare tag (`demo`) resolves to a cached, older image on
+  # the node, so pipelines ran stale code (platform#203). A tag plus digest (`demo@sha256:...`) is a
+  # valid reference that pins the exact image, and must equal `images.airflow.digest` above:
+  # scripts/check-airflow-pin.sh fails the build when they differ.
+  - name: AIRFLOW__KUBERNETES_EXECUTOR__WORKER_CONTAINER_REPOSITORY
+    value: ghcr.io/stardelt/airflow
+  - name: AIRFLOW__KUBERNETES_EXECUTOR__WORKER_CONTAINER_TAG
+    value: "demo@sha256:0849ca361cbc542c8d66b95c09327cd704456aaf1664803413d881085fd91b3e"
 
 # Secret-backed envs use extraEnv (templated string accepting valueFrom).
 extraEnv: |

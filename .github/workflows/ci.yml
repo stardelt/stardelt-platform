@@ -43,6 +43,9 @@ jobs:
       - name: No committed default credentials
         run: bash scripts/check-no-default-secrets.sh
 
+      - name: Airflow image pin (Deployments and task pods run the same digest)
+        run: bash scripts/check-airflow-pin.sh
+
       - name: Lint shell scripts (bash -n + shellcheck)
         run: make lint
 
