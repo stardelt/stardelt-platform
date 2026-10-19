@@ -342,6 +342,29 @@ client when missing, re-applies the secret, restores the audience mapper, refuse
 service account and proves the result with the client's own token. Rotate by changing the Secret
 key and re-running the target.
 
+*Developer sign-in (platform#157).* Tools on a laptop (an editor extension, a notebook kernel, a
+script) sign in as the person with the public client `stardelt-dev`: **device grant** (the tool shows a
+code, the person approves it in a browser) or the authorization code flow with PKCE to a loopback
+address (`http://127.0.0.1:<any port>/...`). Both need PKCE. Tokens carry the audiences `trino`,
+`lakekeeper` and `nova` and the `groups` claim; the client has no secret and no service account, and its
+scope is limited, so a laptop can do what the person can do in the browser, no more. The realm import
+declares it for fresh installs; `scripts/keycloak-sync-dev-client.sh` (`make sync-dev-client`, run by
+`make install-identity`) converges a live realm and proves the endpoints. Switch it off with
+`make sync-dev-client DEV_CLIENT_ENABLED=false`. By hand:
+
+```bash
+ISSUER=https://id.<baseDomain>/realms/stardelt
+VERIFIER=$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=\n')
+CHALLENGE=$(printf '%s' "$VERIFIER" | openssl dgst -sha256 -binary | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+curl -s "$ISSUER/protocol/openid-connect/auth/device" -d client_id=stardelt-dev -d scope=openid \
+  -d code_challenge="$CHALLENGE" -d code_challenge_method=S256      # open verification_uri_complete in a browser
+curl -s "$ISSUER/protocol/openid-connect/token" -d client_id=stardelt-dev \
+  -d grant_type=urn:ietf:params:oauth:grant-type:device_code -d device_code=<device_code> -d code_verifier="$VERIFIER"
+```
+
+For an external provider register a public client with the same two flows (Entra: enable "Allow public
+client flows") and the same audiences.
+
 #### TLS on the coordinator (why the in-cluster path is safe)
 
 Two listeners, one behavior:
