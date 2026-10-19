@@ -322,8 +322,3 @@ def test_spark_reads_remote_from_env(trino, monkeypatch):
 
 def test_spark_docstring_states_credential_limitation():
     assert "shared storage credential" in stardelt.spark.__doc__
-
-
-def test_connection_is_reserved_stub():
-    with pytest.raises(NotImplementedError, match="not implemented yet"):
-        stardelt.connection("warehouse")

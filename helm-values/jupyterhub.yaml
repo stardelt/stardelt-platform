@@ -265,6 +265,10 @@ singleuser:
     # the pod does not override it). Reachable through the egress rule below;
     # Spark has no authentication of its own, so this stays cluster-internal.
     SPARK_REMOTE: sc://spark-connect.stardelt.svc.cluster.local:15002
+    # The secret store for `stardelt.connection()` (decisions D23 and D27). Opt-in like the store itself
+    # (`make openbao`): without it installed the helper answers "not reachable" in one line. A person
+    # signs in with their own token; the store decides what they may read.
+    STARDELT_SECRET_STORE_URL: http://openbao.stardelt.svc.cluster.local:8200
   # Seed the quickstart into the home directory on every spawn, never
   # overwriting a user's edited copy (`cp -n`). postStart always exits 0: a
   # failing hook would make kubelet restart the container in a loop.
@@ -303,7 +307,7 @@ singleuser:
         readOnly: true
   # The chart's default denies egress to every private address
   # (`egressAllowRules.privateIPs: false`), and that default is right: a user pod
-  # has no business reaching arbitrary cluster-internal services. Two private
+  # has no business reaching arbitrary cluster-internal services. Three private
   # destinations are part of the notebook experience, each granted by pod label
   # and port so the rule follows the Service wherever it moves and opens nothing
   # else:
@@ -311,6 +315,7 @@ singleuser:
   #   egress rule                              reaches
   #   podSelector spark-connect + 15002        Spark Connect, and nothing else on that port
   #   podSelector trino coordinator + 8443     the warehouse's TLS endpoint, nothing else
+  #   podSelector openbao + 8200               the secret store, for stardelt.connection()
   #
   # (was: ConnectionRefusedError in the quickstart's Spark cell, stardelt-platform#90;
   # the Trino rule arrived with the in-cluster TLS listener, platform#80 — before it,
@@ -339,6 +344,14 @@ singleuser:
                 app.kubernetes.io/component: coordinator
         ports:
           - port: 8443
+            protocol: TCP
+      # The secret store (`make openbao`), for `stardelt.connection()`; nothing matches when it is not installed.
+      - to:
+          - podSelector:
+              matchLabels:
+                app.kubernetes.io/name: openbao
+        ports:
+          - port: 8200
             protocol: TCP
       # Example — uncomment and set the customer's ranges:
       # - to:

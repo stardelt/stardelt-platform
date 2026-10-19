@@ -2,8 +2,9 @@
 
 The small package the notebook image ships: `stardelt.sql` (query as the
 signed-in hub user), `stardelt.write_df` (governed DataFrame writes),
-`stardelt.spark` (Spark Connect session), `stardelt.connection` (reserved
-stub for the connections work).
+`stardelt.spark` (Spark Connect session), `stardelt.connection` (a named
+connection to an outside system: your own or your group's; values are read from the secret store when you ask,
+never kept or printed).
 
 Pure Python, MIT. Installed in the image (`images/jupyter/Dockerfile`);
 tested in CI (`images/jupyter/tests/`, the `notebook-helper` job in
