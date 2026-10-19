@@ -40,6 +40,13 @@ overwrite an existing one. To bring your own, create **both** Secrets before ins
 `manifests/s3-credentials.example.yaml` shows the first, and `seaweedfs_s3_config` is
 `{"identities":[{"name":"stardelt","credentials":[{"accessKey":"…","secretKey":"…"}],"actions":["Admin","Read","Write"]}]}`.
 
+The object store also ships its own web UI (buckets, users and policies, a file browser). It is
+**for cluster administrators only**, reached with `make seaweedfs-admin` (a port-forward to
+`http://127.0.0.1:23646`; the login is the generated Secret `seaweedfs-admin-ui`, never printed). It
+has no ingress — and none may be added — because it can change storage identities and read every
+object, so it is exactly as sensitive as `kubectl`. Normal users do not get raw storage access; they
+get the governed *Volumes* view in Nova (later).
+
 ---
 
 ## Quickstart

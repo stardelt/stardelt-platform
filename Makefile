@@ -50,7 +50,7 @@ BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 .PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator trino upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-up dev-down dev-dns dev-dns-down
 .PHONY: chart-deps chart-template chart-install
 .PHONY: verify-backups verify-backups-identity verify-backups-nova verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
-.PHONY: sync-oidc-clients verify-oidc-clients verify-trino-tls sync-trino-groups sync-trino-group-sync-client sync-pipeline-runner-client sync-dev-client openbao test-openbao-policies
+.PHONY: sync-oidc-clients verify-oidc-clients verify-trino-tls sync-trino-groups sync-trino-group-sync-client sync-pipeline-runner-client sync-dev-client openbao test-openbao-policies seaweedfs-admin
 .PHONY: external-secrets eso-stores
 
 help: ## Show this help
@@ -625,6 +625,11 @@ push-jupyter-image: ## Push the Jupyter single-user image to ghcr.io
 # ---------------------------------------------------------------------------
 pf: ## Open port-forwards to in-cluster services
 	@NAMESPACE=$(NAMESPACE) bash scripts/port-forwards.sh
+
+# The object store's own web UI for cluster administrators (decision D28): a port-forward, nothing is exposed.
+seaweedfs-admin: _context ## Open the object store's admin UI on http://127.0.0.1:23646 (login: Secret seaweedfs-admin-ui)
+	@echo "› http://127.0.0.1:23646 — user admin; password: kubectl -n $(NAMESPACE) get secret seaweedfs-admin-ui -o jsonpath='{.data.password}' | base64 -d"
+	@kubectl -n $(NAMESPACE) port-forward svc/seaweedfs-admin 23646:23646
 
 # ---------------------------------------------------------------------------
 # Hetzner k3s development cluster
