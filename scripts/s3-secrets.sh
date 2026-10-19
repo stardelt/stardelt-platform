@@ -17,6 +17,7 @@
 #   seaweedfs-s3-config   seaweedfs_s3_config (S3 identities JSON)
 #                         read by the SeaweedFS S3 gateway (helm-values/seaweedfs.yaml,
 #                         s3.existingConfigSecret)
+#   seaweedfs-admin-ui   user password   read by the SeaweedFS admin UI (helm-values/seaweedfs.yaml, admin.secret)
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -80,4 +81,16 @@ if [ "$fresh_s3" = 1 ] || ! secret_exists seaweedfs-s3-config; then
   echo "› Secret seaweedfs-s3-config written (derived from stardelt-s3-creds)"
 else
   echo "› Secret seaweedfs-s3-config exists — kept"
+fi
+
+# --- SeaweedFS admin UI login -----------------------------------------------------------
+# The object store's web UI for administrators (helm-values/seaweedfs.yaml, `admin`). Generated once,
+# never rotated by a re-run, never printed.
+if secret_exists seaweedfs-admin-ui; then
+  echo "› Secret seaweedfs-admin-ui exists — kept"
+else
+  printf 'user=admin\npassword=%s\n' "$(rand 16)" > "$tmp/admin.env"
+  kubectl -n "$NAMESPACE" create secret generic seaweedfs-admin-ui --from-env-file="$tmp/admin.env" >/dev/null
+  label_secret seaweedfs-admin-ui
+  echo "› Secret seaweedfs-admin-ui created (generated)"
 fi

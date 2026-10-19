@@ -63,3 +63,17 @@ s3:
   resources:
     requests: { cpu: "100m", memory: "256Mi" }
     limits:   { cpu: "2",    memory: "1Gi"  }
+
+# The object store's own web UI for cluster administrators (buckets, users, policies, file browser),
+# decision D28. ClusterIP only: there is no ingress and none may be added; reach it with
+# `make seaweedfs-admin`. Its login is the generated Secret `seaweedfs-admin-ui` (scripts/s3-secrets.sh).
+# It can read and change storage identities and every object, so it is exactly as sensitive as `kubectl`.
+admin:
+  enabled: true
+  secret:
+    existingSecret: seaweedfs-admin-ui
+    userKey: user
+    pwKey: password
+  resources:
+    requests: { cpu: "20m", memory: "64Mi" }
+    limits:   { cpu: "500m", memory: "256Mi" }
