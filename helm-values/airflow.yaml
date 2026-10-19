@@ -188,6 +188,11 @@ triggerer:
     requests: { cpu: "50m",  memory: "256Mi" }
     limits:   { cpu: "1",    memory: "512Mi" }
 
+# Reloader restarts the long-running Airflow pods when the S3 key changes (helm-values/reloader.yaml);
+# task pods are short-lived and read the key when they start.
+airflowPodAnnotations:
+  secret.reloader.stakater.com/reload: "stardelt-s3-creds"
+
 # Plain-value envs on every Airflow container (including spawned K8s task pods).
 env:
   - name: CATALOG_URI

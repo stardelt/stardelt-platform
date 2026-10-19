@@ -155,6 +155,9 @@ spec:
   template:
     metadata:
       labels: { app.kubernetes.io/name: spark-connect, app.kubernetes.io/part-of: stardelt }
+      # Reloader restarts the driver when the S3 key changes (helm-values/reloader.yaml).
+      annotations:
+        secret.reloader.stakater.com/reload: "stardelt-s3-creds"
     spec:
       serviceAccountName: spark-connect
       imagePullSecrets:

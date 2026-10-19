@@ -35,6 +35,9 @@ additionalConfigProperties:
   - http-server.process-forwarded=true
 
 coordinator:
+  # Rotating the S3 key restarts the engine (running queries end): Reloader, helm-values/reloader.yaml.
+  annotations:
+    secret.reloader.stakater.com/reload: "stardelt-s3-creds"
   jvm:
     maxHeapSize: "2G"
     gcMethod:
@@ -75,6 +78,8 @@ coordinator:
     - { name: trino-dumps, mountPath: /dumps }
 
 worker:
+  annotations:
+    secret.reloader.stakater.com/reload: "stardelt-s3-creds"
   jvm:
     maxHeapSize: "2G"
     gcMethod:

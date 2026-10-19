@@ -1,0 +1,20 @@
+# Reloader (stakater/Reloader, Apache-2.0): restarts a workload when a Secret it lists changes, so
+# rotating a credential no longer needs a hand-written list of `rollout restart` commands
+# (docs: operations/rotating-secrets, platform#133).
+#
+# Scoped to the release namespace: no ClusterRole, and it never touches other namespaces.
+# `annotations` strategy: the restart is a pod-template annotation, not an injected environment
+# variable, so Helm and server-side apply see no foreign container fields.
+# Workloads opt in with `secret.reloader.stakater.com/reload: "<secret>[,<secret>]"` on their pod
+# template: an explicit list, never `auto`, because `auto` would also restart a workload for every
+# change of a ConfigMap it mounts (for example the Trino group file that is rewritten every five
+# minutes and deliberately needs no restart). Verified on a throwaway install: the annotation works
+# on the pod template, a Secret change rolls the workload within seconds, a workload without the
+# annotation is left alone.
+reloader:
+  watchGlobally: false
+  reloadStrategy: annotations
+  deployment:
+    resources:
+      requests: { cpu: 10m, memory: 64Mi }
+      limits: { memory: 128Mi }
