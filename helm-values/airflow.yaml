@@ -23,7 +23,7 @@ images:
     # would silently redeploy a different DAG image.
     repository: ghcr.io/stardelt/airflow
     tag: demo
-    digest: sha256:dc61a4e7075cfdee52b9adcfb9cddec20f29857557ca0267ab8e27f48d5d9874
+    digest: sha256:0849ca361cbc542c8d66b95c09327cd704456aaf1664803413d881085fd91b3e
     pullPolicy: IfNotPresent
 
 # No secrets in this file: scripts/app-secrets.sh generates them per cluster
@@ -219,6 +219,42 @@ extraEnv: |
       secretKeyRef:
         name: stardelt-s3-creds
         key: region
+  # Scheduled pipelines (platform#118, phase J0): the loader DAG in the image
+  # (stardelt-demos dags/pipeline_loader.py) runs `sql` tasks on the query engine as the
+  # service-account client `pipeline-runner` (scripts/keycloak-sync-pipeline-runner-client.sh).
+  # All optional: without the identity install the variables are simply absent and a
+  # pipeline task fails with a clear message instead of the pod failing to start.
+  - name: PIPELINE_TRINO_URL
+    valueFrom:
+      configMapKeyRef:
+        name: stardelt-identity
+        key: trinoUrl
+        optional: true
+  - name: PIPELINE_TOKEN_URL
+    value: http://keycloak:8080/realms/stardelt/protocol/openid-connect/token
+  - name: PIPELINE_CLIENT_ID
+    value: pipeline-runner
+  - name: PIPELINE_CLIENT_SECRET
+    valueFrom:
+      secretKeyRef:
+        name: stardelt-oidc-clients
+        key: pipeline-runner
+        optional: true
+  - name: PIPELINE_TRINO_CA_FILE
+    value: /etc/stardelt/trino-ca/ca.crt
+
+# The internal CA that signs the query engine's certificate (Secret trino-ca, manifests/trino-tls.yaml),
+# mounted into every Airflow container, task pods included, so the pipeline loader can verify
+# the engine's TLS endpoint. Optional: absent on an install without the identity overlay.
+volumes:
+  - name: trino-ca
+    secret:
+      secretName: trino-ca
+      optional: true
+      items:
+        - { key: ca.crt, path: ca.crt }
+volumeMounts:
+  - { name: trino-ca, mountPath: /etc/stardelt/trino-ca, readOnly: true }
 
 # helm does not run post-install hooks until every resource of the release is
 # ready, and the Airflow pods wait for the migrations — so on a fresh database,
