@@ -19,6 +19,7 @@ LAKEKEEPER_VERSION := 0.11.0
 TRINO_VERSION      := 1.42.2
 AIRFLOW_VERSION    := 1.21.0
 RELOADER_VERSION   := 2.2.18
+OPENBAO_VERSION    := 0.30.4
 SUPERSET_VERSION   := 0.15.5
 JUPYTERHUB_VERSION := 4.4.3
 
@@ -48,7 +49,7 @@ BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 .PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator trino upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-up dev-down dev-dns dev-dns-down
 .PHONY: chart-deps chart-template chart-install
 .PHONY: verify-backups verify-backups-identity verify-backups-nova verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
-.PHONY: sync-oidc-clients verify-oidc-clients verify-trino-tls sync-trino-groups sync-trino-group-sync-client sync-pipeline-runner-client sync-dev-client
+.PHONY: sync-oidc-clients verify-oidc-clients verify-trino-tls sync-trino-groups sync-trino-group-sync-client sync-pipeline-runner-client sync-dev-client openbao
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | \
@@ -126,6 +127,7 @@ _helm-repos:
 	@helm repo add superset       https://apache.github.io/superset                  2>/dev/null || true
 	@helm repo add jupyterhub     https://jupyterhub.github.io/helm-chart/           2>/dev/null || true
 	@helm repo add stakater       https://stakater.github.io/stakater-charts         2>/dev/null || true
+	@helm repo add openbao        https://openbao.github.io/openbao-helm            2>/dev/null || true
 	@helm repo update
 
 # ---------------------------------------------------------------------------
@@ -406,6 +408,14 @@ sync-pipeline-runner-client: _context ## Converge the live realm's pipeline-runn
 sync-dev-client: _context ## Converge the live realm's stardelt-dev client (device grant, PKCE, loopback redirects; idempotent)
 	@NAMESPACE=$(NAMESPACE) DEV_CLIENT_ENABLED=$(or $(DEV_CLIENT_ENABLED),true) bash scripts/keycloak-sync-dev-client.sh
 
+# The sandbox secret store (decision D23, platform#160): OpenBao, opt-in, never part of `install`. Production
+# installs use the customer's own store through External Secrets and do not run this. The seal key and the
+# volume belong together: never delete Secret openbao-seal-key while the volume of pod openbao-0 exists.
+openbao: deps _context _helm-repos ## Install the sandbox secret store (OpenBao, opt-in): auto-unseal, KV v2, JWT sign-in with the platform IdP
+	@NAMESPACE=$(NAMESPACE) bash scripts/openbao-seal-key.sh
+	@helm upgrade --install openbao openbao/openbao --version $(OPENBAO_VERSION) $(HELM_FLAGS) -f helm-values/openbao.yaml
+	@NAMESPACE=$(NAMESPACE) bash scripts/openbao-bootstrap.sh
+
 # platform#80: the in-cluster path must refuse plain HTTP and authenticate a
 # bearer token over TLS. TRINO_VERIFY_USER_PASSWORD=… adds the user check.
 verify-trino-tls: _context ## Prove the in-cluster Trino path is TLS-only and token-authenticated
@@ -502,6 +512,7 @@ uninstall: _context ## Uninstall all stardelt components (reverse order)
 	@kubectl delete -f manifests/airflow-pipelines.yaml --ignore-not-found
 	@helm uninstall airflow    --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@helm uninstall reloader   --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
+	@helm uninstall openbao    --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@helm uninstall trino      --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@helm uninstall lakekeeper --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@helm uninstall seaweedfs  --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true

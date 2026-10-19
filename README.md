@@ -342,6 +342,18 @@ client when missing, re-applies the secret, restores the audience mapper, refuse
 service account and proves the result with the client's own token. Rotate by changing the Secret
 key and re-running the target.
 
+*Sandbox secret store (opt-in, platform#160).* `make openbao` installs OpenBao (MPL-2.0, the one documented
+non-permissive component, see the licence page) as the secret store of a sandbox, the store that External Secrets and the
+platform's connections read (decision D23). It is not part of `make install`; production installs use the customer's own
+store. Standalone with embedded storage on a 10 GiB volume, **auto-unseal by a static key** from Secret
+`openbao-seal-key` (verified by replacing the pod), KV v2 at `secret/`, and JWT sign-in against the platform's identity
+provider (role `platform-users`: audience `openbao`, user from `preferred_username`, groups from the `groups` claim, 15 minute
+tokens). `scripts/openbao-bootstrap.sh` initialises once and is idempotent; the recovery key and the initial root token live
+in Secret `openbao-init`, which is acceptable for a sandbox and for nothing else. The seal key and the volume belong
+together: deleting the Secret while the volume exists makes the data unreadable. `make uninstall` removes the release and keeps
+the volume and both Secrets. Who may write which path (policies, external groups and aliases per owner group) and the
+audience mapper for `openbao` on the clients are separate steps.
+
 *Developer sign-in (platform#157).* Tools on a laptop (an editor extension, a notebook kernel, a
 script) sign in as the person with the public client `stardelt-dev`: **device grant** (the tool shows a
 code, the person approves it in a browser) or the authorization code flow with PKCE to a loopback
