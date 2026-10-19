@@ -42,7 +42,7 @@ RUN python3 -m pip install --no-cache-dir --upgrade-strategy only-if-needed \
     && python3 -c "import pandas, pyarrow, pyspark, trino; print('pandas', pandas.__version__, '| pyarrow', pyarrow.__version__, '| pyspark', pyspark.__version__, '| trino', trino.__version__)" \
     && python3 -c "import jupyterlab_git, nbgitpuller; print('jupyterlab-git', jupyterlab_git.__version__, '| nbgitpuller', nbgitpuller.__version__)" \
     && git --version \
-    && jupyter labextension list 2>&1 | grep -i '@jupyterlab/git' \
+    && { jupyter labextension list 2>&1 | tee /tmp/labext.txt | grep -i '@jupyterlab/git' || { echo '--- full labextension list ---'; cat /tmp/labext.txt; exit 1; }; } \
     && jupyter server extension list 2>&1 | grep -i 'nbgitpuller'
 
 # Pristine copy of the quickstart. The spawner's postStart hook copies missing
