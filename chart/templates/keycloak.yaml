@@ -88,12 +88,59 @@ spec:
     {{- with .Values.storage.className }}
     storageClass: {{ . }}
     {{- end }}
+  {{- if .Values.postgres.backup.enabled }}
+  # Continuous backup into the platform's own object store: barman-cloud streams
+  # the WAL and the ScheduledBackup below adds base backups. Same shape as the
+  # catalog Cluster (templates/cnpg-postgres.yaml) so both clusters share the
+  # `backups` bucket without colliding (CNPG writes under <bucket>/<cluster>/).
+  backup:
+    retentionPolicy: {{ .Values.postgres.backup.retentionPolicy | quote }}
+    barmanObjectStore:
+      destinationPath: s3://{{ .Values.postgres.backup.bucket }}/
+      endpointURL: {{ tpl .Values.s3Credentials.endpoint . | quote }}
+      s3Credentials:
+        accessKeyId:
+          name: {{ .Values.s3Credentials.name }}
+          key: access-key
+        secretAccessKey:
+          name: {{ .Values.s3Credentials.name }}
+          key: secret-key
+        region:
+          name: {{ .Values.s3Credentials.name }}
+          key: region
+      wal:
+        compression: gzip
+        maxParallel: 2
+      data:
+        compression: gzip
+  {{- end }}
   bootstrap:
     initdb:
       database: keycloak
       owner: keycloak
   resources:
     {{- toYaml $kc.postgres.resources | nindent 4 }}
+{{- if .Values.postgres.backup.enabled }}
+---
+# Daily base backup on top of the continuous WAL archiving above. Same shape as
+# the catalog schedule (templates/cnpg-postgres.yaml), 15 minutes later so the
+# two base backups do not overlap. `immediate: true` takes a first backup right
+# away, which is what makes a fresh install verifiable.
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: keycloak-pg-daily
+  namespace: {{ .Release.Namespace }}
+spec:
+  schedule: "0 45 2 * * *"
+  immediate: true
+  # Keep the Backup objects after the schedule is deleted, so deleting this CR
+  # cannot delete the only record of what was taken.
+  backupOwnerReference: self
+  method: barmanObjectStore
+  cluster:
+    name: keycloak-pg
+{{- end }}
 ---
 apiVersion: v1
 kind: Service

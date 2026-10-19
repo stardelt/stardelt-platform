@@ -44,7 +44,7 @@ BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 
 .PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator trino upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-up dev-down dev-dns dev-dns-down
 .PHONY: chart-deps chart-template chart-install
-.PHONY: verify-backups verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
+.PHONY: verify-backups verify-backups-identity verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
 .PHONY: sync-oidc-clients verify-oidc-clients verify-trino-tls
 
 help: ## Show this help
@@ -92,6 +92,10 @@ verify-backup-config: _context ## Assert the live Cluster still declares spec.ba
 
 verify-backups: _context ## Verify WAL archiving for real: config + a fresh object in the bucket + agreement with pg_stat_archiver. SKIP_OBJECTS=1 drops the S3 half
 	@NAMESPACE=$(NAMESPACE) CLUSTER=$(PG_CLUSTER) SKIP_OBJECTS="$(SKIP_OBJECTS)" MAX_AGE_SECONDS="$(MAX_AGE_SECONDS)" \
+	  bash scripts/verify-backups.sh
+
+verify-backups-identity: _context ## Verify WAL archiving for keycloak-pg (same checks as verify-backups, identity database)
+	@NAMESPACE=$(NAMESPACE) CLUSTER=keycloak-pg SKIP_OBJECTS="$(SKIP_OBJECTS)" MAX_AGE_SECONDS="$(MAX_AGE_SECONDS)" \
 	  bash scripts/verify-backups.sh
 
 # ---------------------------------------------------------------------------
@@ -348,6 +352,8 @@ install-identity: deps _context ## Install the platform IdP (Keycloak) at id.$(B
 	@NAMESPACE=$(NAMESPACE) BASE_DOMAIN=$(BASE_DOMAIN) bash scripts/identity-bootstrap.sh
 	@echo "› [2/10] CNPG Cluster (Keycloak Postgres)"
 	@kubectl apply -f manifests/keycloak.yaml
+	@echo "› [2/10] guard: the live Cluster must still declare its backup config"
+	@$(MAKE) --no-print-directory verify-backup-config PG_CLUSTER=keycloak-pg
 	@kubectl -n $(NAMESPACE) wait --for=condition=Ready --timeout=300s cluster/keycloak-pg
 	@echo "› [3/10] Keycloak $(KEYCLOAK_VERSION)"
 	@kubectl -n $(NAMESPACE) rollout status deploy/keycloak --timeout=10m
