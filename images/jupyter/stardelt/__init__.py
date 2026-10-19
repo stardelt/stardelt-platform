@@ -34,9 +34,11 @@ import pandas as pd
 from trino.auth import JWTAuthentication
 from trino.dbapi import connect as _trino_connect
 
+from stardelt.connections import ConnectionUnavailable, connection
+
 __version__ = "0.1.0"
 
-__all__ = ["sql", "write_df", "spark", "connection"]
+__all__ = ["sql", "write_df", "spark", "connection", "ConnectionUnavailable"]
 
 # write_df refuses more than this many rows: above it the per-batch INSERT
 # path is the wrong tool (slow, one HTTP round trip per batch) and the right
@@ -305,11 +307,3 @@ def spark(app_name="stardelt-notebook"):
     if not remote:
         raise RuntimeError("SPARK_REMOTE is not set — point it at the Spark Connect endpoint.")
     return SparkSession.builder.remote(remote).appName(app_name).getOrCreate()
-
-
-def connection(name, as_url=False):
-    """Reserved for named connections. Not implemented yet."""
-    raise NotImplementedError(
-        "stardelt.connection() is not implemented yet — named connections arrive "
-        "with the connections work; use stardelt.sql() and stardelt.write_df() until then."
-    )
