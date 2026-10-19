@@ -166,6 +166,7 @@ install: deps _context _helm-repos ## Install all stardelt components (idempoten
 	  --version $(AIRFLOW_VERSION) \
 	  $(HELM_FLAGS) \
 	  -f helm-values/airflow.yaml
+	@kubectl apply -f manifests/airflow-pipelines.yaml
 
 	@echo "› [9/11] Superset"
 	@helm upgrade --install superset superset/superset \
@@ -480,6 +481,7 @@ uninstall: _context ## Uninstall all stardelt components (reverse order)
 	@echo "› uninstalling helm releases"
 	@helm uninstall jupyterhub --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@helm uninstall superset   --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
+	@kubectl delete -f manifests/airflow-pipelines.yaml --ignore-not-found
 	@helm uninstall airflow    --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@helm uninstall trino      --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@helm uninstall lakekeeper --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
