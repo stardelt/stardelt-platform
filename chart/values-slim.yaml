@@ -8,30 +8,53 @@
 # key by key, so only the keys below are replaced — everything else keeps the
 # default from chart/values.yaml.
 #
-# Constraint: query.maxMemory + 30% heap headroom must be <= max heap.
-#   900MB + 450MB = 1350MB <= 1500m  ✓
+# Memory budget (platform#54): per-node + headroom must stay well below the
+# heap so a single query fails closed instead of OOM-killing the worker.
+#   600MB + 450MB = 1050MB <= 1500m, leaving ~450MB for the engine.
 trino:
   server:
     workers: 1
     config:
       query:
-        maxMemory: "900MB"
+        maxMemory: "600MB"
+    # Restates helm-values/slim/trino.yaml (Helm replaces strings).
+    coordinatorExtraConfig: |
+      query.max-execution-time=10m
+      query.max-run-time=15m
 
   coordinator:
     jvm:
       maxHeapSize: "1500m"
       gcMethod:
         type: UseG1GC
+    config:
+      query:
+        maxMemoryPerNode: "600MB"
+      memory:
+        heapHeadroomPerNode: "450MB"
     additionalJVMConfig:
       - "-Xms512m"
+      - "-XX:HeapDumpPath=/dumps"
+    resources:
+      requests: { cpu: "250m", memory: "1800Mi" }
+      limits: { memory: "2200Mi" }
 
   worker:
     jvm:
       maxHeapSize: "1500m"
       gcMethod:
         type: UseG1GC
+    config:
+      query:
+        maxMemoryPerNode: "600MB"
+      memory:
+        heapHeadroomPerNode: "450MB"
     additionalJVMConfig:
       - "-Xms512m"
+      - "-XX:HeapDumpPath=/dumps"
+    resources:
+      requests: { cpu: "250m", memory: "1800Mi" }
+      limits: { memory: "2200Mi" }
 
 # Platform IdP (Keycloak) fits the slim profile as-is: the defaults in
 # chart/values.yaml are already single-node sized (Keycloak 512Mi request / 1Gi

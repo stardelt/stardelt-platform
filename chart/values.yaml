@@ -331,8 +331,17 @@ trino:
     workers: 1
     config:
       query:
-        # Must satisfy: maxMemory + 30% heap headroom <= max heap. 1200MB + 600MB <= 2GB.
-        maxMemory: "1200MB"
+        # Memory budget (platform#54): per-node + headroom must stay well below
+        # the heap so a single query fails closed instead of OOM-killing the worker.
+        #   800MB + 600MB = 1400MB <= 2G (2048MB), leaving ~600MB for the engine
+        #   and unaccounted allocations. Mirrors helm-values/trino.yaml.
+        maxMemory: "800MB"
+    # Coordinator-only query guards (platform#54). The chart renders
+    # `additionalConfigProperties` into the worker ConfigMap too, and the worker
+    # rejects keys it does not bind — so coordinator-only properties live here.
+    coordinatorExtraConfig: |
+      query.max-execution-time=10m
+      query.max-run-time=15m
 
   # Trino sits behind an ingress (ingress-nginx) that sets X-Forwarded-For; without
   # this it answers 406 "Server configuration does not allow processing of the
@@ -357,31 +366,60 @@ trino:
       maxHeapSize: "2G"
       gcMethod:
         type: UseG1GC
-    # Cap per-node so it stays well below heap (heap headroom defaults to ~30%).
+    config:
+      query:
+        # Same per-node cap as the worker (platform#54, mirrors helm-values/trino.yaml).
+        maxMemoryPerNode: "800MB"
+      memory:
+        heapHeadroomPerNode: "600MB"
+    # HeapDumpPath (platform#54): the chart hardcodes +HeapDumpOnOutOfMemoryError,
+    # so redirect dumps to a bounded emptyDir instead of the overlay fs.
     additionalJVMConfig:
       - "-Xms1G"
+      - "-XX:HeapDumpPath=/dumps"
+    # Kubelet — not the JVM — is in charge (platform#54, mirrors helm-values/trino.yaml).
+    resources:
+      requests: { cpu: "500m", memory: "2300Mi" }
+      limits: { memory: "3000Mi" }
     additionalExposedPorts: {}
     # Worker-local file-system cache for object-store reads (platform#134).
     # The directory must exist on the coordinator too, so it gets the mount.
     additionalVolumes:
       - name: trino-fscache
         emptyDir: { sizeLimit: 12Gi }
+      # Bounded heap-dump dir (platform#54): 2Gi cap so a dump never fills the node.
+      - name: trino-dumps
+        emptyDir: { sizeLimit: 2Gi }
     additionalVolumeMounts:
       - { name: trino-fscache, mountPath: /var/trino/cache }
+      - { name: trino-dumps, mountPath: /dumps }
 
   worker:
     jvm:
       maxHeapSize: "2G"
       gcMethod:
         type: UseG1GC
+    config:
+      query:
+        # Per-node cap (platform#54): 800MB + 600MB headroom <= 2G heap.
+        maxMemoryPerNode: "800MB"
+      memory:
+        heapHeadroomPerNode: "600MB"
     additionalJVMConfig:
       - "-Xms1G"
+      - "-XX:HeapDumpPath=/dumps"
+    resources:
+      requests: { cpu: "500m", memory: "2300Mi" }
+      limits: { memory: "3000Mi" }
     # Same cache volume as the coordinator (see above).
     additionalVolumes:
       - name: trino-fscache
         emptyDir: { sizeLimit: 12Gi }
+      - name: trino-dumps
+        emptyDir: { sizeLimit: 2Gi }
     additionalVolumeMounts:
       - { name: trino-fscache, mountPath: /var/trino/cache }
+      - { name: trino-dumps, mountPath: /dumps }
 
   # Pull S3 creds from the stardelt-s3-creds Secret so catalog properties can
   # substitute ${ENV:S3_ACCESS_KEY} / ${ENV:S3_SECRET_KEY}, plus the three
