@@ -18,6 +18,7 @@ SEAWEEDFS_VERSION  := 4.25.1
 LAKEKEEPER_VERSION := 0.11.0
 TRINO_VERSION      := 1.42.2
 AIRFLOW_VERSION    := 1.21.0
+RELOADER_VERSION   := 2.2.18
 SUPERSET_VERSION   := 0.15.5
 JUPYTERHUB_VERSION := 4.4.3
 
@@ -122,12 +123,16 @@ _helm-repos:
 	@helm repo add apache-airflow https://airflow.apache.org                         2>/dev/null || true
 	@helm repo add superset       https://apache.github.io/superset                  2>/dev/null || true
 	@helm repo add jupyterhub     https://jupyterhub.github.io/helm-chart/           2>/dev/null || true
+	@helm repo add stakater       https://stakater.github.io/stakater-charts         2>/dev/null || true
 	@helm repo update
 
 # ---------------------------------------------------------------------------
 # Install
 # ---------------------------------------------------------------------------
 install: deps _context _helm-repos ## Install all stardelt components (idempotent)
+	@echo "› Reloader (restarts workloads when a credential they read changes)"
+	@helm upgrade --install reloader stakater/reloader --version $(RELOADER_VERSION) $(HELM_FLAGS) -f helm-values/reloader.yaml
+
 	@echo "› [1/11] CloudNative-PG operator"
 	@helm upgrade --install cnpg cnpg/cloudnative-pg \
 	  --version $(CNPG_VERSION) \
@@ -191,6 +196,9 @@ install: deps _context _helm-repos ## Install all stardelt components (idempoten
 # Storage + catalog + query + Nova. Skips Airflow and Superset.
 # ---------------------------------------------------------------------------
 install-core: deps _context _helm-repos ## Install the core only (storage+catalog+query+Nova)
+	@echo "› Reloader (restarts workloads when a credential they read changes)"
+	@helm upgrade --install reloader stakater/reloader --version $(RELOADER_VERSION) $(HELM_FLAGS) -f helm-values/reloader.yaml
+
 	@echo "› [1/7] CloudNative-PG operator"
 	@helm upgrade --install cnpg cnpg/cloudnative-pg \
 	  --version $(CNPG_VERSION) \
@@ -483,6 +491,7 @@ uninstall: _context ## Uninstall all stardelt components (reverse order)
 	@helm uninstall superset   --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@kubectl delete -f manifests/airflow-pipelines.yaml --ignore-not-found
 	@helm uninstall airflow    --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
+	@helm uninstall reloader   --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@helm uninstall trino      --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@helm uninstall lakekeeper --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@helm uninstall seaweedfs  --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true

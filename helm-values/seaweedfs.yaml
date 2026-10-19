@@ -45,6 +45,9 @@ filer:
 s3:
   enabled: true
   replicas: 1
+  # Reloader restarts the S3 gateway when its identities change (helm-values/reloader.yaml).
+  podAnnotations:
+    secret.reloader.stakater.com/reload: "seaweedfs-s3-config"
   port: 8333
   enableAuth: true
   # The S3 identities come from Secret `seaweedfs-s3-config`, written by
