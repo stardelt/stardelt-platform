@@ -45,6 +45,10 @@ kubectl apply -f dev/playground/ingress.yaml
 Port 80 is open (firewall + ACME HTTP-01). Certificates are issued within a minute or two;
 then open **https://alpha.dev.stardelt.io**.
 
+Request bodies through Nova are limited to 2 MiB (the Nova Ingress annotation
+`nginx.ingress.kubernetes.io/proxy-body-size`, matching what Nova itself enforces;
+oversize bodies get a clean 413, not a 502).
+
 ## 5. Tell Nova where it is
 
 Nova builds its app deep-links from `NOVA_BASE_DOMAIN`. The manifest reads it from a ConfigMap
