@@ -154,14 +154,16 @@
       "serviceAccountsEnabled": false,
       "redirectUris": [
         "https://__TRINO_HOST__/oauth2/callback",
-        "https://__TRINO_HOST__/ui/login.html"
+        "https://__TRINO_HOST__/ui/login.html",
+        "https://localhost:8443/oauth2/callback",
+        "https://localhost:8443/ui/login.html"
       ],
       "webOrigins": [
         "https://__TRINO_HOST__"
       ],
       "attributes": {
         "oauth2.device.authorization.grant.enabled": "true",
-        "post.logout.redirect.uris": "https://__TRINO_HOST__/ui/logout/logout.html"
+        "post.logout.redirect.uris": "https://__TRINO_HOST__/ui/logout/logout.html##https://localhost:8443/ui/logout/logout.html"
       },
       "protocolMappers": [
         {

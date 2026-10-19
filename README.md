@@ -477,7 +477,7 @@ The realm import (`chart/files/keycloak-realm.json`, shared by both paths) defin
 | Client | Type | Redirect URI |
 |---|---|---|
 | `nova` | confidential, code + PKCE | `https://<baseDomain>/api/auth/callback` |
-| `trino` | confidential, code, device grant (no PKCE: Trino 480 never sends a challenge) | `https://trino.<baseDomain>/oauth2/callback` |
+| `trino` | confidential, code, device grant (no PKCE: Trino 480 never sends a challenge) | `https://trino.<baseDomain>/oauth2/callback`, and `https://localhost:8443/oauth2/callback` for the administrators' port-forward to the engine UI |
 | `lakekeeper` | confidential | `https://lakekeeper.<baseDomain>/ui/*` |
 | `superset` | confidential | `https://superset.<baseDomain>/oauth-authorized/keycloak` |
 | `airflow` | confidential | `https://airflow.<baseDomain>/auth/oauth-authorized/keycloak` |

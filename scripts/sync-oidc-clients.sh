@@ -283,7 +283,7 @@ if [ "$SYNC_TRINO" != 0 ]; then
           | python3 -c 'import sys,json
 uris = json.load(sys.stdin).get("redirectUris") or []
 suffix = "/oauth2/callback"
-hit = next((u for u in uris if u.endswith(suffix)), None)
+hit = next((u for u in uris if u.endswith(suffix) and not u.startswith("https://localhost")), None)
 if hit is None: sys.exit(1)
 print(hit[:-len(suffix)])')" \
           || fail "client trino has no /oauth2/callback redirect URI to derive TRINO_PUBLIC_URL from — set TRINO_PUBLIC_URL"
