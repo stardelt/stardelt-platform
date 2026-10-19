@@ -78,6 +78,10 @@ server:
     # closes the hole visible to a reader of this file.
     http-server.authentication.allow-insecure-over-http=false
     web-ui.authentication.type=oauth2
+    # The preview UI reads the same /ui/api endpoints as the classic UI and adds
+    # nothing for administrators (platform#181). Coordinator-only, like every
+    # web-ui key: a worker would refuse it as "not used".
+    web-ui.preview.enabled=false
     http-server.authentication.oauth2.issuer=${ENV:TRINO_OIDC_ISSUER}
     http-server.authentication.oauth2.client-id=trino
     http-server.authentication.oauth2.client-secret=${ENV:TRINO_CLIENT_SECRET}
