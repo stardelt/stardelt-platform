@@ -45,7 +45,7 @@ BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 .PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator trino upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-up dev-down dev-dns dev-dns-down
 .PHONY: chart-deps chart-template chart-install
 .PHONY: verify-backups verify-backups-identity verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
-.PHONY: sync-oidc-clients verify-oidc-clients verify-trino-tls
+.PHONY: sync-oidc-clients verify-oidc-clients verify-trino-tls sync-trino-groups
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | \
@@ -285,6 +285,8 @@ trino: deps _context ## Install/upgrade Trino, with OAuth2+TLS when a platform I
 	    echo "    ('make install-identity'), or Nova keeps its plain-HTTP default and cannot" >&2; \
 	    echo "    reach the TLS listener." >&2; \
 	  fi; \
+	  echo "› Trino group file: sync stardelt-admins into ConfigMap trino-group-file (platform#125)"; \
+	  NAMESPACE=$(NAMESPACE) bash scripts/sync-trino-groups.sh; \
 	  helm upgrade --install trino trino/trino \
 	    --version $(TRINO_VERSION) \
 	    $(HELM_FLAGS) \
@@ -339,6 +341,15 @@ sync-oidc-clients: _context ## Point the realm's confidential clients at Secret 
 
 verify-oidc-clients: _context ## Prove every confidential client's secret still authenticates (token endpoint, in-cluster)
 	@NAMESPACE=$(NAMESPACE) bash scripts/verify-oidc-clients.sh
+
+# platform#125: query visibility is owner-only, admins exempted (file-based
+# system access control + file group provider in helm-values/trino-identity.yaml).
+# sync-trino-groups writes the live realm's `stardelt-admins` membership into
+# ConfigMap trino-group-file before the upgrade; file.refresh-period picks a
+# remounted file up with no restart, so only a values change needs the
+# coordinator restart below (which drops running queries — pick a quiet moment).
+sync-trino-groups: _context ## Sync the live realm's stardelt-admins membership into ConfigMap trino-group-file (idempotent)
+	@NAMESPACE=$(NAMESPACE) bash scripts/sync-trino-groups.sh
 
 # platform#80: the in-cluster path must refuse plain HTTP and authenticate a
 # bearer token over TLS. TRINO_VERIFY_USER_PASSWORD=… adds the user check.

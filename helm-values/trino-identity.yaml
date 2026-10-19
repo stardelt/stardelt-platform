@@ -89,6 +89,32 @@ server:
     # front of every query.
     http-server.authentication.oauth2.oidc.use-userinfo-endpoint=false
 
+# Query visibility (platform#125) — owner-only by default, admins exempted.
+# File-based system access control (Trino 480, no custom plugin): rule order
+# matters, first match wins. Members of `stardelt-admins` get everything;
+# everyone else gets `execute` only. Viewing and killing one's *own* queries
+# needs no rule (built-in: users always may). The `superset` service account
+# falls in the second rule and keeps exactly what it needs.
+#
+# The catch-all second rule is load-bearing: with no matching rule, query
+# management is *denied*, so omitting it breaks every query on the cluster.
+# `rules` holds ONLY the `queries` key — no `catalogs`/`schemas`/`tables`
+# section. With first-match-wins + default deny, anything beyond `queries`
+# risks denying data access cluster-wide. This file is query visibility only.
+#
+# `rules` is a map of filename -> content (not a string): the chart ranges
+# over it into ConfigMap trino-access-control-volume-coordinator, mounted at
+# /etc/trino/access-control, with `security.config-file` pointing at it (see
+# the coordinator ConfigMap the chart renders). Committed: it names only the
+# group, no usernames. The membership itself lives in ConfigMap
+# `trino-group-file`, written by scripts/sync-trino-groups.sh and never
+# committed.
+accessControl:
+  type: configmap
+  rules:
+    rules.json: |-
+      {"queries": [{"group": "stardelt-admins", "allow": ["execute", "kill", "view"]}, {"allow": ["execute"]}]}
+
 coordinator:
   # The PKCS12 keystore cert-manager writes into Secret trino-coordinator-tls
   # (key keystore.p12). The secret is mounted as a directory — a subPath file
@@ -104,6 +130,24 @@ coordinator:
     - name: trino-tls
       secretName: trino-coordinator-tls
       path: /etc/trino/tls
+  # Group provider (platform#125): Trino cannot read groups from the OIDC
+  # token, so the file provider maps `preferred_username` -> groups. The file
+  # itself comes from ConfigMap `trino-group-file` (one `group:user,...` line
+  # per group), written by scripts/sync-trino-groups.sh from the live realm's
+  # `stardelt-admins` membership and refreshed by `make trino`.
+  # `file.refresh-period` picks a remounted file up with no restart; a
+  # coordinator restart (which drops running queries — pick a quiet moment) is
+  # only needed when this values file itself changes.
+  additionalConfigFiles:
+    group-provider.properties: |
+      group-provider.name=file
+      file.group-file=/etc/trino/groups/groups.txt
+      file.refresh-period=30s
+  additionalVolumes:
+    - name: trino-groups
+      configMap: { name: trino-group-file }
+  additionalVolumeMounts:
+    - { name: trino-groups, mountPath: /etc/trino/groups }
 
 # The service-account password file: `superset:<bcrypt>`, generated on the
 # cluster by scripts/identity-bootstrap.sh (never committed) and mounted by the
