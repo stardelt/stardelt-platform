@@ -108,9 +108,18 @@ server:
 #
 # The catch-all second rule is load-bearing: with no matching rule, query
 # management is *denied*, so omitting it breaks every query on the cluster.
-# `rules` holds ONLY the `queries` key — no `catalogs`/`schemas`/`tables`
-# section. With first-match-wins + default deny, anything beyond `queries`
-# risks denying data access cluster-wide. This file is query visibility only.
+# `tables` (platform#181) keeps cluster-wide engine internals away from
+# ordinary users: system.runtime.tasks lists the tasks of *other* users' queries,
+# and system.runtime.transactions and .optimizer_rule_stats are cluster-wide too.
+# Rule 1 lets administrators through, rule 2 denies those three tables
+# (`privileges: []`), rule 3 is the catch-all. It is load-bearing: once a `tables`
+# section exists, a table that no rule matches is DENIED, so without rule 3 every
+# query on the cluster fails. Rule 3 grants what Trino grants anyway when there is
+# no `tables` section, so data access is unchanged (the catalog decides that).
+# system.runtime.queries stays open (the `queries` rules filter it to one's own
+# queries) and so does system.runtime.nodes (the documented smoke test reads it).
+# The file holds ONLY `queries` and `tables` — no `catalogs`/`schemas` section:
+# with first-match-wins + default deny, anything more risks denying data access.
 #
 # `rules` is a map of filename -> content (not a string): the chart ranges
 # over it into ConfigMap trino-access-control-volume-coordinator, mounted at
@@ -123,7 +132,17 @@ accessControl:
   type: configmap
   rules:
     rules.json: |-
-      {"queries": [{"group": "stardelt-admins", "allow": ["execute", "kill", "view"]}, {"allow": ["execute"]}]}
+      {
+        "queries": [
+          {"group": "stardelt-admins", "allow": ["execute", "kill", "view"]},
+          {"allow": ["execute"]}
+        ],
+        "tables": [
+          {"group": "stardelt-admins", "privileges": ["SELECT", "INSERT", "DELETE", "UPDATE", "OWNERSHIP", "GRANT_SELECT"]},
+          {"catalog": "system", "schema": "runtime", "table": "(tasks|transactions|optimizer_rule_stats)", "privileges": []},
+          {"privileges": ["SELECT", "INSERT", "DELETE", "UPDATE", "OWNERSHIP", "GRANT_SELECT"]}
+        ]
+      }
 
 coordinator:
   # The PKCS12 keystore cert-manager writes into Secret trino-coordinator-tls
