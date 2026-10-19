@@ -144,6 +144,11 @@ spec:
             # requires a client secret — a public client is rejected at startup).
             - name: STARDELT_TRINO_CLIENT_SECRET
               valueFrom: { secretKeyRef: { name: stardelt-oidc-clients, key: trino } }
+            # The continuous group-file sync authenticates as its own
+            # service-account client (platform#167); the import substitutes this
+            # into that client's secret on a fresh realm.
+            - name: STARDELT_TRINO_GROUP_SYNC_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: stardelt-oidc-clients, key: trino-group-sync } }
           ports:
             - { name: http, containerPort: 8080 }
             - { name: management, containerPort: 9000 }

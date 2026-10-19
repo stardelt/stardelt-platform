@@ -40,7 +40,7 @@ metadata:
   annotations: { helm.sh/resource-policy: keep }
 type: Opaque
 data:
-  {{- range list "nova" "superset" "airflow" "jupyterhub" "trino" }}
+  {{- range list "nova" "superset" "airflow" "jupyterhub" "trino" "trino-group-sync" }}
   {{ . }}: {{ include "stardelt.secretValue" (list $ "stardelt-oidc-clients" .) | quote }}
   {{- end }}
 ---
@@ -215,6 +215,10 @@ spec:
             - name: {{ printf "STARDELT_%s_CLIENT_SECRET" (upper .) }}
               valueFrom: { secretKeyRef: { name: stardelt-oidc-clients, key: {{ . }} } }
             {{- end }}
+            # Outside the loop: `upper` keeps the dash, which is not a valid env
+            # name — the realm import expects STARDELT_TRINO_GROUP_SYNC_CLIENT_SECRET.
+            - name: STARDELT_TRINO_GROUP_SYNC_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: stardelt-oidc-clients, key: trino-group-sync } }
           ports:
             - { name: http, containerPort: 8080 }
             - { name: management, containerPort: 9000 }
