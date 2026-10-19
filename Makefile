@@ -45,7 +45,7 @@ BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 .PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator trino upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-up dev-down dev-dns dev-dns-down
 .PHONY: chart-deps chart-template chart-install
 .PHONY: verify-backups verify-backups-identity verify-backups-nova verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
-.PHONY: sync-oidc-clients verify-oidc-clients verify-trino-tls sync-trino-groups sync-trino-group-sync-client
+.PHONY: sync-oidc-clients verify-oidc-clients verify-trino-tls sync-trino-groups sync-trino-group-sync-client sync-pipeline-runner-client
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | \
@@ -384,6 +384,11 @@ sync-trino-groups: _context ## Sync the live realm's stardelt-admins membership 
 sync-trino-group-sync-client: _context ## Converge the live realm's trino-group-sync client (secret + read-only grant, idempotent)
 	@NAMESPACE=$(NAMESPACE) bash scripts/keycloak-sync-trino-group-sync-client.sh
 
+# The service principal scheduled pipelines run as (scheduled jobs J0, platform#118): a
+# confidential service-account client whose tokens carry the audience `trino`.
+sync-pipeline-runner-client: _context ## Converge the live realm's pipeline-runner client (secret, audience mapper, no admin role; idempotent)
+	@NAMESPACE=$(NAMESPACE) bash scripts/keycloak-sync-pipeline-runner-client.sh
+
 # platform#80: the in-cluster path must refuse plain HTTP and authenticate a
 # bearer token over TLS. TRINO_VERIFY_USER_PASSWORD=… adds the user check.
 verify-trino-tls: _context ## Prove the in-cluster Trino path is TLS-only and token-authenticated
@@ -414,6 +419,8 @@ install-identity: deps _context ## Install the platform IdP (Keycloak) at id.$(B
 	  bash scripts/keycloak-sync-trino-client.sh
 	@echo "› [9/11] Sync the live realm's group-sync client (read-only service account, platform#167)"
 	@$(MAKE) --no-print-directory sync-trino-group-sync-client
+	@echo "› [9/11] Sync the live realm's pipeline-runner client (scheduled pipelines, platform#118)"
+	@$(MAKE) --no-print-directory sync-pipeline-runner-client
 	@echo "› [10/11] guard: every client secret must authenticate at the token endpoint"
 	@$(MAKE) --no-print-directory verify-oidc-clients
 	@echo "› [11/11] Put the query engine behind the platform identity (TLS on the coordinator)"
