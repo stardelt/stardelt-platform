@@ -49,7 +49,7 @@ BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 .PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator trino upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-up dev-down dev-dns dev-dns-down
 .PHONY: chart-deps chart-template chart-install
 .PHONY: verify-backups verify-backups-identity verify-backups-nova verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
-.PHONY: sync-oidc-clients verify-oidc-clients verify-trino-tls sync-trino-groups sync-trino-group-sync-client sync-pipeline-runner-client sync-dev-client openbao
+.PHONY: sync-oidc-clients verify-oidc-clients verify-trino-tls sync-trino-groups sync-trino-group-sync-client sync-pipeline-runner-client sync-dev-client openbao test-openbao-policies
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | \
@@ -415,6 +415,10 @@ openbao: deps _context _helm-repos ## Install the sandbox secret store (OpenBao,
 	@NAMESPACE=$(NAMESPACE) bash scripts/openbao-seal-key.sh
 	@helm upgrade --install openbao openbao/openbao --version $(OPENBAO_VERSION) $(HELM_FLAGS) -f helm-values/openbao.yaml
 	@NAMESPACE=$(NAMESPACE) bash scripts/openbao-bootstrap.sh
+	@NAMESPACE=$(NAMESPACE) OWNER_GROUPS="$(OWNER_GROUPS)" bash scripts/openbao-connections.sh
+
+test-openbao-policies: ## Prove the connection policies against a throwaway local OpenBao (needs the bao binary)
+	@bash scripts/test-openbao-policies.sh
 
 # platform#80: the in-cluster path must refuse plain HTTP and authenticate a
 # bearer token over TLS. TRINO_VERIFY_USER_PASSWORD=… adds the user check.
