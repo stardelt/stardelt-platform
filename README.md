@@ -487,7 +487,10 @@ Trino only accepts tokens whose audience contains `trino`, so the `nova` and `ju
 carry an `aud-trino` audience mapper; `jupyterhub` also gets `access.token.lifespan=28800`
 (8 hours) because a spawned notebook keeps its token in the pod environment for a whole session
 (Nova refreshes its own token and keeps the realm default). On a fresh realm the import applies
-both; `scripts/keycloak-sync-trino-client.sh` applies them to a running one.
+both; `scripts/keycloak-sync-trino-client.sh` applies them to a running one. The same
+fresh-only rule covers `fullScopeAllowed: false` on the six clients: existing installs must
+either flip the "Full scope allowed" switch off per client in the admin console or recreate
+realm `stardelt`, otherwise the realm file change never reaches the running realm.
 
 **No committed credentials.** On first install the Keycloak bootstrap-admin password, the realm
 `admin` password and the six client secrets are generated (`openssl rand` in
