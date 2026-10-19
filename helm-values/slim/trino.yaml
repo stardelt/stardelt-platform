@@ -4,26 +4,56 @@
 # Overrides helm-values/trino.yaml (later -f wins): smaller heaps so Trino fits
 # next to SeaweedFS, CNPG, Lakekeeper and Nova on one 8 GB node.
 #
-# Constraint: query.maxMemory + 30% heap headroom must be <= max heap.
-#   900MB + 450MB = 1350MB <= 1500m  ✓
+# Memory budget (platform#54): per-node + headroom must stay well below the
+# heap so a single query fails closed instead of OOM-killing the worker.
+#   600MB + 450MB = 1050MB <= 1500m, leaving ~450MB for the engine and
+#   unaccounted allocations. Was 900MB cluster / 1GB per-node (chart default):
+#   1024MB + 450MB = 1474MB left ~30MB — one join took the worker down.
 server:
   workers: 1
   config:
     query:
-      maxMemory: "900MB"
+      maxMemory: "600MB"
+  # Coordinator-only guards (platform#54): replaces the base
+  # server.coordinatorExtraConfig (Helm replaces strings), so the two lines
+  # are restated here. Worker-safe keys stay in additionalConfigProperties.
+  coordinatorExtraConfig: |
+    query.max-execution-time=10m
+    query.max-run-time=15m
 
 coordinator:
   jvm:
     maxHeapSize: "1500m"
     gcMethod:
       type: UseG1GC
+  config:
+    query:
+      maxMemoryPerNode: "600MB"
+    memory:
+      heapHeadroomPerNode: "450MB"
   additionalJVMConfig:
     - "-Xms512m"
+    - "-XX:HeapDumpPath=/dumps"
+  # Kubelet — not the JVM — is in charge (platform#54): heap 1500m +
+  # metaspace/direct. Requests ~3.6Gi / limits ~4.4Gi for both pods together;
+  # fits the 8 GB node next to the rest of install-core.
+  resources:
+    requests: { cpu: "250m", memory: "1800Mi" }
+    limits: { memory: "2200Mi" }
 
 worker:
   jvm:
     maxHeapSize: "1500m"
     gcMethod:
       type: UseG1GC
+  config:
+    query:
+      maxMemoryPerNode: "600MB"
+    memory:
+      heapHeadroomPerNode: "450MB"
   additionalJVMConfig:
     - "-Xms512m"
+    - "-XX:HeapDumpPath=/dumps"
+  resources:
+    requests: { cpu: "250m", memory: "1800Mi" }
+    limits: { memory: "2200Mi" }

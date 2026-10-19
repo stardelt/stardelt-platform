@@ -88,6 +88,12 @@ server:
     # from the realm regardless of audience and would put a network round trip in
     # front of every query.
     http-server.authentication.oauth2.oidc.use-userinfo-endpoint=false
+    # Query guards (platform#54): coordinator-only, so they live here and not
+    # in additionalConfigProperties (rendered into the worker too). Restates
+    # helm-values/trino.yaml's coordinatorExtraConfig — Helm replaces strings,
+    # so without these two lines the overlay would drop them.
+    query.max-execution-time=10m
+    query.max-run-time=15m
 
 # Query visibility (platform#125) — owner-only by default, admins exempted.
 # File-based system access control (Trino 480, no custom plugin): rule order
@@ -152,9 +158,15 @@ coordinator:
     # CrashLoop with "Cannot write to cache directory /var/trino/cache".
     - name: trino-fscache
       emptyDir: { sizeLimit: 12Gi }
+    # Repeated from helm-values/trino.yaml (platform#54): without this the
+    # overlay would drop the bounded heap-dump dir and dumps would land on
+    # the container overlay fs again.
+    - name: trino-dumps
+      emptyDir: { sizeLimit: 2Gi }
   additionalVolumeMounts:
     - { name: trino-groups, mountPath: /etc/trino/groups }
     - { name: trino-fscache, mountPath: /var/trino/cache }
+    - { name: trino-dumps, mountPath: /dumps }
 
 # The service-account password file: `superset:<bcrypt>`, generated on the
 # cluster by scripts/identity-bootstrap.sh (never committed) and mounted by the
