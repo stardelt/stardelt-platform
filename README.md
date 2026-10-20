@@ -402,9 +402,11 @@ exchange, and Reloader restarts them when that Secret rotates. The Spark Connect
 `svc-catalog-spark` (`images/spark/spark-connect-entrypoint.sh`) — the credential never enters
 `spark-defaults.conf`. The bootstrap Job mounts Secret `svc-catalog-bootstrap` as files and sends
 the token on every management call (`--data-urlencode client_secret@file`, `-H @file`), so neither
-the secret nor the token appears in argv or a log line. **No `scope` is requested**: the realm has
-no client scope named `lakekeeper`, so `scope=lakekeeper` is answered with `400 invalid_scope`; the
-`aud-lakekeeper` audience mapper puts the audience on the token regardless, which is what
+the secret nor the token appears in argv or a log line. **The requested scope is
+`openid`**: the realm has neither a `lakekeeper` client scope nor Iceberg's default
+`catalog` one and answers both with `400 invalid_scope`, so the caller would never get a
+token; `openid` is a default scope of every client and is accepted, while the
+`aud-lakekeeper` audience mapper still puts `aud=lakekeeper` on the token — the claim
 Lakekeeper will check. Evidence that a caller asked for a token is Keycloak's own event log —
 `kubectl -n stardelt logs deploy/keycloak | grep 'type="CLIENT_LOGIN"'` names the client id and the
 grant type, never the token.

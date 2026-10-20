@@ -30,6 +30,10 @@ if [[ -n "${CATALOG_CLIENT_ID:-}" && -n "${CATALOG_CLIENT_SECRET:-}" && -n "${CA
   catalog_conf=(
     --conf "spark.sql.catalog.warehouse.credential=${CATALOG_CLIENT_ID}:${CATALOG_CLIENT_SECRET}"
     --conf "spark.sql.catalog.warehouse.oauth2-server-uri=${CATALOG_OIDC_ISSUER%/}/protocol/openid-connect/token"
+    # Iceberg asks for `scope=catalog` by default and this realm rejects it
+    # (`invalid_scope`); `openid` is a default scope of every client while the
+    # `aud-lakekeeper` audience mapper still puts `aud=lakekeeper` on the token.
+    --conf "spark.sql.catalog.warehouse.scope=openid"
   )
 else
   echo "stardelt-connect-server: catalog sign-in is off (no svc-catalog-spark Secret or realm issuer) — Lakekeeper sees this driver as anonymous" >&2

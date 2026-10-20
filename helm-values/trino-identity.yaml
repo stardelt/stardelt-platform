@@ -72,12 +72,14 @@
 # credential — one line there would crash-loop Trino on a cluster without identity.
 # Keep this block identical to the base one apart from the three OAuth2 lines.
 #
-# No `oauth2.scope`: the realm has no client scope named `lakekeeper`, so requesting
-# `iceberg.rest-catalog.oauth2.scope=lakekeeper` makes Keycloak answer
-# `400 invalid_scope` and the catalog never gets a token (verified 2026-10-20 against
-# the live realm). No scope is needed either: client `svc-catalog-trino` carries the
-# `aud-lakekeeper` audience mapper, so `aud=lakekeeper` is in the access token whether
-# a scope is requested or not — which is what the token has to carry.
+# Scope: Iceberg requests `scope=catalog` by default, and this realm rejects it —
+# `400 invalid_scope: Invalid scopes: catalog` — just as it rejects `lakekeeper`: the
+# realm has a client scope for neither, so the exchange never returns a token and the
+# catalog cannot load (seen live on 2026-10-20). `openid` is a default scope of every
+# client in the realm and is accepted for client credentials (verified against the
+# live realm), and the token still carries `aud=lakekeeper` because client
+# `svc-catalog-trino` has an `aud-lakekeeper` audience mapper — the audience is what
+# the catalog will check, and the mapper puts it on the token whatever the scope is.
 catalogs:
   warehouse: |
     connector.name=iceberg
@@ -93,6 +95,8 @@ catalogs:
     iceberg.rest-catalog.security=OAUTH2
     iceberg.rest-catalog.oauth2.server-uri=${ENV:CATALOG_TOKEN_URL}
     iceberg.rest-catalog.oauth2.credential=${ENV:CATALOG_CLIENT_ID}:${ENV:CATALOG_CLIENT_SECRET}
+    # Without this Iceberg asks for `scope=catalog`, which this realm does not have.
+    iceberg.rest-catalog.oauth2.scope=openid
     fs.native-s3.enabled=true
     s3.endpoint=http://seaweedfs-s3.stardelt.svc.cluster.local:8333
     s3.region=us-east-1
