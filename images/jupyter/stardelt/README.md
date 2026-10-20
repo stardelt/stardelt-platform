@@ -10,3 +10,12 @@ Pure Python, MIT. Installed in the image (`images/jupyter/Dockerfile`);
 tested in CI (`images/jupyter/tests/`, the `notebook-helper` job in
 `.github/workflows/ci.yml`). The full contract is the docstrings in
 `__init__.py` — this file exists so the build backend has a readme.
+
+## Notebook tasks: `python -m stardelt.notebook_run`
+
+The pod a notebook task runs holds no storage credential: the DAG signs two URLs and the wrapper
+downloads the pinned notebook from `NOTEBOOK_GET_URL`, runs papermill with `run_date`, `run_id`
+and `NOTEBOOK_PARAMS` as raw `-r` parameters, uploads the executed copy to `NOTEBOOK_PUT_URL`
+(after a failure too), and on SIGTERM cancels the statements it recorded in `STARDELT_QUERY_IDS`
+before exiting 143 (papermill's own code otherwise, 2 for a contract error). Stages and byte counts
+are logged — never a URL, a token, a parameter value or notebook text.

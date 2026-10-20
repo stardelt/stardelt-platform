@@ -67,7 +67,8 @@ COPY --chown=${NB_UID}:${NB_GID} stardelt/ /tmp/stardelt-pkg-build/stardelt/
 COPY --chown=${NB_UID}:${NB_GID} pyproject.toml /tmp/stardelt-pkg-build/pyproject.toml
 RUN python3 -m pip install --no-cache-dir /tmp/stardelt-pkg-build/ \
     && rm -rf /tmp/stardelt-pkg-build \
-    && python3 -c "import stardelt; print('stardelt', stardelt.__version__)"
+    && python3 -c "import stardelt; print('stardelt', stardelt.__version__)" \
+    && python3 -c "import stardelt.notebook_run; print('stardelt.notebook_run: the notebook task wrapper is installed')"
 
 # The single-user server's framing policy (Nova's origin, passed at spawn) —
 # see the file's docstring for why this exists and what happens without it.
