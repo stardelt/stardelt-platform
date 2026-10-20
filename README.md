@@ -130,6 +130,14 @@ Keycloak's database (`keycloak-pg`) is backed up the same way as the catalog (WA
 
 Nova's state store (`nova-pg`, database `nova`: saved queries, personal settings) is a third CloudNative-PG Cluster, installed with Nova (`manifests/nova-pg.yaml`, or the chart with `nova.database.enabled`, on by default). The operator generates its password into Secret `nova-pg-app`; Nova reads the complete URL from the Secret's `uri` key as `NOVA_DATABASE_URL`. It is backed up like the other two (`s3://backups/nova-pg/`); check it with `make verify-backups-nova`.
 
+| Value | Default | Effect |
+|---|---|---|
+| `nova.secretStore.url` | `""` | Address of the secret store Nova signs in to with the person's own token, passed as `NOVA_SECRET_STORE_URL`. Empty = the Connections API answers 503 and no extra RBAC is rendered. |
+| `nova.secretStore.role` | `platform-users` | `NOVA_SECRET_STORE_ROLE` — the store role a person's token is exchanged for. |
+| `nova.secretStore.mount` | `secret` | `NOVA_SECRET_STORE_MOUNT` — the store mount connection secrets are written under. |
+
+With `nova.secretStore.url` set, the chart also renders the `nova-connections` Role and RoleBinding: `get`, `list`, `create` and `delete` on `connections.stardelt.io` in the release namespace — nothing else, no Secrets access. Example: `--set nova.secretStore.url=http://openbao.<namespace>.svc.cluster.local:8200`.
+
 `make verify-backups` expects recent write activity on the catalog: its WAL-freshness check fails on an idle cluster, which is correct. The SeaweedFS filer needs **512Mi** of memory — at 256Mi it was OOM-killed in a loop and took S3 writes down with it (platform#230); raise it only with a measured peak, never by lowering another limit.
 
 ---
