@@ -18,7 +18,12 @@
 # `make build-superset-image` is for iteration only.
 image:
   repository: ghcr.io/stardelt/superset
-  tag: dev
+  # The tag stays for readability; the digest is what the kubelet actually pulls. A bare `dev`
+  # tag resolved to a stale manifest on the dev node — the pod came up without `authlib` and
+  # crash-looped while the chart enables `AUTH_OAUTH` (platform#231). `make pin-images` does not
+  # cover this release (it pins Deployments only), so this digest is bumped by hand after a
+  # merge publishes a new image — same shape as helm-values/jupyterhub.yaml.
+  tag: "dev@sha256:b9ced85d81a0c9efd2ca993f27bba5470e4815aad9d246b93e3ca5e62d26e8cd"
   pullPolicy: IfNotPresent
 
 # The package is private, so the pod needs the same pull secret as Nova.
