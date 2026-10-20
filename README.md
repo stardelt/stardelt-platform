@@ -400,9 +400,18 @@ that carries `stardelt-managed=principal`; anything else is refused.
 
 *Catalog service clients (platform#282, step 1 of the catalog's authentication).* Every component
 that calls the Iceberg REST catalog has its own confidential service client instead of sharing one:
-`svc-catalog-trino` (the Trino coordinator), `svc-catalog-nova`, `svc-catalog-spark` (the Spark
-Connect driver), `svc-catalog-airflow` (the task pods) and `svc-catalog-bootstrap` (the Lakekeeper
-bootstrap Job). `make sync-catalog-clients` converges all five through the same script with
+
+| Secret | Used by |
+|---|---|
+| `svc-catalog-trino` | the Trino coordinator |
+| `svc-catalog-nova` | Nova |
+| `svc-catalog-spark` | the Spark Connect driver |
+| `svc-catalog-airflow` | the Airflow task pods |
+| `svc-catalog-bootstrap` | the Lakekeeper bootstrap Job |
+| `svc-catalog-bridge` | the OPA bridge sidecar in the Lakekeeper pod (platform#303) |
+| `svc-catalog-operator` | the stardelt operator's Catalog controller (platform#303) |
+
+`make sync-catalog-clients` converges all seven through the same script with
 `KIND=service`: no owner group and no `groups` claim (each is a component, not a person), an
 `aud-lakekeeper` audience mapper, the attribute `stardelt-managed=service`, and a Secret named after
 the client in namespace `stardelt`, whose keys `client-id`, `client-secret` and `token-url` (the
@@ -410,9 +419,13 @@ realm's endpoint, written for a service client) are the source of truth. Rotatio
 `ROTATE=1 make sync-catalog-clients` writes a new value to Keycloak first, then to each Secret, and
 proves every new value with a client-credentials token.
 `make delete-catalog-clients YES=1` removes them, and only clients carrying
-`stardelt-managed=service` are accepted. Lakekeeper still runs `allowall` and does not check these
-tokens yet — the callers start sending them in the follow-up steps (#283, #284); only then can one
-caller be revoked at a time.
+`stardelt-managed=service` are accepted. The bridge's Secret also carries `scope: openid`, because
+the Lakekeeper chart takes the bridge's requested scope from that Secret and its default, the client
+scope `lakekeeper`, does not exist in this realm (`400 invalid_scope`); after the cutover (#304) the
+bridge's client holds `project_admin`, since it checks *other* principals' permissions and therefore
+has to be more than a reader. Lakekeeper still runs `allowall` and does not check these tokens yet —
+the callers start sending them in the follow-up steps (#283, #284); only then can one caller be
+revoked at a time.
 
 *Catalog sign-in for Trino, Spark Connect and the bootstrap Job (platform#283, step 2).* Those
 three callers now obtain a token from the realm's token endpoint and send it as
@@ -1055,8 +1068,8 @@ kubectl -n stardelt delete pods -l spark-role=executor
 | `sync-realm-user-management` | Grant `stardelt-admins` the four `realm-management` user-management roles and enforce brute-force protection on the live realm; idempotent, runs with both install paths |
 | `sync-oidc-clients` | Point the realm's confidential clients (`nova`, `superset`, `airflow`, `jupyterhub`; delegates `trino`) at Secret `stardelt-oidc-clients`; probe-first, idempotent, never prints a value (#85) |
 | `verify-oidc-clients` | Prove every client secret still authenticates at the token endpoint (`invalid_grant` vs `unauthorized_client`) and matches what the realm stores; names the drifting clients and the fix |
-| `sync-catalog-clients` | Create/converge the five catalog-caller service clients (`svc-catalog-*`) and their Secrets, audience `lakekeeper`, no group; idempotent (#282) |
-| `delete-catalog-clients` | Delete those five clients and Secrets; only `stardelt-managed=service` clients, needs `YES=1` |
+| `sync-catalog-clients` | Create/converge the seven catalog-caller service clients (`svc-catalog-*`) and their Secrets, audience `lakekeeper`, no group; idempotent (#282, #303) |
+| `delete-catalog-clients` | Delete those seven clients and Secrets; only `stardelt-managed=service` clients, needs `YES=1` |
 | `trino` | Install/upgrade Trino; adds `helm-values/trino-identity.yaml` (Keycloak OAuth2 + service-account password) when `stardelt-identity` exists |
 | `sync-trino-groups` | Sync the live realm's `stardelt-admins` membership into ConfigMap `trino-group-file` (Trino query visibility); idempotent, runs inside `make trino` (#125) |
 | `install-operator` | Install the stardelt Operator from `../stardelt-operator/chart` (dev path) |
