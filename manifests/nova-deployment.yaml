@@ -84,6 +84,10 @@ spec:
   template:
     metadata:
       labels: { app.kubernetes.io/name: nova, app.kubernetes.io/part-of: stardelt }
+      # Rotating the catalog client must reach Nova: the token is cached until it
+      # expires and the client secret is process environment, so Reloader
+      # (helm-values/reloader.yaml) restarts the pod when the Secret changes.
+      annotations: { secret.reloader.stakater.com/reload: "svc-catalog-nova" }
     spec:
       serviceAccountName: nova
       securityContext:
@@ -161,6 +165,23 @@ spec:
             - name: NOVA_OIDC_ADMIN_GROUP
               valueFrom:
                 configMapKeyRef: { name: stardelt-identity, key: adminGroup, optional: true }
+            # Catalog sign-in (platform#284, step 4 of the catalog turn-on): every
+            # call Nova makes to Lakekeeper carries a client-credentials token
+            # (stardelt-nova#222). The client is Secret svc-catalog-nova (KIND=service,
+            # platform#282); all three variables are read from that one Secret, so they
+            # appear and disappear together. That matters: Nova refuses to start on a
+            # partial setting rather than calling the catalog half-configured, and an
+            # optional `secretKeyRef` cannot make one variable conditional on another.
+            # `token-url` is written by `make sync-catalog-clients` for the same reason.
+            # Optional like the identity variables above: without an IdP the Secret does
+            # not exist, all three stay unset, and Nova calls Lakekeeper anonymously —
+            # the `install-core` shape, which `allowall` still accepts.
+            - name: NOVA_CATALOG_CLIENT_ID
+              valueFrom: { secretKeyRef: { name: svc-catalog-nova, key: client-id, optional: true } }
+            - name: NOVA_CATALOG_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: svc-catalog-nova, key: client-secret, optional: true } }
+            - name: NOVA_CATALOG_TOKEN_URL
+              valueFrom: { secretKeyRef: { name: svc-catalog-nova, key: token-url, optional: true } }
             # Forward the signed-in user's own access token to Trino (and later the
             # catalog) instead of letting Nova act as a shared service account.
             # This is master spec §7 on the query path: the token that signed the

@@ -118,6 +118,10 @@ spec:
   template:
     metadata:
       labels: { app.kubernetes.io/name: nova, app.kubernetes.io/part-of: stardelt }
+      # Rotating the catalog client must reach Nova: the token is cached until it
+      # expires and the client secret is process environment, so Reloader
+      # (helm-values/reloader.yaml) restarts the pod when the Secret changes.
+      annotations: { secret.reloader.stakater.com/reload: "svc-catalog-nova" }
     spec:
       serviceAccountName: nova
       securityContext:
@@ -195,6 +199,24 @@ spec:
             - name: NOVA_AUTH_MODE
               value: "dev"
             {{- end }}
+            # Catalog sign-in (platform#284, step 4 of the catalog turn-on): Lakekeeper
+            # calls carry a client-credentials token (stardelt-nova#222) for the
+            # service client svc-catalog-nova (KIND=service, platform#282). All three
+            # variables come from that one Secret, so they appear and disappear
+            # together — Nova refuses to start on a partial setting, and an optional
+            # `secretKeyRef` cannot make one variable conditional on another. The
+            # Secret also carries `token-url`; `make sync-catalog-clients` writes it.
+            # Optional refs: an install without an IdP (no Secret) renders the same pod
+            # and Nova calls Lakekeeper anonymously, exactly as before.
+            - name: NOVA_CATALOG_CLIENT_ID
+              valueFrom:
+                secretKeyRef: { name: svc-catalog-nova, key: client-id, optional: true }
+            - name: NOVA_CATALOG_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: { name: svc-catalog-nova, key: client-secret, optional: true }
+            - name: NOVA_CATALOG_TOKEN_URL
+              valueFrom:
+                secretKeyRef: { name: svc-catalog-nova, key: token-url, optional: true }
             # Namespace whose workloads Nova reports (downward API).
             - name: POD_NAMESPACE
               valueFrom:
