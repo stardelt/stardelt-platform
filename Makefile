@@ -433,26 +433,38 @@ delete-principal: _context ## Delete a ServicePrincipal client and its Secret (s
 
 # Every caller of the Iceberg REST catalog gets its own confidential service client
 # (platform#282, step 1 of the catalog turn-on): the Trino coordinator, Nova, the Spark
-# Connect driver, the Airflow task pods and the bootstrap Job. Each token carries the
-# audience `lakekeeper`. Lakekeeper still runs `allowall` and does not check these yet;
-# this step only creates the identities, the callers send them in the follow-up tickets.
-CATALOG_CLIENTS := catalog-trino catalog-nova catalog-spark catalog-airflow catalog-bootstrap
+# Connect driver, the Airflow task pods and the bootstrap Job. Step 2 (platform#303) adds
+# the two permission managers — the OPA bridge sidecar in the Lakekeeper pod and the
+# operator's Catalog controller. Each token carries the audience `lakekeeper`. Lakekeeper
+# still runs `allowall` and does not check these yet; these steps only create the
+# identities, the callers send them in the follow-up tickets.
+CATALOG_CLIENTS := catalog-trino catalog-nova catalog-spark catalog-airflow catalog-bootstrap catalog-bridge catalog-operator
 
 .PHONY: sync-catalog-clients
-sync-catalog-clients: _context ## Create/converge the five svc-catalog-* service clients and their Secrets (idempotent)
+sync-catalog-clients: _context ## Create/converge the seven svc-catalog-* service clients and their Secrets (idempotent)
 	@NAMESPACE=$(NAMESPACE) KIND=service NAME=catalog-trino AUDIENCES=lakekeeper ROTATE=$(ROTATE) bash scripts/keycloak-sync-principal.sh
 	@NAMESPACE=$(NAMESPACE) KIND=service NAME=catalog-nova AUDIENCES=lakekeeper ROTATE=$(ROTATE) bash scripts/keycloak-sync-principal.sh
 	@NAMESPACE=$(NAMESPACE) KIND=service NAME=catalog-spark AUDIENCES=lakekeeper ROTATE=$(ROTATE) bash scripts/keycloak-sync-principal.sh
 	@NAMESPACE=$(NAMESPACE) KIND=service NAME=catalog-airflow AUDIENCES=lakekeeper ROTATE=$(ROTATE) bash scripts/keycloak-sync-principal.sh
 	@NAMESPACE=$(NAMESPACE) KIND=service NAME=catalog-bootstrap AUDIENCES=lakekeeper ROTATE=$(ROTATE) bash scripts/keycloak-sync-principal.sh
+	@NAMESPACE=$(NAMESPACE) KIND=service NAME=catalog-bridge AUDIENCES=lakekeeper ROTATE=$(ROTATE) bash scripts/keycloak-sync-principal.sh
+	@NAMESPACE=$(NAMESPACE) KIND=service NAME=catalog-operator AUDIENCES=lakekeeper ROTATE=$(ROTATE) bash scripts/keycloak-sync-principal.sh
+	@# The chart's OPA bridge reads its scope from that one Secret (scopeSecretKey, default
+	@# `scope`) and defaults it to the client scope `lakekeeper`, which this realm does not have
+	@# (400 invalid_scope); `openid` is a default scope of every client, and the aud-lakekeeper
+	@# mapper still puts the audience on the token. A merge of the same value changes nothing,
+	@# so a rerun that changes nothing leaves the Secret's resourceVersion alone.
+	@kubectl -n $(NAMESPACE) patch secret svc-catalog-bridge --type merge -p '{"stringData":{"scope":"openid"}}'
 
 .PHONY: delete-catalog-clients
-delete-catalog-clients: _context ## Delete the five svc-catalog-* service clients and their Secrets (stardelt-managed only; needs YES=1)
+delete-catalog-clients: _context ## Delete the seven svc-catalog-* service clients and their Secrets (stardelt-managed only; needs YES=1)
 	@NAMESPACE=$(NAMESPACE) KIND=service NAME=catalog-trino YES=$(YES) bash scripts/keycloak-sync-principal.sh --delete
 	@NAMESPACE=$(NAMESPACE) KIND=service NAME=catalog-nova YES=$(YES) bash scripts/keycloak-sync-principal.sh --delete
 	@NAMESPACE=$(NAMESPACE) KIND=service NAME=catalog-spark YES=$(YES) bash scripts/keycloak-sync-principal.sh --delete
 	@NAMESPACE=$(NAMESPACE) KIND=service NAME=catalog-airflow YES=$(YES) bash scripts/keycloak-sync-principal.sh --delete
 	@NAMESPACE=$(NAMESPACE) KIND=service NAME=catalog-bootstrap YES=$(YES) bash scripts/keycloak-sync-principal.sh --delete
+	@NAMESPACE=$(NAMESPACE) KIND=service NAME=catalog-bridge YES=$(YES) bash scripts/keycloak-sync-principal.sh --delete
+	@NAMESPACE=$(NAMESPACE) KIND=service NAME=catalog-operator YES=$(YES) bash scripts/keycloak-sync-principal.sh --delete
 
 # The public client developer tools on a laptop sign in with (platform#157): the device grant and
 # PKCE to a loopback address. `make sync-dev-client DEV_CLIENT_ENABLED=false` switches it off.
