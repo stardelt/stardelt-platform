@@ -1,0 +1,52 @@
+# OpenFGA has no authentication of its own (the chart ships it unsecured by
+# default): anything that can open TCP 8080 or 8081 can read and write every
+# permission tuple. Until the cutover (platform#304, `make catalog-authz`)
+# the network is its only protection — the same interim model as the catalog
+# itself (manifests/lakekeeper-network-policy.yaml).
+#
+# Only Lakekeeper talks to it:
+#   - the serving pod (`component=catalog`) — the chart's OPA bridge sidecar
+#     checks and writes tuples through the HTTP API at 8080 and the gRPC API
+#     at 8081;
+#   - the migration Job (`component=db-migration`) — the catalog migration
+#     writes the OpenFGA authorization model, so it must be able to reach the
+#     store before the serving pod is upgraded.
+#
+# Not allowed, and therefore not able to grant itself permissions: Nova,
+# Trino, Spark, Airflow, Superset, the notebooks, the operator, External
+# Secrets and the backup Jobs. Kubelet probes come from the node and are
+# unaffected.
+#
+# Needs a CNI that enforces NetworkPolicy — k3s does. To remove the
+# restriction, e.g. while debugging:
+#
+#   kubectl delete networkpolicy openfga-ingress -n stardelt
+#
+# Re-apply with `kubectl apply -f manifests/openfga-network-policy.yaml`;
+# `make uninstall` removes it too.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openfga-ingress
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: openfga
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: lakekeeper
+              app.kubernetes.io/component: catalog
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: lakekeeper
+              app.kubernetes.io/component: db-migration
+      ports:
+        - protocol: TCP
+          port: 8081
+        - protocol: TCP
+          port: 8080
