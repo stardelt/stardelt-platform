@@ -1,0 +1,89 @@
+# Interim catalog access control (stardelt-platform#274).
+#
+# Lakekeeper runs with `LAKEKEEPER__AUTHZ_BACKEND=allowall` and no OIDC
+# settings, so a request without a token is answered as an anonymous actor for
+# reads and writes: anything that can open TCP 8181 can list, read and change
+# the metadata of every table, namespace and warehouse. Until the catalog
+# validates tokens (the permissions work), the network is the only control.
+#
+# This policy is ingress-only: it does not restrict what Lakekeeper itself
+# reaches (Postgres, S3), and it has no namespaceSelector and no ipBlock rule.
+# Kubelet probes come from the node and are unaffected.
+#
+# The callers below are the pods that actually use the catalog, checked against
+# the live configuration in stardelt-platform#274:
+#   - Trino coordinator: the `warehouse` Iceberg REST catalog
+#     (ConfigMap trino-catalog, `iceberg.rest-catalog.uri`).
+#   - Nova: catalog browser and table documentation
+#     (`NOVA_LAKEKEEPER_URL` in manifests/nova-deployment.yaml).
+#   - Spark Connect driver: the second engine over the same catalog
+#     (`spark.sql.catalog.warehouse.uri` in manifests/spark.yaml).
+#   - Airflow task pods: the NYC-taxi DAG writes through pyiceberg
+#     (`CATALOG_URI` in helm-values/airflow.yaml; every KubernetesExecutor task
+#     pod carries release=airflow, component=worker, tier=airflow).
+#   - Lakekeeper bootstrap Job: accepts the terms of use and creates the
+#     `warehouse` (manifests/lakekeeper-bootstrap.yaml). The Job controller puts
+#     `batch.kubernetes.io/job-name=lakekeeper-bootstrap` on its pod, so no
+#     change to the Job is needed.
+#
+# Not callers, and therefore not allowed: Trino workers (they read Parquet from
+# S3; the coordinator does the catalog work), Spark executors (they read data
+# files; the driver plans), the Lakekeeper db-migration Job (Postgres only),
+# Superset (Trino only), the backup Jobs (S3/Postgres only), the operator,
+# External Secrets and the JupyterHub single-user pods (the singleuser egress
+# policy already denies the catalog).
+#
+# Needs a CNI that enforces NetworkPolicy — k3s does (the JupyterHub policies
+# already rely on its controller); plain Flannel does not. To remove the
+# interim restriction, e.g. while debugging:
+#
+#   kubectl delete networkpolicy lakekeeper-ingress -n stardelt
+#
+# Re-apply with `kubectl apply -f manifests/lakekeeper-network-policy.yaml`;
+# `make uninstall` removes it too.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: lakekeeper-ingress
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: lakekeeper
+      # The chart's db-migration Job also carries name=lakekeeper but runs the
+      # migrations against Postgres; selecting component=catalog keeps the
+      # policy scoped to the serving pod only.
+      app.kubernetes.io/component: catalog
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        # Trino coordinator — Iceberg REST catalog for warehouse.* (Trino
+        # workers read data files from S3 and do not call the catalog).
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: trino
+              app.kubernetes.io/component: coordinator
+        # Nova — catalog browser, table metadata and documentation.
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nova
+        # Spark Connect driver — the second engine over the same catalog.
+        # Executors read data files; the driver does the catalog work.
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: spark-connect
+        # Airflow KubernetesExecutor task pods — pyiceberg in the DAGs
+        # (CATALOG_URI); the scheduler and API server do not call the catalog.
+        - podSelector:
+            matchLabels:
+              release: airflow
+              component: worker
+        # Lakekeeper bootstrap Job — terms of use and warehouse creation. The
+        # Job controller adds this label to the pod; the Job needs no change.
+        - podSelector:
+            matchLabels:
+              batch.kubernetes.io/job-name: lakekeeper-bootstrap
+      ports:
+        - protocol: TCP
+          port: 8181

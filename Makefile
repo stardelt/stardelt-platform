@@ -166,6 +166,8 @@ install: deps _context _helm-repos ## Install all stardelt components (idempoten
 
 	@echo "› [5/11] Lakekeeper bootstrap"
 	@kubectl apply -f manifests/lakekeeper-bootstrap.yaml
+	@echo "› [5/11] catalog ingress NetworkPolicy (only the components that need it)"
+	@kubectl apply -f manifests/lakekeeper-network-policy.yaml
 
 	@echo "› [6/11] Trino"
 	@$(MAKE) --no-print-directory trino
@@ -234,6 +236,8 @@ install-core: deps _context _helm-repos ## Install the core only (storage+catalo
 
 	@echo "› [6/7] Lakekeeper bootstrap"
 	@kubectl apply -f manifests/lakekeeper-bootstrap.yaml
+	@echo "› [6/7] catalog ingress NetworkPolicy (only the components that need it)"
+	@kubectl apply -f manifests/lakekeeper-network-policy.yaml
 
 	@echo "› [7/7] Trino + Nova (state store first: the Deployment reads its Secret)"
 	@$(MAKE) --no-print-directory trino
@@ -539,6 +543,7 @@ uninstall: _context ## Uninstall all stardelt components (reverse order)
 	@kubectl delete -f manifests/nova-pg.yaml                --ignore-not-found
 	@kubectl delete -f manifests/keycloak.yaml               --ignore-not-found
 	@kubectl -n $(NAMESPACE) delete configmap keycloak-realm keycloak-env stardelt-identity --ignore-not-found
+	@kubectl delete -f manifests/lakekeeper-network-policy.yaml --ignore-not-found
 	@kubectl delete -f manifests/lakekeeper-bootstrap.yaml   --ignore-not-found
 	@kubectl delete -f manifests/cnpg-postgres.yaml          --ignore-not-found
 
