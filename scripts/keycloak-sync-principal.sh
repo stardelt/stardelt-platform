@@ -1,20 +1,30 @@
 #!/usr/bin/env bash
 # Converge one Keycloak client per ServicePrincipal, owned by a realm group
-# (scheduled jobs, decisions D20/D21, platform#244).
+# (scheduled jobs, decisions D20/D21, platform#244), or one service client per platform
+# component that calls the catalog (KIND=service, platform#282).
 #
 #   NAME=analytics GROUP=analytics make sync-principal
 #   NAME=analytics make delete-principal YES=1
+#   KIND=service NAME=catalog-trino make sync-catalog-clients
+#   KIND=service NAME=catalog-trino make delete-catalog-clients YES=1
 #
 # A `ServicePrincipal` (stardelt-operator) names a principal `sp-<name>` and the group
 # that owns it. Scheduled pipelines run as that client, never as a person and never as
 # the shared `pipeline-runner`; the token carries the owner group, so the catalog's
 # group policy applies to scheduled work exactly like to a person.
 #
-# The Secret `sp-<NAME>` in the namespace is the source of truth for the client secret:
-# this script creates client and Secret together when the Secret is missing, converges
-# Keycloak onto an existing Secret's value, rotates with ROTATE=1, keeps one audience
-# mapper per requested audience plus a `groups` mapper, makes the service-account user a
-# member of GROUP and of no other group, and refuses a service account with an
+# KIND=service names a platform component instead of a person: client and Secret are
+# `svc-<name>`, there is no owner group and no `groups` mapper, GROUP is ignored, the
+# default audience is `lakekeeper`, and the client carries `stardelt-managed=service`.
+# Every caller of the catalog (Trino, Nova, Spark, Airflow task pods, the bootstrap Job)
+# gets its own such client, so the catalog can tell them apart and revoke one at a time.
+#
+# The Secret (`sp-<NAME>` or `svc-<NAME>`) in the namespace is the source of truth for
+# the client secret: this script creates client and Secret together when the Secret is
+# missing, converges Keycloak onto an existing Secret's value, rotates with ROTATE=1,
+# keeps one audience mapper per requested audience (plus a `groups` mapper for a
+# principal), makes a principal's service-account user a member of GROUP and of no other
+# group, gives a service client no group at all, and refuses a service account with an
 # admin-API role. Idempotent. Reaches Keycloak through svc/keycloak (port-forward)
 # because the public `/admin` API is closed. Secrets travel only through files under a
 # mode-0700 temp dir and `--data @file` bodies, never argv, stdout or a log line; the
@@ -25,9 +35,10 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 NAMESPACE="${NAMESPACE:-stardelt}"
 REALM="${REALM:-stardelt}"
+KIND="${KIND:-principal}"
 NAME="${NAME:-}"
 GROUP="${GROUP:-}"
-AUDIENCES="${AUDIENCES:-trino}"
+AUDIENCES="${AUDIENCES:-}"
 ROTATE="${ROTATE:-0}"
 YES="${YES:-0}"
 MASTER_SECRET="${MASTER_SECRET:-keycloak-admin}"
@@ -47,16 +58,30 @@ fi
 
 # Validate every input before the first API call. A ServicePrincipal's name becomes
 # part of a client id, a Secret name and a token claim; refuse anything else up front.
+case "$KIND" in
+  principal|service) ;;
+  *) fail "refusing KIND '$KIND': use principal (default) or service" ;;
+esac
 [ -n "$NAME" ] || fail "NAME is required — pass NAME=<principal name>, for example NAME=analytics"
 case "$NAME" in
   ""|*[!a-z0-9-]*|[!a-z]*) fail "refusing NAME '$NAME': use 1 to 40 lower-case letters, digits or dashes, starting with a letter" ;;
 esac
 [ "${#NAME}" -le 40 ] || fail "refusing NAME '$NAME': it is longer than 40 characters"
-CLIENT_ID="sp-$NAME"
+if [ "$KIND" = service ]; then
+  CLIENT_ID="svc-$NAME"
+else
+  CLIENT_ID="sp-$NAME"
+fi
 SECRET_NAME="$CLIENT_ID"
 
 if [ "$mode" = sync ]; then
-  [ -n "$GROUP" ] || fail "GROUP is required — pass GROUP=<existing realm group>"
+  # A principal is owned by a group; a service client is not (GROUP is ignored).
+  if [ "$KIND" = principal ]; then
+    [ -n "$GROUP" ] || fail "GROUP is required — pass GROUP=<existing realm group>"
+  fi
+  if [ -z "$AUDIENCES" ]; then
+    if [ "$KIND" = service ]; then AUDIENCES=lakekeeper; else AUDIENCES=trino; fi
+  fi
   aud_list=()
   seen=""
   IFS=',' read -r -a raw_audiences <<<"$AUDIENCES"
@@ -135,8 +160,8 @@ for _ in $(seq 1 30); do
 done
 [ "$status" = 200 ] || fail "realm $REALM does not exist after 60s — check 'kubectl -n $NAMESPACE logs deploy/keycloak' for the import"
 
-# 3. Delete mode: only a client this script created (attribute stardelt-managed=principal)
-#    may be deleted, and only with YES=1. Anything else is reported and left alone.
+# 3. Delete mode: only a client this script created (attribute stardelt-managed equal to
+#    KIND) may be deleted, and only with YES=1. Anything else is reported and left alone.
 if [ "$mode" = delete ]; then
   client_uuid="$("${CURL_SOFT[@]}" "${HEAD[@]}" "${AUTH[@]}" "$API/clients?clientId=$CLIENT_ID" \
     | python3 -c 'import sys,json
@@ -146,8 +171,8 @@ print(clients[0]["id"] if clients else "")')"
   marker="$("${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" "$API/clients/$client_uuid" \
     | python3 -c 'import sys,json
 print((json.load(sys.stdin).get("attributes") or {}).get("stardelt-managed", ""))')"
-  [ "$marker" = principal ] \
-    || fail "refusing to delete client $CLIENT_ID: it does not carry stardelt-managed=principal (not created by this script)"
+  [ "$marker" = "$KIND" ] \
+    || fail "refusing to delete client $CLIENT_ID: it does not carry stardelt-managed=$KIND (not created by this script for KIND=$KIND)"
   if [ "$YES" != 1 ]; then
     echo "would delete client $CLIENT_ID in realm $REALM and Secret $NAMESPACE/$SECRET_NAME — re-run with YES=1"
     exit 1
@@ -164,15 +189,18 @@ fi
 
 # 4. The owner group must already exist. Groups are managed by people, not by this
 #    script: an unknown group is a typo, and creating it silently would grant a
-#    principal rights nobody asked for.
-group_json="$("${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" --get \
-  --data-urlencode "search=$GROUP" --data-urlencode 'briefRepresentation=true' \
-  "$API/groups")" \
-  || fail "cannot list groups in realm $REALM"
-group_id="$(python3 -c 'import sys,json
+#    principal rights nobody asked for. A service client has no owner group.
+group_id=""
+if [ "$KIND" = principal ]; then
+  group_json="$("${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" --get \
+    --data-urlencode "search=$GROUP" --data-urlencode 'briefRepresentation=true' \
+    "$API/groups")" \
+    || fail "cannot list groups in realm $REALM"
+  group_id="$(python3 -c 'import sys,json
 groups = json.load(sys.stdin)
 print(next((g["id"] for g in groups if g.get("name") == sys.argv[1]), ""))' "$GROUP" <<<"$group_json")"
-[ -n "$group_id" ] || fail "group $GROUP does not exist in realm $REALM"
+  [ -n "$group_id" ] || fail "group $GROUP does not exist in realm $REALM"
+fi
 
 # 5. The Secret is the source of truth for the client secret. Read it when present;
 #    otherwise (or on ROTATE) generate 40 characters and keep them in the temp dir.
@@ -196,18 +224,19 @@ fi
 
 # 6. Find or create the client. A client this script creates is confidential,
 #    service-account only, has no interactive flow and no redirects, and carries
-#    stardelt-managed=principal so delete-principal can recognise it.
+#    stardelt-managed=principal or =service so delete-principal can recognise it.
 client_uuid="$("${CURL_SOFT[@]}" "${HEAD[@]}" "${AUTH[@]}" "$API/clients?clientId=$CLIENT_ID" \
   | python3 -c 'import sys,json
 clients = json.load(sys.stdin)
 print(clients[0]["id"] if clients else "")')"
 if [ -z "$client_uuid" ]; then
-  python3 - "$tmp/client-secret" "$CLIENT_ID" "$GROUP" "${aud_list[@]}" > "$tmp/client-create.json" <<'PY'
+  python3 - "$tmp/client-secret" "$CLIENT_ID" "$KIND" "$GROUP" "${aud_list[@]}" > "$tmp/client-create.json" <<'PY'
 import json, sys
 secret = open(sys.argv[1]).read()
 client_id = sys.argv[2]
-group = sys.argv[3]
-audiences = sys.argv[4:]
+kind = sys.argv[3]
+group = sys.argv[4]
+audiences = sys.argv[5:]
 mappers = [{
     "name": "aud-" + aud,
     "protocol": "openid-connect",
@@ -220,24 +249,27 @@ mappers = [{
         "introspection.token.claim": "true",
     },
 } for aud in audiences]
-mappers.append({
-    "name": "groups",
-    "protocol": "openid-connect",
-    "protocolMapper": "oidc-group-membership-mapper",
-    "consentRequired": False,
-    "config": {
-        "claim.name": "groups",
-        "full.path": "false",
-        "id.token.claim": "true",
-        "access.token.claim": "true",
-        "userinfo.token.claim": "true",
-        "introspection.token.claim": "true",
-    },
-})
+if kind != "service":
+    mappers.append({
+        "name": "groups",
+        "protocol": "openid-connect",
+        "protocolMapper": "oidc-group-membership-mapper",
+        "consentRequired": False,
+        "config": {
+            "claim.name": "groups",
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "introspection.token.claim": "true",
+        },
+    })
 sys.stdout.write(json.dumps({
     "clientId": client_id,
-    "name": "Service principal " + client_id,
-    "description": "Service principal owned by group %s (scheduled jobs, D20/D21)." % group,
+    "name": ("Service client " if kind == "service" else "Service principal ") + client_id,
+    "description": ("Platform service client used by a component, not a person (platform#282)."
+                    if kind == "service"
+                    else "Service principal owned by group %s (scheduled jobs, D20/D21)." % group),
     "enabled": True,
     "protocol": "openid-connect",
     "publicClient": False,
@@ -249,7 +281,7 @@ sys.stdout.write(json.dumps({
     "serviceAccountsEnabled": True,
     "redirectUris": [],
     "webOrigins": [],
-    "attributes": {"stardelt-managed": "principal"},
+    "attributes": {"stardelt-managed": kind},
     "protocolMappers": mappers,
 }))
 PY
@@ -267,9 +299,10 @@ fi
 #    is updated to its value, and ROTATE writes the new value to Keycloak first, then
 #    to the Secret, so a failed run never leaves the Secret ahead of the realm.
 "${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" "$API/clients/$client_uuid" > "$tmp/client.json"
-python3 - "$tmp/client.json" "$tmp/client-update.json" <<'PY'
+python3 - "$tmp/client.json" "$tmp/client-update.json" "$KIND" <<'PY'
 import json, sys
 client = json.load(open(sys.argv[1]))
+kind = sys.argv[3]
 update = {}
 if client.get("enabled") is not True:
     update["enabled"] = True
@@ -289,8 +322,8 @@ if client.get("redirectUris"):
 if client.get("webOrigins"):
     update["webOrigins"] = []
 attributes = dict(client.get("attributes") or {})
-if attributes.get("stardelt-managed") != "principal":
-    attributes["stardelt-managed"] = "principal"
+if attributes.get("stardelt-managed") != kind:
+    attributes["stardelt-managed"] = kind
     update["attributes"] = attributes
 if update:
     json.dump(update, open(sys.argv[2], "w"))
@@ -363,16 +396,18 @@ PY
   fi
 fi
 
-# 9. One audience mapper per requested audience, and a groups mapper so the token
-#    carries the owner group. Audience mappers for audiences no longer requested are
-#    removed; nothing else is touched.
+# 9. One audience mapper per requested audience, and — for a principal — a groups mapper
+#    so the token carries the owner group. Audience mappers for audiences no longer
+#    requested are removed, and a service client carries no groups mapper at all;
+#    nothing else is touched.
 "${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" "$API/clients/$client_uuid" > "$tmp/client-mappers.json"
-python3 - "$tmp/client-mappers.json" "$tmp" "$tmp/mapper-plan" "${aud_list[@]}" <<'PY'
+python3 - "$tmp/client-mappers.json" "$tmp" "$tmp/mapper-plan" "$KIND" "${aud_list[@]}" <<'PY'
 import json, os, sys
 client = json.load(open(sys.argv[1]))
 outdir = sys.argv[2]
 plan_path = sys.argv[3]
-audiences = sys.argv[4:]
+kind = sys.argv[4]
+audiences = sys.argv[5:]
 desired = [{
     "name": "aud-" + aud,
     "protocol": "openid-connect",
@@ -385,7 +420,7 @@ desired = [{
         "introspection.token.claim": "true",
     },
 } for aud in audiences]
-desired.append({
+groups_mapper = {
     "name": "groups",
     "protocol": "openid-connect",
     "protocolMapper": "oidc-group-membership-mapper",
@@ -398,7 +433,9 @@ desired.append({
         "userinfo.token.claim": "true",
         "introspection.token.claim": "true",
     },
-})
+}
+if kind != "service":
+    desired.append(groups_mapper)
 existing = {m.get("name"): m for m in client.get("protocolMappers") or []}
 plan = []
 for mapper in desired:
@@ -419,7 +456,10 @@ for mapper in desired:
         plan.append(("update", mapper["name"], found["id"]))
 wanted = {mapper["name"] for mapper in desired}
 for name, mapper in existing.items():
-    if name.startswith("aud-") and name not in wanted:
+    remove = name.startswith("aud-") and name not in wanted
+    if kind == "service" and name == "groups":
+        remove = True
+    if remove:
         plan.append(("remove", name, mapper["id"]))
 with open(plan_path, "w") as handle:
     for action, name, mapper_id in plan:
@@ -448,7 +488,7 @@ while IFS=$'\t' read -r action mapper_name mapper_id; do
       "${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" -X DELETE \
         "$API/clients/$client_uuid/protocol-mappers/models/$mapper_id" >/dev/null \
         || fail "Keycloak refused to remove mapper $mapper_name from client $CLIENT_ID"
-      echo "› mapper $mapper_name: removed (audience no longer requested)"
+      echo "› mapper $mapper_name: removed (no longer wanted)"
       ;;
     *)
       fail "internal error: unknown mapper action '$action'"
@@ -456,12 +496,33 @@ while IFS=$'\t' read -r action mapper_name mapper_id; do
   esac
 done < "$tmp/mapper-plan"
 
-# 10. The service-account user belongs to the owner group and to no other group.
+# 10. A principal's service-account user belongs to the owner group and to no other
+#     group; a service client has no group membership at all (it is not owned by a group).
 sa_uid="$("${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" "$API/clients/$client_uuid/service-account-user" \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')" \
   || fail "client $CLIENT_ID has no service-account user — is serviceAccountsEnabled on?"
-"${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" "$API/users/$sa_uid/groups" > "$tmp/user-groups.json"
-group_plan="$(python3 - "$tmp/user-groups.json" "$group_id" <<'PY'
+if [ "$KIND" = service ]; then
+  "${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" "$API/users/$sa_uid/groups" > "$tmp/user-groups.json"
+  group_plan="$(python3 - "$tmp/user-groups.json" <<'PY'
+import json, sys
+groups = json.load(open(sys.argv[1]))
+for group in groups:
+    print("%s\t%s" % (group["id"], group.get("name", group["id"])))
+PY
+)"
+  if [ -z "$group_plan" ]; then
+    echo "› service account: no group membership"
+  else
+    printf '%s\n' "$group_plan" | while IFS=$'\t' read -r extra_id extra_name; do
+      "${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" -X DELETE \
+        "$API/users/$sa_uid/groups/$extra_id" >/dev/null \
+        || fail "Keycloak refused to remove the service account from group $extra_name"
+      echo "› service account: removed from $extra_name (a service client has no group)"
+    done
+  fi
+else
+  "${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" "$API/users/$sa_uid/groups" > "$tmp/user-groups.json"
+  group_plan="$(python3 - "$tmp/user-groups.json" "$group_id" <<'PY'
 import json, sys
 groups = json.load(open(sys.argv[1]))
 target = sys.argv[2]
@@ -472,22 +533,23 @@ for group in groups:
         print("remove\t%s\t%s" % (group["id"], group.get("name", group["id"])))
 PY
 )"
-group_action="$(printf '%s\n' "$group_plan" | head -n 1)"
-if [ "$group_action" = add ]; then
-  "${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" -X PUT \
-    "$API/users/$sa_uid/groups/$group_id" >/dev/null \
-    || fail "Keycloak refused to add the service account to group $GROUP"
-  echo "› service account: added to $GROUP"
-else
-  echo "› service account: member of $GROUP"
+  group_action="$(printf '%s\n' "$group_plan" | head -n 1)"
+  if [ "$group_action" = add ]; then
+    "${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" -X PUT \
+      "$API/users/$sa_uid/groups/$group_id" >/dev/null \
+      || fail "Keycloak refused to add the service account to group $GROUP"
+    echo "› service account: added to $GROUP"
+  else
+    echo "› service account: member of $GROUP"
+  fi
+  printf '%s\n' "$group_plan" | while IFS=$'\t' read -r action extra_id extra_name; do
+    [ "$action" = remove ] || continue
+    "${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" -X DELETE \
+      "$API/users/$sa_uid/groups/$extra_id" >/dev/null \
+      || fail "Keycloak refused to remove the service account from group $extra_name"
+    echo "› service account: removed from $extra_name"
+  done
 fi
-printf '%s\n' "$group_plan" | while IFS=$'\t' read -r action extra_id extra_name; do
-  [ "$action" = remove ] || continue
-  "${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" -X DELETE \
-    "$API/users/$sa_uid/groups/$extra_id" >/dev/null \
-    || fail "Keycloak refused to remove the service account from group $extra_name"
-  echo "› service account: removed from $extra_name"
-done
 
 # 11. The service account must hold no admin-API role. A ServicePrincipal reads and
 #     writes data through the engine; it never manages the identity provider.
@@ -513,12 +575,12 @@ try: print(json.load(sys.stdin).get("access_token") or "")
 except Exception: print("")' 2>/dev/null || true)"
 [ -n "$cc_token" ] || fail "the token endpoint refused the $CLIENT_ID client credentials — the secret did not stick"
 printf '%s' "$cc_token" > "$tmp/cc-token"
-python3 - "$tmp/cc-token" "$CLIENT_ID" "$GROUP" "${aud_list[@]}" <<'PY' \
-  || fail "the $CLIENT_ID token does not carry what the ServicePrincipal needs"
+python3 - "$tmp/cc-token" "$CLIENT_ID" "$KIND" "$GROUP" "${aud_list[@]}" <<'PY' \
+  || fail "the $CLIENT_ID token does not carry what the client needs"
 import base64, json, sys
 payload = open(sys.argv[1]).read().split(".")[1]
 claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
-client, group, wanted = sys.argv[2], sys.argv[3], sys.argv[4:]
+client, kind, group, wanted = sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5:]
 audiences = claims.get("aud") if isinstance(claims.get("aud"), list) else [claims.get("aud")]
 groups = claims.get("groups") or []
 problems = []
@@ -527,14 +589,25 @@ if claims.get("azp") != client:
 for audience in wanted:
     if audience not in audiences:
         problems.append("audience lacks %s (aud=%s)" % (audience, audiences))
-if sorted(groups) != [group]:
-    problems.append("groups is %r (expected [%s])" % (groups, group))
+if kind == "service":
+    if groups:
+        problems.append("groups is %r (a service client has no group)" % groups)
+else:
+    if sorted(groups) != [group]:
+        problems.append("groups is %r (expected [%s])" % (groups, group))
 if claims.get("preferred_username") != "service-account-" + client:
     problems.append("preferred_username is %r" % claims.get("preferred_username"))
 if problems:
     sys.exit("; ".join(problems))
 lifetime = claims.get("exp", 0) - claims.get("iat", 0)
-print("› token claims: azp=%s aud=%s groups=%s preferred_username=%s exp-iat=%s" % (
-    claims["azp"], audiences, groups, claims["preferred_username"], lifetime))
+if kind == "service":
+    print("› token claims: azp=%s aud=%s" % (claims["azp"], audiences))
+else:
+    print("› token claims: azp=%s aud=%s groups=%s preferred_username=%s exp-iat=%s" % (
+        claims["azp"], audiences, groups, claims["preferred_username"], lifetime))
 PY
-echo "keycloak-sync-principal: OK — $CLIENT_ID is confidential, owned by group $GROUP, with audiences [${aud_list[*]}] and no admin role"
+if [ "$KIND" = service ]; then
+  echo "keycloak-sync-principal: OK — $CLIENT_ID is a confidential service client with audiences [${aud_list[*]}], no group membership and no admin role"
+else
+  echo "keycloak-sync-principal: OK — $CLIENT_ID is confidential, owned by group $GROUP, with audiences [${aud_list[*]}] and no admin role"
+fi

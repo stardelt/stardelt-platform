@@ -172,6 +172,11 @@ install: deps _context _helm-repos ## Install all stardelt components (idempoten
 	@echo "› [6/11] Trino"
 	@$(MAKE) --no-print-directory trino
 
+	@if kubectl -n $(NAMESPACE) get configmap stardelt-identity >/dev/null 2>&1; then \
+	  echo "› Catalog service clients (platform#282): svc-catalog-* for every caller of the catalog"; \
+	  $(MAKE) --no-print-directory sync-catalog-clients; \
+	fi
+
 	@echo "› [7/11] Airflow/Superset Secrets (generated once, kept across installs)"
 	@NAMESPACE=$(NAMESPACE) bash scripts/app-secrets.sh
 
@@ -421,6 +426,29 @@ sync-principal: _context ## Create or converge a ServicePrincipal client and its
 delete-principal: _context ## Delete a ServicePrincipal client and its Secret (stardelt-managed only; needs YES=1)
 	@NAMESPACE=$(NAMESPACE) NAME=$(NAME) YES=$(YES) bash scripts/keycloak-sync-principal.sh --delete
 
+# Every caller of the Iceberg REST catalog gets its own confidential service client
+# (platform#282, step 1 of the catalog turn-on): the Trino coordinator, Nova, the Spark
+# Connect driver, the Airflow task pods and the bootstrap Job. Each token carries the
+# audience `lakekeeper`. Lakekeeper still runs `allowall` and does not check these yet;
+# this step only creates the identities, the callers send them in the follow-up tickets.
+CATALOG_CLIENTS := catalog-trino catalog-nova catalog-spark catalog-airflow catalog-bootstrap
+
+.PHONY: sync-catalog-clients
+sync-catalog-clients: _context ## Create/converge the five svc-catalog-* service clients and their Secrets (idempotent)
+	@NAMESPACE=$(NAMESPACE) KIND=service NAME=catalog-trino AUDIENCES=lakekeeper ROTATE=$(ROTATE) bash scripts/keycloak-sync-principal.sh
+	@NAMESPACE=$(NAMESPACE) KIND=service NAME=catalog-nova AUDIENCES=lakekeeper ROTATE=$(ROTATE) bash scripts/keycloak-sync-principal.sh
+	@NAMESPACE=$(NAMESPACE) KIND=service NAME=catalog-spark AUDIENCES=lakekeeper ROTATE=$(ROTATE) bash scripts/keycloak-sync-principal.sh
+	@NAMESPACE=$(NAMESPACE) KIND=service NAME=catalog-airflow AUDIENCES=lakekeeper ROTATE=$(ROTATE) bash scripts/keycloak-sync-principal.sh
+	@NAMESPACE=$(NAMESPACE) KIND=service NAME=catalog-bootstrap AUDIENCES=lakekeeper ROTATE=$(ROTATE) bash scripts/keycloak-sync-principal.sh
+
+.PHONY: delete-catalog-clients
+delete-catalog-clients: _context ## Delete the five svc-catalog-* service clients and their Secrets (stardelt-managed only; needs YES=1)
+	@NAMESPACE=$(NAMESPACE) KIND=service NAME=catalog-trino YES=$(YES) bash scripts/keycloak-sync-principal.sh --delete
+	@NAMESPACE=$(NAMESPACE) KIND=service NAME=catalog-nova YES=$(YES) bash scripts/keycloak-sync-principal.sh --delete
+	@NAMESPACE=$(NAMESPACE) KIND=service NAME=catalog-spark YES=$(YES) bash scripts/keycloak-sync-principal.sh --delete
+	@NAMESPACE=$(NAMESPACE) KIND=service NAME=catalog-airflow YES=$(YES) bash scripts/keycloak-sync-principal.sh --delete
+	@NAMESPACE=$(NAMESPACE) KIND=service NAME=catalog-bootstrap YES=$(YES) bash scripts/keycloak-sync-principal.sh --delete
+
 # The public client developer tools on a laptop sign in with (platform#157): the device grant and
 # PKCE to a loopback address. `make sync-dev-client DEV_CLIENT_ENABLED=false` switches it off.
 sync-dev-client: _context ## Converge the live realm's stardelt-dev client (device grant, PKCE, loopback redirects; idempotent)
@@ -498,6 +526,8 @@ install-identity: deps _context ## Install the platform IdP (Keycloak) at id.$(B
 	@$(MAKE) --no-print-directory sync-store-audience
 	@echo "› [10/11] guard: every client secret must authenticate at the token endpoint"
 	@$(MAKE) --no-print-directory verify-oidc-clients
+	@echo "› [10/11] Catalog callers get their own service clients (svc-catalog-*, platform#282)"
+	@$(MAKE) --no-print-directory sync-catalog-clients
 	@echo "› [11/11] Put the query engine behind the platform identity (TLS on the coordinator)"
 	@$(MAKE) --no-print-directory trino
 	@# Nova reads its Trino endpoint from the identity ConfigMap (authMode turned
