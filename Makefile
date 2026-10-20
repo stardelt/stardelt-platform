@@ -50,7 +50,7 @@ BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 .PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator trino upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-up dev-down dev-dns dev-dns-down
 .PHONY: chart-deps chart-template chart-install
 .PHONY: verify-backups verify-backups-identity verify-backups-nova verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
-.PHONY: sync-oidc-clients verify-oidc-clients verify-trino-tls sync-trino-groups sync-trino-group-sync-client sync-pipeline-runner-client sync-dev-client openbao test-openbao-policies seaweedfs-admin
+.PHONY: sync-oidc-clients verify-oidc-clients verify-trino-tls verify-trino-auth sync-trino-groups sync-trino-group-sync-client sync-pipeline-runner-client sync-dev-client openbao test-openbao-policies seaweedfs-admin
 .PHONY: external-secrets eso-stores
 
 help: ## Show this help
@@ -458,6 +458,12 @@ eso-stores: ## Create one External Secrets store per owner group and for managed
 # bearer token over TLS. TRINO_VERIFY_USER_PASSWORD=… adds the user check.
 verify-trino-tls: _context ## Prove the in-cluster Trino path is TLS-only and token-authenticated
 	@NAMESPACE=$(NAMESPACE) bash scripts/verify-trino-tls.sh
+
+# The path clients take, end to end: anonymous refusal, the service-account Secret,
+# the user's own token (TRINO_VERIFY_USER_PASSWORD=… adds that check), and
+# Superset's own stored connection — the one that went stale in platform#278.
+verify-trino-auth: _context ## Prove Trino's authentication end to end, including Superset's stored connection
+	@NAMESPACE=$(NAMESPACE) bash scripts/verify-trino-auth.sh
 
 install-identity: deps _context ## Install the platform IdP (Keycloak) at id.$(BASE_DOMAIN)
 	@kubectl get crd clusters.postgresql.cnpg.io >/dev/null 2>&1 || { \

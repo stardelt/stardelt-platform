@@ -520,30 +520,52 @@ make install-identity BASE_DOMAIN=alpha.dev.stardelt.io
 # admin API by scripts/keycloak-sync-trino-client.sh (confidential secret, PKCE off,
 # redirect URIs, aud-trino mapper on `nova`)
 
-# all three acceptance checks, against the running cluster
+# all four acceptance checks, against the running cluster
 NAMESPACE=stardelt TRINO_URL=https://trino.alpha.dev.stardelt.io \
   TRINO_VERIFY_USER=analyst TRINO_VERIFY_USER_PASSWORD=… \
   bash scripts/verify-trino-auth.sh
-#  1/3 anonymous          → HTTP 401, no query id
-#  2/3 service account    → current_user = superset   (Superset's path)
-#  3/3 user identity      → current_user = analyst    (the user's own token)
+#  1/4 anonymous          → HTTP 401, no query id
+#  2/4 service account    → current_user = superset   (the Secret behind Superset)
+#  3/4 user identity      → current_user = analyst    (the user's own token)
+#  4/4 stored connection  → current_user = superset   (the datasource Superset queries with)
 
 # read the service-account password deliberately if a machine client needs it
 kubectl -n stardelt get secret trino-password-db -o jsonpath='{.data.superset-password}' | base64 -d
 ```
 
 Superset queries as the **`superset` service account**: the tracked datasource URI points at the
-public host (`trino.<baseDomain>:443`) and the init Job rewrites it to
-`trino://superset:<password>@trino.<baseDomain>:443/warehouse` from Secret `trino-password-db`
-(key `superset-password`) — the password never reaches a tracked file. The public host is a
-deliberate choice: the driver needs TLS for password auth, and Superset's path did not have to
-move for the in-cluster hole to close (`manifests/trino-tls.yaml`); pointing it at the in-cluster
-TLS endpoint is a follow-up. The umbrella chart needs the same Trino overlay nested under `trino:`
-(the file above is flat for the per-component install) — still a follow-up. To rotate the service
-account: delete Secret `trino-password-db`, re-run `scripts/identity-bootstrap.sh`
-(`make install-identity` calls it), and re-run the Superset init Job so the datasource picks up the
-new password. Without `make install-identity` there is no service account and no Trino
-authentication, so the datasource stays credential-free and the init Job says so.
+public host (`trino.<baseDomain>:443`) and carries **no password** —
+`trino://superset@trino.<baseDomain>:443/warehouse`. The password never reaches a tracked file
+*or Superset's metadata database*: `SQLALCHEMY_CUSTOM_PASSWORD_STORE`
+(`helm-values/superset.yaml`, `configOverrides`) answers for the `trino` driver and the `superset`
+user with `TRINO_SUPERSET_PASSWORD` from the environment, read from Secret
+`trino-password-db` (key `superset-password`) every time Superset builds an engine — for SQL Lab,
+for charts, and in the worker that runs async queries and alerts. The public host is a deliberate choice: the driver
+needs TLS for password auth, and Superset's path did not have to move for the in-cluster hole to
+close (`manifests/trino-tls.yaml`); pointing it at the in-cluster TLS endpoint is a follow-up. The
+umbrella chart needs the same Trino overlay nested under `trino:` (the file above is flat for the
+per-component install) — still a follow-up.
+
+*Upgrading from the previous layout.* The old init Job copied the password into
+`database.sqlalchemy_uri`, and Superset keeps a second copy in `database.password`. Re-setting the
+URI without a password (`superset set-database-uri -d "Trino Warehouse" -u
+"trino://superset@trino.<baseDomain>:443/warehouse"` inside the pod) is not enough: with a custom
+password store configured, `set_sqlalchemy_uri` leaves the `password` column alone. Clear it once on
+the same row (`d.password = None`) and check that `database.sqlalchemy_uri` prints
+`trino://superset@…` — the store fills it in at connect time, so SQL Lab keeps working.
+
+*Rotation.* Delete Secret `trino-password-db` and re-run `scripts/identity-bootstrap.sh`
+(`make install-identity` calls it), then restart Trino so its password file is reloaded
+(`kubectl -n stardelt rollout restart deploy/trino-coordinator deploy/trino-worker`). **Superset
+needs nothing else**: its node and worker pods carry
+`secret.reloader.stakater.com/reload: trino-password-db`, so Reloader (`make reloader`) rolls them
+when the Secret changes — `helm-values/reloader.yaml` also enables `reloadOnCreate`, because the
+rotation replaces the Secret (delete, then re-create) and Reloader ignores create events by default.
+No init Job, no stored URI to rewrite. `make verify-trino-auth` proves
+the result, including step 4/4, which runs `SELECT current_user` through Superset's own stored
+connection. Without `make install-identity` there is no service account and no Trino
+authentication, so the datasource stays credential-free and the password store has nothing to
+inject.
 
 ### Turning on sign-in
 
@@ -1005,6 +1027,7 @@ scripts/
   lint.sh               bash -n + ShellCheck the shell scripts (make lint)
   port-forwards.sh      Background port-forwards to all services
   protect-branches.sh   Apply `main` branch protection in all five stardelt repos
+  superset-probe.py     Run `SELECT current_user` through Superset's own stored connection (verify-trino-auth 4/4)
   sync-realm-admin.sh   Re-apply Secret stardelt-realm-admin to the live realm's admin (import skips an existing realm)
   sync-realm-user-management.sh  Grant stardelt-admins the user-management roles + enforce brute force on the live realm
   sync-oidc-clients.sh  Re-apply Secret stardelt-oidc-clients to the live realm's clients (import skips an existing realm; trino delegated)
@@ -1013,7 +1036,7 @@ scripts/
   verify-notebook-identity.py  Headless hub login + run the quickstart in the pod (positive and 401 negative)
   verify-oidc-clients.sh Assert every client secret in Secret stardelt-oidc-clients authenticates at the token endpoint
   verify-realm-admin.sh Assert the realm-admin Secret still signs in to realm `stardelt`
-  verify-trino-auth.sh  Assert Trino refuses anonymous SQL and accepts user tokens + the service account
+  verify-trino-auth.sh  Assert Trino refuses anonymous SQL, accepts user tokens + the service account, and Superset's stored connection works
   helm-plugins/
     stardelt-dedupe/    Helm v4 post-renderer: deduplicates env lists
 ```

@@ -5,13 +5,18 @@
 #     TRINO_VERIFY_USER=analyst TRINO_VERIFY_USER_PASSWORD=... \
 #     bash scripts/verify-trino-auth.sh
 #
-# Three checks, in the order the acceptance criteria list them:
+# Four checks, in the order the acceptance criteria list them:
 #   1. anonymous          POST /v1/statement without credentials is refused (401, no query id);
 #   2. service account    the password-authenticator user from Secret trino-password-db still
-#                         gets queries back (`current_user` = superset) — Superset's path;
+#                         gets queries back (`current_user` = superset) — Superset's credential;
 #   3. user identity      a real Keycloak access token for TRINO_VERIFY_USER (OAuth2 device
 #                         grant on client `trino`, approval automated) authenticates, and
 #                         `current_user` is that user — not a shared account.
+#                         Skipped (not failed) when TRINO_VERIFY_USER_PASSWORD is unset.
+#   4. Superset's stored connection  the datasource row Superset actually queries through
+#                         (scripts/superset-probe.py, run inside the pod) signs in to Trino and
+#                         runs `SELECT current_user`. Check 2 tests the Secret; this one tests
+#                         the path queries take — the two diverged on 2026-10-20 (#278).
 #
 # Check 3 runs the same validation as the browser flow and as Nova's forwarded
 # token: Trino inspects the token's issuer and audience against the realm JWKS.
@@ -49,14 +54,14 @@ print(rows)
 PY
 }
 
-echo "› 1/3 anonymous POST /v1/statement (expect 401 and no query id)"
+echo "› 1/4 anonymous POST /v1/statement (expect 401 and no query id)"
 anon="$(curl -sS -o "$tmp/anon.json" -w '%{http_code}' -X POST "$TRINO_URL/v1/statement" \
   -H 'X-Trino-User: verify-anonymous' -d 'select 1')"
 [ "$anon" = "401" ] || fail "anonymous request answered $anon, expected 401 — Trino is not authenticating"
 [ -z "$(query_id < "$tmp/anon.json")" ] || fail "anonymous request was refused but still returned a query id"
 echo "  anonymous: HTTP $anon, no query id"
 
-echo "› 2/3 service account 'superset' (password file from Secret trino-password-db)"
+echo "› 2/4 service account 'superset' (password file from Secret trino-password-db)"
 kubectl -n "$NAMESPACE" get secret trino-password-db -o jsonpath='{.data.superset-password}' | base64 -d > "$tmp/superset-pw"
 [ -s "$tmp/superset-pw" ] || fail "Secret trino-password-db has no superset-password — run scripts/identity-bootstrap.sh"
 printf 'user = "superset:%s"\n' "$(cat "$tmp/superset-pw")" > "$tmp/superset.curlrc"
@@ -66,17 +71,36 @@ sf_rows="$(finish "$sf")"
 echo "  superset: query id $(printf '%s' "$sf" | query_id), rows $sf_rows"
 printf '%s' "$sf_rows" | grep -q superset || fail "service account did not authenticate as 'superset'"
 
-echo "› 3/3 user '$TRINO_VERIFY_USER' with a real Keycloak access token (device grant)"
+echo "› 3/4 user '$TRINO_VERIFY_USER' with a real Keycloak access token (device grant)"
 if [ -z "$USER_PASSWORD" ]; then
   echo "  TRINO_VERIFY_USER_PASSWORD not set — skipping the user check"
-  echo "verify-trino-auth: 2/3 checks passed"
-  exit 0
+else
+  kubectl -n "$NAMESPACE" get secret stardelt-oidc-clients -o jsonpath='{.data.trino}' | base64 -d > "$tmp/trino-secret"
+  [ -s "$tmp/trino-secret" ] || fail "stardelt-oidc-clients has no 'trino' key — run scripts/identity-bootstrap.sh"
+  ISSUER="$(kubectl -n "$NAMESPACE" get configmap stardelt-identity -o jsonpath='{.data.issuerUrl}')"
+  [ -n "$ISSUER" ] || fail "ConfigMap stardelt-identity has no issuerUrl — run 'make install-identity'"
+  ISSUER="$ISSUER" TRINO_URL="$TRINO_URL" USER="$TRINO_VERIFY_USER" PASSWORD="$USER_PASSWORD" \
+    CLIENT_SECRET_FILE="$tmp/trino-secret" python3 scripts/verify-trino-auth.py
 fi
-kubectl -n "$NAMESPACE" get secret stardelt-oidc-clients -o jsonpath='{.data.trino}' | base64 -d > "$tmp/trino-secret"
-[ -s "$tmp/trino-secret" ] || fail "stardelt-oidc-clients has no 'trino' key — run scripts/identity-bootstrap.sh"
-ISSUER="$(kubectl -n "$NAMESPACE" get configmap stardelt-identity -o jsonpath='{.data.issuerUrl}')"
-[ -n "$ISSUER" ] || fail "ConfigMap stardelt-identity has no issuerUrl — run 'make install-identity'"
-ISSUER="$ISSUER" TRINO_URL="$TRINO_URL" USER="$TRINO_VERIFY_USER" PASSWORD="$USER_PASSWORD" \
-  CLIENT_SECRET_FILE="$tmp/trino-secret" python3 scripts/verify-trino-auth.py
 
-echo "verify-trino-auth: 3/3 checks passed"
+echo "› 4/4 Superset's stored connection (the path queries actually take)"
+# The datasource row, the engine Superset builds from it and its password store —
+# not the Secret check 2 reads. A rotation that leaves Superset with a stale
+# password passes 2/4 and fails here.
+probe_rc=0
+probe_out="$(kubectl -n "$NAMESPACE" exec -i deploy/superset -- python - < scripts/superset-probe.py 2>&1)" \
+  || probe_rc=$?
+# kubectl appends its own "command terminated with exit code 1" — report the
+# probe's line, not that one.
+probe_line="$(printf '%s\n' "$probe_out" | grep -E '^(FAILED:|current_user =)' | tail -n 1 || true)"
+[ -n "$probe_line" ] || probe_line="$(printf '%s\n' "$probe_out" | tail -n 1 || true)"
+if [ "$probe_rc" -ne 0 ] || [ "$probe_line" != "current_user = superset" ]; then
+  fail "Superset's own stored connection cannot sign in to Trino: $probe_line"
+fi
+echo "  $probe_line"
+
+if [ -z "$USER_PASSWORD" ]; then
+  echo "verify-trino-auth: 3/4 checks passed (the user check was skipped)"
+else
+  echo "verify-trino-auth: 4/4 checks passed"
+fi
