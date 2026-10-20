@@ -169,13 +169,16 @@ install: deps _context _helm-repos ## Install all stardelt components (idempoten
 	@echo "› [5/11] catalog ingress NetworkPolicy (only the components that need it)"
 	@kubectl apply -f manifests/lakekeeper-network-policy.yaml
 
-	@echo "› [6/11] Trino"
-	@$(MAKE) --no-print-directory trino
-
+# Before Trino: its `warehouse` catalog authenticates as svc-catalog-trino
+# (platform#283), so the Secret has to exist when the overlay that uses it is
+# applied — otherwise the coordinator refuses the catalog and `helm --wait` fails.
 	@if kubectl -n $(NAMESPACE) get configmap stardelt-identity >/dev/null 2>&1; then \
 	  echo "› Catalog service clients (platform#282): svc-catalog-* for every caller of the catalog"; \
 	  $(MAKE) --no-print-directory sync-catalog-clients; \
 	fi
+
+	@echo "› [6/11] Trino"
+	@$(MAKE) --no-print-directory trino
 
 	@echo "› [7/11] Airflow/Superset Secrets (generated once, kept across installs)"
 	@NAMESPACE=$(NAMESPACE) bash scripts/app-secrets.sh
