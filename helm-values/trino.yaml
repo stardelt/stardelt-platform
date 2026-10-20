@@ -36,8 +36,11 @@ additionalConfigProperties:
 
 coordinator:
   # Rotating the S3 key restarts the engine (running queries end): Reloader, helm-values/reloader.yaml.
+  # The catalog's client credential (platform#283) is reloaded the same way: a rotated
+  # svc-catalog-trino Secret restarts the coordinator, because Trino reads ${ENV:…} once at
+  # startup and the catalog's token comes from those variables.
   annotations:
-    secret.reloader.stakater.com/reload: "stardelt-s3-creds"
+    secret.reloader.stakater.com/reload: "stardelt-s3-creds,svc-catalog-trino"
   jvm:
     maxHeapSize: "2G"
     gcMethod:
@@ -79,7 +82,7 @@ coordinator:
 
 worker:
   annotations:
-    secret.reloader.stakater.com/reload: "stardelt-s3-creds"
+    secret.reloader.stakater.com/reload: "stardelt-s3-creds,svc-catalog-trino"
   jvm:
     maxHeapSize: "2G"
     gcMethod:
@@ -137,6 +140,25 @@ env:
   # no per-deployment host baked into a tracked file.
   - name: TRINO_OIDC_ISSUER
     valueFrom: { configMapKeyRef: { name: stardelt-identity, key: issuerUrl, optional: true } }
+  # Catalog sign-in (platform#283, step 2 of the catalog turn-on). The coordinator and
+  # every worker open the Iceberg REST catalog themselves, so each JVM asks the realm
+  # for its own client-credentials token: Secret svc-catalog-trino (KIND=service,
+  # platform#282) is the caller's identity, and the catalog properties that consume
+  # these variables live in helm-values/trino-identity.yaml — a catalog with
+  # `security=OAUTH2` and no credential is refused at load time (OAuth2SecurityConfig),
+  # so it may only be rendered where an IdP and therefore a Secret exist.
+  # Optional, like the identity variables above: without an IdP neither the Secret nor
+  # the ConfigMap exists, the catalog properties are never rendered, and Trino keeps
+  # talking to Lakekeeper anonymously (the `install-core` shape).
+  - name: CATALOG_CLIENT_ID
+    valueFrom: { secretKeyRef: { name: svc-catalog-trino, key: client-id, optional: true } }
+  - name: CATALOG_CLIENT_SECRET
+    valueFrom: { secretKeyRef: { name: svc-catalog-trino, key: client-secret, optional: true } }
+  # Token endpoint = <issuer>/protocol/openid-connect/token. The kubelet expands $(VAR)
+  # from a variable defined earlier in this list, so the realm's public URL stays in
+  # ConfigMap stardelt-identity instead of being repeated in a tracked file.
+  - name: CATALOG_TOKEN_URL
+    value: "$(TRINO_OIDC_ISSUER)/protocol/openid-connect/token"
   # Password of the PKCS12 keystore cert-manager writes into Secret
   # trino-coordinator-tls (manifests/trino-tls.yaml). Only the TLS overlay reads
   # it; optional like the other identity variables so a cluster without an IdP
@@ -145,6 +167,10 @@ env:
     valueFrom: { secretKeyRef: { name: trino-tls-keystore, key: password, optional: true } }
 
 catalogs:
+  # Keep in sync: helm-values/trino-identity.yaml repeats `warehouse` verbatim and adds
+  # the catalog's OAuth2 properties (platform#283) — Helm replaces a map value instead
+  # of merging it, so an edit here must be mirrored there or the overlay silently
+  # reverts it.
   warehouse: |
     connector.name=iceberg
     iceberg.catalog.type=rest

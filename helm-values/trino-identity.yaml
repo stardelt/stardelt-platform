@@ -58,6 +58,72 @@
 #   * `additionalConfigProperties` keeps only what the worker also binds:
 #     the forwarded-header switch and the internal-communication secret.
 
+# Catalog sign-in (platform#283, step 2 of the catalog turn-on): the Iceberg REST
+# catalog authenticates as the service client svc-catalog-trino with the
+# client-credentials grant and sends Lakekeeper a bearer token on every catalog call.
+# Lakekeeper still runs `allowall` and ignores the header; this step makes the callers
+# correct, so the enforcement step can refuse an anonymous one.
+#
+# Why the whole `warehouse` catalog is repeated here instead of one line added to
+# helm-values/trino.yaml: Helm replaces a map value instead of merging it, and Trino
+# refuses to load a catalog with `iceberg.rest-catalog.security=OAUTH2` and no
+# credential ("OAuth2 requires a credential or token", OAuth2SecurityConfig). The base
+# values are also the `install-core` path, which has no IdP, no Secret and therefore no
+# credential — one line there would crash-loop Trino on a cluster without identity.
+# Keep this block identical to the base one apart from the three OAuth2 lines.
+#
+# Scope: Iceberg requests `scope=catalog` by default, and this realm rejects it —
+# `400 invalid_scope: Invalid scopes: catalog` — just as it rejects `lakekeeper`: the
+# realm has a client scope for neither, so the exchange never returns a token and the
+# catalog cannot load (seen live on 2026-10-20). `openid` is a default scope of every
+# client in the realm and is accepted for client credentials (verified against the
+# live realm), and the token still carries `aud=lakekeeper` because client
+# `svc-catalog-trino` has an `aud-lakekeeper` audience mapper — the audience is what
+# the catalog will check, and the mapper puts it on the token whatever the scope is.
+catalogs:
+  warehouse: |
+    connector.name=iceberg
+    iceberg.catalog.type=rest
+    iceberg.rest-catalog.uri=http://lakekeeper.stardelt.svc.cluster.local:8181/catalog
+    iceberg.rest-catalog.warehouse=warehouse
+    iceberg.rest-catalog.vended-credentials-enabled=false
+    # The caller's own identity: client id and secret come from Secret
+    # svc-catalog-trino via the coordinator's and worker's env (helm-values/trino.yaml);
+    # each Trino JVM does its own client-credentials exchange and refreshes the token
+    # before it expires. The endpoint is the realm's token endpoint, built from
+    # ConfigMap stardelt-identity's issuerUrl — no secret and no token in this file.
+    iceberg.rest-catalog.security=OAUTH2
+    iceberg.rest-catalog.oauth2.server-uri=${ENV:CATALOG_TOKEN_URL}
+    iceberg.rest-catalog.oauth2.credential=${ENV:CATALOG_CLIENT_ID}:${ENV:CATALOG_CLIENT_SECRET}
+    # Without this Iceberg asks for `scope=catalog`, which this realm does not have.
+    iceberg.rest-catalog.oauth2.scope=openid
+    fs.native-s3.enabled=true
+    s3.endpoint=http://seaweedfs-s3.stardelt.svc.cluster.local:8333
+    s3.region=us-east-1
+    s3.path-style-access=true
+    s3.aws-access-key=${ENV:S3_ACCESS_KEY}
+    s3.aws-secret-key=${ENV:S3_SECRET_KEY}
+    # Single-replica SeaweedFS volume server can't sustain Trino's default
+    # parallel HTTP range requests (broken pipe / connection reset). Throttle
+    # both connection pool and the Iceberg metadata enumeration threads.
+    s3.max-connections=16
+    iceberg.split-manager-threads=4
+    iceberg.metadata.parallelism=2
+    # Worker-local file-system cache for object-store reads (platform#134,
+    # Trino 480: `fs.cache.*` per catalog; there is no cache-manager setting
+    # in 480). Measured on the dev cluster 2026-10-19 against a 38M-row /
+    # 0.66 GB full scan of nyc_taxi.yellow_trips: repeat scans drop from
+    # 154 S3 GETs + 660 MB to 1 GET + 0 MB, wall time 1.5-1.9s -> 1.2-1.7s.
+    # The win is S3 offload (the single-replica SeaweedFS volume server is
+    # the bottleneck the throttles above protect), not latency — Parquet
+    # decode dominates on one node. Best-effort local cache only: a pod
+    # restart or scale-to-zero (M-02) discards it with the emptyDir, and the
+    # next scan repopulates (cold scan is slower: 5.1s vs 3.2s uncached).
+    fs.cache.enabled=true
+    fs.cache.directories=/var/trino/cache
+    fs.cache.max-sizes=10GB
+    fs.cache.ttl=7d
+
 server:
   config:
     # PASSWORD first: tried before OAUTH2, so a Basic header from a service

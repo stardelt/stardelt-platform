@@ -2,6 +2,12 @@
 # at SeaweedFS / S3. Idempotent: skips bootstrap if already bootstrapped, skips
 # warehouse create if it already exists (409 Conflict). If it exists, its storage
 # credential is refreshed from the S3 Secret, so a rotated key takes effect.
+#
+# Catalog sign-in (platform#283): every management call carries a client-credentials
+# token for `svc-catalog-bootstrap` — the Job's own identity (platform#282). Lakekeeper
+# still runs `allowall` and ignores the header; the Job is made correct now so the
+# enforcement step can refuse an anonymous call. Without an IdP the Secret and the
+# issuer are absent and the Job keeps calling anonymously, as it does today.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -35,12 +41,56 @@ spec:
               valueFrom: { secretKeyRef: { name: stardelt-s3-creds, key: access-key } }
             - name: S3_SECRET_KEY
               valueFrom: { secretKeyRef: { name: stardelt-s3-creds, key: secret-key } }
+            # Token endpoint = <issuer>/protocol/openid-connect/token; the client
+            # credentials themselves are mounted as files below, so neither the id nor
+            # the secret reaches argv, an environment dump or a log line.
+            - name: CATALOG_OIDC_ISSUER
+              valueFrom: { configMapKeyRef: { name: stardelt-identity, key: issuerUrl, optional: true } }
+          volumeMounts:
+            - name: catalog-client
+              mountPath: /var/run/secrets/catalog-client
+              readOnly: true
           command: ["/bin/sh", "-c"]
           args:
             - |
               set -e
+              umask 077
+              # Catalog sign-in (platform#283, step 2 of the catalog turn-on). The Job
+              # asks the realm for a token as `svc-catalog-bootstrap` and sends it on
+              # every management call; Lakekeeper ignores it until it validates tokens,
+              # but an exchange that fails must not fall back to anonymous silently.
+              # The credential is read from the mounted Secret files (`--data-urlencode
+              # NAME@file` never puts it in argv), the token goes to a private file and
+              # reaches curl through `-H @file`, and the EXIT trap below removes both.
+              AUTH_ARGS=""
+              CRED_DIR=/var/run/secrets/catalog-client
+              TOKEN_FILE=/tmp/catalog-token.json
+              AUTH_FILE=/tmp/catalog-auth-header
+              trap 'rm -f "$TOKEN_FILE" "$AUTH_FILE" /tmp/cred.json /tmp/wh.json' EXIT
+              if [ -s "$CRED_DIR/client-id" ] && [ -s "$CRED_DIR/client-secret" ] && [ -n "${CATALOG_OIDC_ISSUER:-}" ]; then
+                echo "▶ requesting a client-credentials token for $(cat "$CRED_DIR/client-id")"
+                if ! curl -fsS -X POST "${CATALOG_OIDC_ISSUER%/}/protocol/openid-connect/token" \
+                    --data-urlencode grant_type=client_credentials \
+                    --data-urlencode client_id@"$CRED_DIR/client-id" \
+                    --data-urlencode client_secret@"$CRED_DIR/client-secret" \
+                    -o "$TOKEN_FILE"; then
+                  echo "the realm's token endpoint refused svc-catalog-bootstrap — run 'make sync-catalog-clients'" >&2
+                  exit 1
+                fi
+                TOKEN=$(sed -n 's/.*"access_token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$TOKEN_FILE" | head -n 1)
+                if [ -z "$TOKEN" ]; then
+                  echo "the token response carried no access_token — is svc-catalog-bootstrap enabled?" >&2
+                  exit 1
+                fi
+                printf 'Authorization: Bearer %s\n' "$TOKEN" > "$AUTH_FILE"
+                EXPIRES=$(sed -n 's/.*"expires_in"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' "$TOKEN_FILE" | head -n 1)
+                echo "✓ token acquired for svc-catalog-bootstrap${EXPIRES:+ (expires in ${EXPIRES}s)}"
+                AUTH_ARGS="-H @$AUTH_FILE"
+              else
+                echo "▶ no svc-catalog-bootstrap client or realm issuer — calling the management API anonymously"
+              fi
               echo "▶ checking Lakekeeper info"
-              INFO=$(curl -fsS "$LK/management/v1/info")
+              INFO=$(curl -fsS $AUTH_ARGS "$LK/management/v1/info")
               echo "$INFO"
               BOOTSTRAPPED=$(echo "$INFO" | grep -o '"bootstrapped":[^,}]*' | cut -d: -f2 | tr -d ' "')
 
@@ -48,7 +98,7 @@ spec:
                 echo "✓ already bootstrapped"
               else
                 echo "▶ bootstrapping"
-                curl -fsS -X POST -H 'Content-Type: application/json' \
+                curl -fsS $AUTH_ARGS -X POST -H 'Content-Type: application/json' \
                   -d '{"accept-terms-of-use":true,"is-operator":true}' \
                   "$LK/management/v1/bootstrap"
                 echo
@@ -56,7 +106,7 @@ spec:
               fi
 
               echo "▶ checking for existing 'warehouse'"
-              EXISTING=$(curl -fsS "$LK/management/v1/warehouse" || echo '{"warehouses":[]}')
+              EXISTING=$(curl -fsS $AUTH_ARGS "$LK/management/v1/warehouse" || echo '{"warehouses":[]}')
               echo "$EXISTING"
               if echo "$EXISTING" | grep -q '"name":"warehouse"'; then
                 echo "✓ warehouse 'warehouse' already exists — refreshing its storage credential"
@@ -65,9 +115,8 @@ spec:
                   echo "could not read the id of warehouse 'warehouse'" >&2
                   exit 1
                 fi
-                # Same care as below: the payload carries the S3 secret key.
-                umask 077
-                trap 'rm -f /tmp/cred.json' EXIT
+                # Same care as below: the payload carries the S3 secret key, and the
+                # EXIT trap at the top removes the file (umask 077 is set there too).
                 cat > /tmp/cred.json <<EOF
                 {
                   "new-storage-credential": {
@@ -78,7 +127,7 @@ spec:
                   }
                 }
               EOF
-                curl -fsS -X POST -H 'Content-Type: application/json' \
+                curl -fsS $AUTH_ARGS -X POST -H 'Content-Type: application/json' \
                   -d @/tmp/cred.json \
                   "$LK/management/v1/warehouse/$WH_ID/storage-credential"
                 echo
@@ -89,8 +138,6 @@ spec:
               echo "▶ creating warehouse 'warehouse' on s3://$S3_BUCKET ($S3_ENDPOINT)"
               # The payload carries the S3 secret key: keep the file private, remove it
               # on exit, and never print it (job logs are readable by anyone with pods/log).
-              umask 077
-              trap 'rm -f /tmp/wh.json' EXIT
               cat > /tmp/wh.json <<EOF
               {
                 "warehouse-name": "warehouse",
@@ -114,8 +161,17 @@ spec:
                 }
               }
               EOF
-              curl -fsS -X POST -H 'Content-Type: application/json' \
+              curl -fsS $AUTH_ARGS -X POST -H 'Content-Type: application/json' \
                 -d @/tmp/wh.json \
                 "$LK/management/v1/warehouse"
               echo
               echo "✓ warehouse created"
+      volumes:
+        # Client credentials for svc-catalog-bootstrap (platform#283): mounted as files,
+        # so the Job never puts the id or the secret into argv. Optional — a cluster
+        # without an IdP has no Secret and the Job calls the management API anonymously,
+        # as it did before the catalog's authentication existed.
+        - name: catalog-client
+          secret:
+            secretName: svc-catalog-bootstrap
+            optional: true
