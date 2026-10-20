@@ -389,6 +389,26 @@ Keycloak first, then to each Secret, and proves every new value with a client-cr
 tokens yet — the callers start sending them in the follow-up steps (#283, #284); only then can one
 caller be revoked at a time.
 
+*Catalog sign-in for Trino, Spark Connect and the bootstrap Job (platform#283, step 2).* Those
+three callers now obtain a token from the realm's token endpoint and send it as
+`Authorization: Bearer` on every catalog call; Lakekeeper ignores it until it validates tokens.
+Trino's `warehouse` catalog gains `iceberg.rest-catalog.security=OAUTH2` plus the credential and
+token-endpoint properties in `helm-values/trino-identity.yaml` (not in the base values: Trino
+refuses to load a catalog with `security=OAUTH2` and no credential, and the base values are also
+the `install-core` path, which has no IdP). Coordinator and workers read `client-id` and
+`client-secret` from Secret `svc-catalog-trino` through their environment, so each JVM does its own
+exchange, and Reloader restarts them when that Secret rotates. The Spark Connect driver builds
+`spark.sql.catalog.warehouse.credential` and `.oauth2-server-uri` at startup from Secret
+`svc-catalog-spark` (`images/spark/spark-connect-entrypoint.sh`) — the credential never enters
+`spark-defaults.conf`. The bootstrap Job mounts Secret `svc-catalog-bootstrap` as files and sends
+the token on every management call (`--data-urlencode client_secret@file`, `-H @file`), so neither
+the secret nor the token appears in argv or a log line. **No `scope` is requested**: the realm has
+no client scope named `lakekeeper`, so `scope=lakekeeper` is answered with `400 invalid_scope`; the
+`aud-lakekeeper` audience mapper puts the audience on the token regardless, which is what
+Lakekeeper will check. Evidence that a caller asked for a token is Keycloak's own event log —
+`kubectl -n stardelt logs deploy/keycloak | grep 'type="CLIENT_LOGIN"'` names the client id and the
+grant type, never the token.
+
 *Sandbox secret store (opt-in, platform#160).* `make openbao` installs OpenBao (MPL-2.0, the one documented
 non-permissive component, see the licence page) as the secret store of a sandbox, the store that External Secrets and the
 platform's connections read (decision D23). It is not part of `make install`; production installs use the customer's own

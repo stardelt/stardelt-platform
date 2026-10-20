@@ -126,6 +126,11 @@ data:
     # endpoint and credentials mirror helm-values/trino.yaml; Lakekeeper runs
     # with authz=allowall and without vended credentials, so Spark signs its
     # own S3 requests with the Secret above.
+    #
+    # Catalog sign-in (platform#283): `credential` and `oauth2-server-uri` are
+    # NOT here — the driver's entrypoint (images/spark/spark-connect-entrypoint.sh)
+    # adds them as --conf from Secret svc-catalog-spark and ConfigMap
+    # stardelt-identity, because the client secret must never sit in a ConfigMap.
     spark.sql.extensions                                    org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
     spark.sql.catalog.warehouse                             org.apache.iceberg.spark.SparkCatalog
     spark.sql.catalog.warehouse.type                        rest
@@ -155,9 +160,11 @@ spec:
   template:
     metadata:
       labels: { app.kubernetes.io/name: spark-connect, app.kubernetes.io/part-of: stardelt }
-      # Reloader restarts the driver when the S3 key changes (helm-values/reloader.yaml).
+      # Reloader restarts the driver when the S3 key changes (helm-values/reloader.yaml),
+      # and when the catalog client's Secret rotates (platform#283): the credential is
+      # read from the environment when the driver starts.
       annotations:
-        secret.reloader.stakater.com/reload: "stardelt-s3-creds"
+        secret.reloader.stakater.com/reload: "stardelt-s3-creds,svc-catalog-spark"
     spec:
       serviceAccountName: spark-connect
       imagePullSecrets:
@@ -187,6 +194,26 @@ spec:
             - name: AWS_SECRET_ACCESS_KEY
               valueFrom:
                 secretKeyRef: { name: stardelt-s3-creds, key: secret-key }
+            # Catalog sign-in (platform#283, step 2 of the catalog turn-on): the REST
+            # catalog authenticates as the service client svc-catalog-spark
+            # (KIND=service, platform#282) and sends Lakekeeper a bearer token on every
+            # catalog call. The entrypoint turns these three variables into
+            # `spark.sql.catalog.warehouse.credential` and `.oauth2-server-uri`, so the
+            # client secret never lands in spark-defaults.conf, an argv, or a log line.
+            # Optional, like Trino's: without an IdP neither the Secret nor the ConfigMap
+            # exists and the driver reaches Lakekeeper anonymously — the `install-core`
+            # shape, which Lakekeeper's `allowall` still accepts.
+            - name: CATALOG_CLIENT_ID
+              valueFrom:
+                secretKeyRef: { name: svc-catalog-spark, key: client-id, optional: true }
+            - name: CATALOG_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: { name: svc-catalog-spark, key: client-secret, optional: true }
+            # Token endpoint = <issuer>/protocol/openid-connect/token, derived in the
+            # entrypoint from the identity contract, so no realm URL is tracked here.
+            - name: CATALOG_OIDC_ISSUER
+              valueFrom:
+                configMapKeyRef: { name: stardelt-identity, key: issuerUrl, optional: true }
           ports:
             - name: connect
               containerPort: 15002
