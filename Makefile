@@ -154,6 +154,9 @@ install: deps _context _helm-repos ## Install all stardelt components (idempoten
 	  $(HELM_FLAGS) \
 	  -f helm-values/seaweedfs.yaml
 
+	@echo "› [3/11] Versioned notebooks bucket (published notebooks, platform#290)"
+	@$(MAKE) --no-print-directory notebooks-bucket
+
 	@echo "› [4/11] Lakekeeper"
 	@helm upgrade --install lakekeeper lakekeeper/lakekeeper \
 	  --version $(LAKEKEEPER_VERSION) \
@@ -462,6 +465,12 @@ sync-dev-client: _context ## Converge the live realm's stardelt-dev client (devi
 sync-store-audience: _context ## Converge the live realm so Nova, hub and dev-client tokens carry the secret store's audience (idempotent)
 	@NAMESPACE=$(NAMESPACE) bash scripts/keycloak-sync-store-audience.sh
 
+# The audience `nova` on the notebook hub's and the developer client's tokens, so a notebook can
+# call Nova with the token it already has (platform#290, notebook publishing; spike platform#268 B2).
+.PHONY: sync-nova-audience
+sync-nova-audience: _context ## Converge the live realm so hub and dev-client tokens carry Nova's audience (idempotent)
+	@NAMESPACE=$(NAMESPACE) bash scripts/keycloak-sync-nova-audience.sh
+
 # External Secrets Operator (decision D23): syncs a secret store into Kubernetes Secrets. Opt-in.
 external-secrets: deps _context _helm-repos ## Install External Secrets Operator (opt-in)
 	@helm upgrade --install external-secrets external-secrets/external-secrets --version $(EXTERNAL_SECRETS_VERSION) $(HELM_FLAGS) -f helm-values/external-secrets.yaml
@@ -528,6 +537,8 @@ install-identity: deps _context ## Install the platform IdP (Keycloak) at id.$(B
 	@$(MAKE) --no-print-directory sync-store-audience
 	@echo "› [10/11] guard: every client secret must authenticate at the token endpoint"
 	@$(MAKE) --no-print-directory verify-oidc-clients
+	@echo "› [10/11] Sync the live realm's Nova audience (notebook publishing, platform#290)"
+	@$(MAKE) --no-print-directory sync-nova-audience
 	@echo "› [10/11] Catalog callers get their own service clients (svc-catalog-*, platform#282)"
 	@$(MAKE) --no-print-directory sync-catalog-clients
 	@echo "› [11/11] Put the query engine behind the platform identity (TLS on the coordinator)"
@@ -678,6 +689,17 @@ build-jupyter-image: ## Build the Jupyter single-user image (ghcr.io/stardelt/ju
 push-jupyter-image: ## Push the Jupyter single-user image to ghcr.io
 	@echo "› pushing $(JUPYTER_IMAGE)"
 	@docker push $(JUPYTER_IMAGE)
+
+# ---------------------------------------------------------------------------
+# Published notebooks — the versioned bucket Nova writes notebook versions to
+# (platform#290). The version, not the key, is what a scheduled notebook pins
+# (spike #268 B1: byte-stable across overwrites, deletes and gateway restarts).
+# The SeaweedFS chart's bucket hook only creates buckets, so this calls the S3
+# API with the platform identity; re-running prints the same bucket/state line.
+# ---------------------------------------------------------------------------
+.PHONY: notebooks-bucket
+notebooks-bucket: _context ## Create the versioned `notebooks` bucket for published notebooks (idempotent)
+	@NAMESPACE=$(NAMESPACE) bash scripts/create-notebooks-bucket.sh
 
 # ---------------------------------------------------------------------------
 # Port-forwards
