@@ -16,6 +16,7 @@ NAMESPACE ?= stardelt
 CNPG_VERSION       := 0.28.2
 SEAWEEDFS_VERSION  := 4.25.1
 LAKEKEEPER_VERSION := 0.11.0
+OPENFGA_VERSION    ?= 0.2.62
 TRINO_VERSION      := 1.42.2
 AIRFLOW_VERSION    := 1.21.0
 RELOADER_VERSION   := 2.2.18
@@ -47,7 +48,7 @@ CHART_EXTRA ?=
 # client redirect URIs on the app subdomains. Same default as `dev-dns`.
 BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 
-.PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator trino upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-up dev-down dev-dns dev-dns-down
+.PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator openfga trino upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-up dev-down dev-dns dev-dns-down
 .PHONY: chart-deps chart-template chart-install
 .PHONY: verify-backups verify-backups-identity verify-backups-nova verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
 .PHONY: sync-oidc-clients verify-oidc-clients verify-trino-tls verify-trino-auth sync-trino-groups sync-trino-group-sync-client sync-pipeline-runner-client sync-dev-client openbao test-openbao-policies seaweedfs-admin
@@ -120,6 +121,7 @@ _helm-repos:
 	@helm repo add cnpg           https://cloudnative-pg.github.io/charts           2>/dev/null || true
 	@helm repo add seaweedfs      https://seaweedfs.github.io/seaweedfs/helm         2>/dev/null || true
 	@helm repo add lakekeeper     https://lakekeeper.github.io/lakekeeper-charts/   2>/dev/null || true
+	@helm repo add openfga        https://openfga.github.io/helm-charts              2>/dev/null || true
 	@helm repo add trino          https://trinodb.github.io/charts                   2>/dev/null || true
 	@helm repo add apache-airflow https://airflow.apache.org                         2>/dev/null || true
 	@helm repo add superset       https://apache.github.io/superset                  2>/dev/null || true
@@ -156,6 +158,20 @@ install: deps _context _helm-repos ## Install all stardelt components (idempoten
 
 	@echo "› [3/11] Versioned notebooks bucket (published notebooks, platform#290)"
 	@$(MAKE) --no-print-directory notebooks-bucket
+
+	@# OpenFGA (platform#302): the permission store for the catalog cutover. Only
+	@# where the platform has an IdP — authorization is checked against a person's
+	@# OIDC subject, and a bare install has nothing to check. Lakekeeper keeps
+	@# `allowall` until #304, so this deployment changes no behaviour.
+	@if kubectl -n $(NAMESPACE) get configmap stardelt-identity >/dev/null 2>&1; then \
+	  echo "› [4/11] OpenFGA: the catalog's permission store (own Postgres, not wired yet)"; \
+	  kubectl apply -f manifests/openfga-pg.yaml; \
+	  kubectl -n $(NAMESPACE) wait --for=condition=Ready --timeout=300s cluster/openfga-pg; \
+	  $(MAKE) --no-print-directory verify-backup-config PG_CLUSTER=openfga-pg; \
+	  echo "› [4/11] OpenFGA ingress: only the Lakekeeper catalog and migration pods"; \
+	  kubectl apply -f manifests/openfga-network-policy.yaml; \
+	  $(MAKE) --no-print-directory openfga; \
+	fi
 
 	@echo "› [4/11] Lakekeeper"
 	@helm upgrade --install lakekeeper lakekeeper/lakekeeper \
@@ -273,6 +289,19 @@ install-notebooks: deps _context _helm-repos ## Install JupyterHub (notebooks)
 	  -f helm-values/jupyterhub.yaml
 	@kubectl -n $(NAMESPACE) rollout status deploy/hub --timeout=5m
 	@echo "JupyterHub installed. Public service: proxy-public:80."
+
+# ---------------------------------------------------------------------------
+# OpenFGA — the catalog's permission store (platform#302, authz 1/8).
+#
+# Deployed next to Lakekeeper but, deliberately, not wired to it yet:
+# `helm-values/lakekeeper.yaml` still sets `authz.backend: allowall`, so no
+# request is checked against these tuples until the cutover (platform#304,
+# `make catalog-authz`). Its own CloudNative-PG Cluster (manifests/openfga-pg.yaml)
+# and daily base backups; `make verify-backup-config PG_CLUSTER=openfga-pg`
+# is the post-apply guard.
+# ---------------------------------------------------------------------------
+openfga: deps _context _helm-repos ## Install OpenFGA (catalog permission store; not wired to Lakekeeper yet)
+	@helm upgrade --install openfga openfga/openfga --version $(OPENFGA_VERSION) $(HELM_FLAGS) -f helm-values/openfga.yaml
 
 # ---------------------------------------------------------------------------
 # Spark — heavy compute over the same Iceberg catalog (manifests/spark.yaml).
@@ -605,8 +634,10 @@ uninstall: _context ## Uninstall all stardelt components (reverse order)
 	@kubectl delete -f manifests/keycloak.yaml               --ignore-not-found
 	@kubectl -n $(NAMESPACE) delete configmap keycloak-realm keycloak-env stardelt-identity --ignore-not-found
 	@kubectl delete -f manifests/lakekeeper-network-policy.yaml --ignore-not-found
+	@kubectl delete -f manifests/openfga-network-policy.yaml  --ignore-not-found
 	@kubectl delete -f manifests/lakekeeper-bootstrap.yaml   --ignore-not-found
 	@kubectl delete -f manifests/cnpg-postgres.yaml          --ignore-not-found
+	@kubectl delete -f manifests/openfga-pg.yaml             --ignore-not-found
 
 	@echo "› uninstalling helm releases"
 	@helm uninstall jupyterhub --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
@@ -618,6 +649,7 @@ uninstall: _context ## Uninstall all stardelt components (reverse order)
 	@helm uninstall openbao    --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@helm uninstall trino      --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@helm uninstall lakekeeper --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
+	@helm uninstall openfga    --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@helm uninstall seaweedfs  --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@helm uninstall cnpg       --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 

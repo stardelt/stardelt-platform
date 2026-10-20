@@ -1,5 +1,7 @@
-# Daily base backup of the catalog's Postgres, on top of the continuous WAL
-# archiving configured in `cnpg-postgres.yaml` (spec.backup.barmanObjectStore).
+# Daily base backup of the platform's Postgres clusters, on top of the
+# continuous WAL archiving configured in each Cluster's
+# `spec.backup.barmanObjectStore` (`cnpg-postgres.yaml` for the catalog,
+# `openfga-pg.yaml` for the permission store).
 #
 # WAL alone recovers to a point in time; a base backup makes the restore fast
 # instead of replaying every WAL segment since the volume was created. Together
@@ -10,6 +12,7 @@
 #
 # `immediate: true` takes a first backup right away, which is what makes a fresh
 # install verifiable — `kubectl -n stardelt get backups` must show one completed.
+---
 apiVersion: postgresql.cnpg.io/v1
 kind: ScheduledBackup
 metadata:
@@ -25,3 +28,18 @@ spec:
   method: barmanObjectStore
   cluster:
     name: lakekeeper-pg
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: openfga-pg-daily
+  namespace: stardelt
+spec:
+  # Same window as the catalog's; the two Clusters are independent, so the
+  # overlap costs one extra base backup per night and keeps the cron in one place.
+  schedule: "0 30 2 * * *"
+  immediate: true
+  backupOwnerReference: self
+  method: barmanObjectStore
+  cluster:
+    name: openfga-pg

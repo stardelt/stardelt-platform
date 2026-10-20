@@ -894,6 +894,54 @@ login responses outgrow nginx's default 4k header buffer.
 
 ---
 
+## OpenFGA (catalog permission store)
+
+[OpenFGA](https://openfga.dev/) is the permission store the catalog will check
+against: a Zanzibar-style relationship database that answers "may this subject
+`browse` / `select` / `create` / `modify` this warehouse, namespace, table or
+view, and who may manage its grants". A subject is a person's OIDC `sub`, a
+group name or a service client; the roles Lakekeeper assigns live there too.
+
+**It is deployed and backed up, and unused until `make catalog-authz`**
+(platform#304, authz 3/8). `helm-values/lakekeeper.yaml` still sets
+`authz.backend: allowall`, so no request is checked against these tuples yet —
+shipping this release changes nothing a person can do.
+
+```sh
+make openfga            # helm release `openfga` + its CNPG Cluster `openfga-pg`
+```
+
+`make install` runs the same steps inside its `stardelt-identity` guard (before
+Lakekeeper), because authorization is keyed on the IdP's subjects; a bare
+`install-core` without an IdP does not get it.
+
+- **Own database, not the catalog's.** CloudNative-PG Cluster `openfga-pg`,
+  database `openfga`, 1Gi volume (`manifests/openfga-pg.yaml`). The permission
+  tuples must survive a catalog re-bootstrap, which is exactly what the cutover
+  is (spike platform#271), so they do not share `lakekeeper-pg`. CNPG generates
+  Secret `openfga-pg-app`; the chart reads the DSN from its `uri` key.
+- **Memory budget.** Requests 20m / 64Mi, limits 500m / 192Mi for OpenFGA; its
+  Postgres asks 50m / 128Mi with a 256Mi limit. Together ~190Mi of requests and
+  at most ~450Mi of limits. The #271 spike measured a running OpenFGA at ~50Mi;
+  the dev release reports ~16Mi idle, and the 192Mi ceiling leaves room for
+  checks.
+- **Backups.** Continuous WAL archiving into `s3://backups/openfga-pg/` plus the
+  daily base backup `openfga-pg-daily` (`immediate: true`, so a fresh install
+  has one right away). Guards: `make verify-backup-config PG_CLUSTER=openfga-pg`
+  (config only, runs in `make install`) and
+  `make verify-backups PG_CLUSTER=openfga-pg` (bucket vs. database).
+- **No authentication of its own.** The chart ships OpenFGA unsecured; the
+  NetworkPolicy `openfga-ingress` (`manifests/openfga-network-policy.yaml`) is
+  its protection — only the Lakekeeper catalog pod and its migration Job may
+  reach 8080/8081, so no other workload can grant itself permissions. Nothing
+  is exposed outside the cluster.
+- **Image.** `openfga/openfga:v1.14.0`, pinned explicitly so a chart bump cannot
+  move the application; Lakekeeper 0.12.2 requires OpenFGA >= 1.11 and is tested
+  against 1.14. Chart pin: `OPENFGA_VERSION` in the Makefile. Licence:
+  Apache-2.0 (permissive policy, `stardelt-docs` → architecture/licenses).
+
+---
+
 ## Spark — heavy compute on the same Iceberg tables
 
 Spark is the heavy-compute plug of the master spec (§5 #14): a **Spark Connect**
@@ -1062,6 +1110,7 @@ kubectl -n stardelt delete pods -l spark-role=executor
 | `verify-backups-identity` | Same full WAL check for `keycloak-pg` (`s3://backups/keycloak-pg/wals/`) |
 | `install-notebooks` | JupyterHub (notebooks) |
 | `install-spark` | Spark Connect endpoint (`manifests/spark.yaml`), wired to the same Lakekeeper catalog as Trino; restarts the driver only when its ConfigMap changed |
+| `openfga` | OpenFGA permission store + its CNPG Postgres (`helm-values/openfga.yaml`, `manifests/openfga-pg.yaml`); not wired to Lakekeeper until the cutover (#302) |
 | `install-identity` | Platform IdP: Keycloak + CNPG Postgres + realm `stardelt`, then the realm-admin sync + guard, the user-management roles/brute-force sync, the client-secret sync + guard, the live-realm Trino client and the Trino OAuth2 overlay (`BASE_DOMAIN=…`, see [Identity](#identity-optional-platform-idp)) |
 | `sync-realm-admin` | Point realm `stardelt`'s `admin` at Secret `stardelt-realm-admin` through the master-realm API; idempotent, runs as part of `install-identity`/`chart-install` (#81) |
 | `verify-realm-admin` | Prove the realm-admin Secret still signs in — a real password grant as that user through `svc/keycloak`; fails with the fix in the message |
@@ -1105,6 +1154,7 @@ helm-values/          Helm values files, one per chart
   airflow.yaml          Apache Airflow 3.x (KubernetesExecutor)
   jupyterhub.yaml       JupyterHub multi-user notebooks
   lakekeeper.yaml       Lakekeeper Iceberg REST catalog
+  openfga.yaml          OpenFGA permission store (catalog authz, not wired yet)
   seaweedfs.yaml        SeaweedFS S3-compatible storage
   superset.yaml         Apache Superset BI
   trino.yaml            Trino MPP SQL engine
@@ -1112,6 +1162,9 @@ helm-values/          Helm values files, one per chart
 
 manifests/            Plain Kubernetes manifests (kubectl apply)
   cnpg-postgres.yaml    CloudNative-PG Cluster for Lakekeeper metadata
+  cnpg-backup-schedule.yaml  Daily base backups for lakekeeper-pg and openfga-pg
+  openfga-pg.yaml       CloudNative-PG Cluster for the OpenFGA permission store
+  openfga-network-policy.yaml  OpenFGA ingress: the Lakekeeper catalog and migration pods only
   keycloak.yaml         Platform IdP: Keycloak + its CNPG Cluster (make install-identity)
   lakekeeper-bootstrap.yaml  Job: accept ToS + create default warehouse
   nova-deployment.yaml  stardelt Nova UI + backend
@@ -1168,6 +1221,7 @@ Collaboration/release branches are planned later (issue #38).
 | CloudNative-PG | 0.28.2 | — |
 | SeaweedFS | 4.25.1 | 4.25 |
 | Lakekeeper | 0.11.0 | 0.12.2 |
+| OpenFGA | 0.2.62 | v1.14.0 |
 | Trino | 1.42.2 | 480 |
 | Apache Airflow | 1.21.0 | 3.2.0 |
 | Apache Superset | 0.15.5 | 5.0.0 |

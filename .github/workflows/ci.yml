@@ -71,6 +71,7 @@ jobs:
           helm repo add cnpg           https://cloudnative-pg.github.io/charts
           helm repo add seaweedfs      https://seaweedfs.github.io/seaweedfs/helm
           helm repo add lakekeeper     https://lakekeeper.github.io/lakekeeper-charts/
+          helm repo add openfga        https://openfga.github.io/helm-charts
           helm repo add trino          https://trinodb.github.io/charts
           helm repo add apache-airflow https://airflow.apache.org
           helm repo add superset       https://apache.github.io/superset
@@ -96,6 +97,22 @@ jobs:
             --version 0.11.0 \
             --namespace stardelt \
             -f helm-values/lakekeeper.yaml > /dev/null
+
+      - name: helm template — openfga
+        run: |
+          helm template openfga openfga/openfga \
+            --version 0.2.62 \
+            --namespace stardelt \
+            -f helm-values/openfga.yaml > /tmp/openfga.yaml
+          # The datastore Secret is CNPG's `openfga-pg-app`, read on key `uri`
+          # (manifests/openfga-pg.yaml); a chart that reads another key would
+          # crash-loop at install time, not here.
+          grep -A4 'OPENFGA_DATASTORE_URI' /tmp/openfga.yaml | grep -q 'name: "openfga-pg-app"'
+          grep -A6 'OPENFGA_DATASTORE_URI' /tmp/openfga.yaml | grep -q 'key: uri'
+          # migrationType=initContainer: the migrate step is an init container of
+          # the serving pod, not the chart's separate wait-image Job.
+          grep -q 'name: migrate-database' /tmp/openfga.yaml
+          ! grep -q 'kind: Job' /tmp/openfga.yaml
 
       - name: helm template — trino
         run: |

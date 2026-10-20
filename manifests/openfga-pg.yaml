@@ -1,0 +1,53 @@
+# CloudNative-PG Cluster backing OpenFGA, the catalog's permission store
+# (platform#302, authz 1/8). A database of its own, not a second schema in
+# `lakekeeper-pg`: the permission tuples outlive a catalog re-bootstrap, and a
+# restart of one store must not take the other down.
+#
+# Single-instance on the dev node. The operator creates Secrets
+# `openfga-pg-app` (the credentials OpenFGA reads; key `uri` is the full DSN)
+# and `openfga-pg-superuser` automatically. OpenFGA is not wired to Lakekeeper
+# yet — the values still say `authz.backend: allowall` (see `helm-values/openfga.yaml`).
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: openfga-pg
+  namespace: stardelt
+spec:
+  instances: 1
+  storage:
+    size: 1Gi
+  # Same continuous backup as the catalog's Postgres: barman-cloud streams the
+  # WAL and `openfga-pg-daily` (cnpg-backup-schedule.yaml) adds base backups
+  # into s3://backups/openfga-pg/, so a lost volume is recoverable to a point in
+  # time without any external service. Point `endpointURL`/`destinationPath` at
+  # your own S3 bucket for production (`backups` must exist and the credentials
+  # must be allowed to write to it).
+  backup:
+    retentionPolicy: "14d"
+    barmanObjectStore:
+      destinationPath: s3://backups/
+      endpointURL: http://seaweedfs-s3.stardelt.svc.cluster.local:8333
+      s3Credentials:
+        accessKeyId:
+          name: stardelt-s3-creds
+          key: access-key
+        secretAccessKey:
+          name: stardelt-s3-creds
+          key: secret-key
+        region:
+          name: stardelt-s3-creds
+          key: region
+      wal:
+        compression: gzip
+        maxParallel: 2
+      data:
+        compression: gzip
+  bootstrap:
+    initdb:
+      database: openfga
+      owner: openfga
+  # The store holds relationship tuples and the authorization model, nothing
+  # else, so it stays small: 128Mi request, 256Mi ceiling on the single node.
+  resources:
+    requests: { cpu: "50m", memory: "128Mi" }
+    limits:   { cpu: "1",   memory: "256Mi" }

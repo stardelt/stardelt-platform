@@ -1,0 +1,51 @@
+# OpenFGA — the catalog's permission store (authz 1/8, platform#302).
+# Chart: openfga/openfga 0.2.62, appVersion v1.14.0. Licence: Apache-2.0.
+#
+# What it will hold once the catalog is cut over: relationship tuples — which
+# subject (person, group, service client) may `browse`, `select`, `create`,
+# `modify` or manage grants on which warehouse, namespace, table or view, plus
+# the catalog's own roles. Today it holds nothing that is enforced: Lakekeeper
+# still runs `authz.backend: allowall` (helm-values/lakekeeper.yaml), so this
+# release is deployed and backed up but **unused until `make catalog-authz`**
+# (platform#304).
+#
+# Database: CloudNative-PG Cluster `openfga-pg` (manifests/openfga-pg.yaml,
+# database `openfga`), not the chart's bundled Postgres subchart — this cluster
+# already runs CloudNative-PG and a second Postgres operator is the wrong shape
+# for one node. CNPG creates Secret `openfga-pg-app`; the chart reads the DSN
+# from its `uri` key.
+
+image:
+  repository: openfga/openfga
+  # Explicit, so a chart bump cannot silently move the application: 0.2.62's
+  # appVersion happens to be v1.14.0 too, but that is the chart's choice, and
+  # Lakekeeper 0.12.2 requires OpenFGA >= 1.11 and is tested against 1.14
+  # (spike platform#271 ran exactly this image).
+  tag: v1.14.0
+
+replicaCount: 1
+
+datastore:
+  engine: postgres
+  # Secret name, not a URI: the chart renders a secretKeyRef on key `uri`.
+  uriSecret: openfga-pg-app
+  # Run `openfga migrate` as an init container of the serving pod. The chart
+  # default (`job`) waits on a Job through groundnuty/k8s-wait-for pulled from
+  # Docker Hub; Lakekeeper's own subchart values use `initContainer` too, and
+  # this needs no second registry and no cross-Job ordering.
+  migrationType: initContainer
+
+# Small on purpose: the store answers checks, it does not hold table data.
+# The #271 spike measured a running OpenFGA at ~50 MiB.
+resources:
+  requests: { cpu: "20m", memory: "64Mi" }
+  limits:   { cpu: "500m", memory: "192Mi" }
+
+# No tracing, no Prometheus metrics: the platform does not scrape this release
+# yet, and the node's spare memory goes to the engines. Turn metrics back on
+# together with a scrape target when the cutover makes the store load-bearing.
+telemetry:
+  trace:
+    enabled: false
+  metrics:
+    enabled: false

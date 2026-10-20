@@ -47,6 +47,15 @@
       "registryUrlTemplate": "https://lakekeeper.github.io/lakekeeper-charts"
     },
     {
+      "description": "Makefile pin `OPENFGA_VERSION` -> Helm chart `openfga` from the chart repo the Makefile adds (https://openfga.github.io/helm-charts). datasource=helm because `--version $(OPENFGA_VERSION)` is a chart version. The application tag stays pinned explicitly in helm-values/openfga.yaml on purpose (`v1.14.0`, the version Lakekeeper is tested against), so a chart bump must not move it.",
+      "customType": "regex",
+      "fileMatch": ["/(^|/)Makefile$/"],
+      "matchStrings": ["OPENFGA_VERSION\\s*\\?=\\s*(?<currentValue>[^\\s#]+)"],
+      "depNameTemplate": "openfga",
+      "datasourceTemplate": "helm",
+      "registryUrlTemplate": "https://openfga.github.io/helm-charts"
+    },
+    {
       "description": "Makefile pin `TRINO_VERSION` -> Helm chart `trino`. datasource=helm because the chart version (1.42.2) is independent of the Trino server release (480) that the chart deploys; the pin must track the chart.",
       "customType": "regex",
       "fileMatch": ["/(^|/)Makefile$/"],
