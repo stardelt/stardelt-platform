@@ -406,6 +406,17 @@ sync-trino-group-sync-client: _context ## Converge the live realm's trino-group-
 sync-pipeline-runner-client: _context ## Converge the live realm's pipeline-runner client (secret, audience mapper, no admin role; idempotent)
 	@NAMESPACE=$(NAMESPACE) bash scripts/keycloak-sync-pipeline-runner-client.sh
 
+# One principal per ServicePrincipal, owned by a realm group (scheduled jobs D20/D21,
+# platform#244): client `sp-<name>`, Secret of the same name in the namespace, one audience
+# mapper per requested audience, a groups mapper and membership of the owner group only.
+.PHONY: sync-principal
+sync-principal: _context ## Create or converge a ServicePrincipal client and its Secret (idempotent)
+	@NAMESPACE=$(NAMESPACE) NAME=$(NAME) GROUP=$(GROUP) AUDIENCES=$(AUDIENCES) ROTATE=$(ROTATE) bash scripts/keycloak-sync-principal.sh
+
+.PHONY: delete-principal
+delete-principal: _context ## Delete a ServicePrincipal client and its Secret (stardelt-managed only; needs YES=1)
+	@NAMESPACE=$(NAMESPACE) NAME=$(NAME) YES=$(YES) bash scripts/keycloak-sync-principal.sh --delete
+
 # The public client developer tools on a laptop sign in with (platform#157): the device grant and
 # PKCE to a loopback address. `make sync-dev-client DEV_CLIENT_ENABLED=false` switches it off.
 sync-dev-client: _context ## Converge the live realm's stardelt-dev client (device grant, PKCE, loopback redirects; idempotent)

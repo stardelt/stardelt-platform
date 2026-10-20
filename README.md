@@ -359,6 +359,20 @@ client when missing, re-applies the secret, restores the audience mapper, refuse
 service account and proves the result with the client's own token. Rotate by changing the Secret
 key and re-running the target.
 
+*One principal per owner group (scheduled jobs D20/D21, platform#244).* A `ServicePrincipal`
+resource names a principal per owner group, and scheduled work runs as that group, not as the one
+shared `pipeline-runner`. `make sync-principal NAME=analytics GROUP=analytics` converges the
+confidential client `sp-analytics`: service account only, no interactive flow, one audience mapper
+per requested audience (`AUDIENCES=trino,lakekeeper`, default `trino`) and a `groups` mapper, so
+its token carries the owner group exactly as a person's does. Its service-account user is a member
+of `GROUP` and of no other group, and holds no admin-API role. The client secret lives in Secret
+`sp-analytics` in the namespace, keys `client-id` and `client-secret`, labels
+`app.kubernetes.io/part-of: stardelt` and `stardelt.io/principal: analytics`; the scheduled workload
+mounts it, and members of the group never read it. `ROTATE=1` generates a new secret, updates
+Keycloak first and then the Secret, and proves the new value with a fresh token. `make
+delete-principal NAME=analytics YES=1` removes the client and the Secret, but only for a client
+that carries `stardelt-managed=principal`; anything else is refused.
+
 *Sandbox secret store (opt-in, platform#160).* `make openbao` installs OpenBao (MPL-2.0, the one documented
 non-permissive component, see the licence page) as the secret store of a sandbox, the store that External Secrets and the
 platform's connections read (decision D23). It is not part of `make install`; production installs use the customer's own
