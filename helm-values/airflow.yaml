@@ -311,6 +311,23 @@ extraEnv: |
         optional: true
   - name: PIPELINE_TRINO_CA_FILE
     value: /etc/stardelt/trino-ca/ca.crt
+  # Notebook tasks (platform#316, phase J2): the DAG that runs them (stardelt-demos
+  # dags/stardelt_pipelines/notebook.py) gives a `notebook` task a pod of its own, because the
+  # notebook image has no Airflow and cannot run an Airflow task. It reads these four: the
+  # image for that pod, the versioned bucket the published notebook and the executed copy live
+  # in, the Airflow connection that pre-signs the GET (pinned object version) and the PUT, and
+  # the Secret the pod mounts for the query engine's CA. PIPELINE_NOTEBOOK_IMAGE must equal
+  # singleuser.image.tag in helm-values/jupyterhub.yaml — a stale digest is an image without
+  # papermill, and the task fails inside the pod; scripts/check-notebook-image-pin.sh (make
+  # lint) fails the build when the two drift.
+  - name: PIPELINE_NOTEBOOK_BUCKET
+    value: notebooks
+  - name: PIPELINE_NOTEBOOK_S3_CONN
+    value: stardelt_s3
+  - name: PIPELINE_NOTEBOOK_TRINO_CA_SECRET
+    value: trino-ca
+  - name: PIPELINE_NOTEBOOK_IMAGE
+    value: ghcr.io/stardelt/jupyter-singleuser:dev@sha256:feed2189c3a97b5fc2f024c007a161807cc7ea0f3f91595ab0b3499ac565d7fd
 
 # The internal CA that signs the query engine's certificate (Secret trino-ca, manifests/trino-tls.yaml),
 # mounted into every Airflow container, task pods included, so the pipeline loader can verify

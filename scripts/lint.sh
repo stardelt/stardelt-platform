@@ -43,4 +43,9 @@ else
   echo "› shellcheck not installed — skipping (install ShellCheck for the full check)"
 fi
 
+# Cross-file pins that a single file cannot check: the notebook image the task pods run must be
+# the image the single-user pods run (platform#316).
+echo "› script: check-notebook-image-pin"
+bash scripts/check-notebook-image-pin.sh
+
 echo "lint: OK"
