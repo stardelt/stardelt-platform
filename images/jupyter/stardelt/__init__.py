@@ -150,6 +150,26 @@ def _one_line(exc):
     return text[0] if text else type(exc).__name__
 
 
+def _record_query_id(cur):
+    """Note a statement id so a stopped notebook task can cancel it.
+
+    A stop deletes the pod: the kernel dies, but a statement Trino already accepted keeps
+    running for about five minutes (spike #267). The wrapper (``stardelt.notebook_run``) reads
+    this file on SIGTERM and deletes each id as the same principal. The file is named by
+    ``STARDELT_QUERY_IDS``; without it (an interactive hub pod) nothing is written, and no
+    failure of this bookkeeping may ever fail the statement it belongs to.
+    """
+    path = os.environ.get("STARDELT_QUERY_IDS", "").strip()
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(f"{getattr(cur, 'query_id', None)}\n")
+            handle.flush()
+    except Exception:  # noqa: BLE001 - recording is best effort, never the statement's failure
+        pass
+
+
 def sql(query, params=None):
     """Run ``query`` as the signed-in hub user, return the rows as a DataFrame.
 
@@ -166,6 +186,7 @@ def sql(query, params=None):
                 cur.execute(query)
             else:
                 cur.execute(query, params)
+            _record_query_id(cur)
             columns = [d[0] for d in (cur.description or [])]
             return pd.DataFrame(cur.fetchall(), columns=columns)
         except Exception as exc:  # noqa: BLE001 - wrapped into the one-line error below
@@ -330,8 +351,10 @@ def write_df(df, table, mode="append", batch_rows=DEFAULT_BATCH_ROWS, bronze=Fal
         try:
             for statement in statements:
                 cur.execute(statement)
+                _record_query_id(cur)
             for statement, params in batches:
                 cur.execute(statement, params)
+                _record_query_id(cur)
         except Exception as exc:  # noqa: BLE001 - wrapped into the one-line error below
             raise RuntimeError(f"stardelt.write_df failed: {_one_line(exc)}") from exc
         finally:
