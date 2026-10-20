@@ -249,7 +249,10 @@ singleuser:
     # pulls (same shape as manifests/nova-deployment.yaml). `make pin-images`
     # only covers Deployments, and spawned single-user pods are not Deployments,
     # so this pin is by hand: after a merge publishes a new image, resolve `dev`
-    # again and bump the digest here.
+    # again and bump the digest here — and as PIPELINE_NOTEBOOK_IMAGE in
+    # helm-values/airflow.yaml, which is the image a notebook task pod runs
+    # (scripts/check-notebook-image-pin.sh, run by `make lint`, fails the build
+    # when the two differ).
     tag: "dev@sha256:feed2189c3a97b5fc2f024c007a161807cc7ea0f3f91595ab0b3499ac565d7fd"
     pullSecrets:
       - name: ghcr-creds
