@@ -59,6 +59,8 @@ configOverrides:
   # STARDELT_AUTH_LOCAL_ONLY=1 is set on the deployment:
   #   kubectl -n stardelt set env deploy/superset STARDELT_AUTH_LOCAL_ONLY=1
   # (rolls the pod; `set env ... STARDELT_AUTH_LOCAL_ONLY-` undoes it).
+  # Also carries the Trino service-account password store at the end: both are
+  # read from os.environ, so they share the import instead of repeating it.
   oauth: |
     import os
     from flask_appbuilder.const import AUTH_DB, AUTH_OAUTH
@@ -99,6 +101,25 @@ configOverrides:
     else:
         AUTH_TYPE = AUTH_DB
 
+    # --- Trino service account (platform#278) ---------------------------------
+    # The datasource URI carries no password (extraConfigs/import_datasources.yaml):
+    # Superset asks this hook for it every time it builds an engine, so the
+    # credential lives in exactly one place — Secret trino-password-db, via the pod
+    # environment. Rotating the Secret and restarting the pods is the whole story.
+    # The hook is global (every database goes through it), so it answers only for
+    # our Trino service account and hands every other database its URL password.
+    def _stardelt_password_store(url):
+        """The Trino service account's password comes from the environment, never from the stored URI.
+        The hook is global (every database goes through it), so it answers only for our Trino account."""
+        if url.drivername.startswith("trino") and url.username == "superset":
+            # No service account on an install without `make install-identity`: the
+            # variable is absent, Trino has no authentication, and the
+            # credential-free URI stays exactly as it was.
+            return os.environ.get("TRINO_SUPERSET_PASSWORD") or url.password
+        return url.password
+
+    SQLALCHEMY_CUSTOM_PASSWORD_STORE = _stardelt_password_store
+
 # No secrets in this file: scripts/app-secrets.sh generates them per cluster
 # (the install targets run it before this chart) and keeps them across installs
 # and uninstalls. `superset 0.15.5` has no `supersetSecretKeySecretName` field,
@@ -121,11 +142,12 @@ extraEnvRaw:
       secretKeyRef:
         name: superset-admin
         key: password
-  # Superset's Trino service account (#79): the init script below rewrites the
-  # datasource URI to it. `trino-password-db` comes from
-  # scripts/identity-bootstrap.sh, so it is optional like the identity entries —
-  # a platform installed without `make install-identity` still starts (and needs
-  # no Trino credentials, because without the IdP Trino has no authentication).
+  # Superset's Trino service account (#79): SQLALCHEMY_CUSTOM_PASSWORD_STORE
+  # (configOverrides above) reads it from this environment variable at connect
+  # time. `trino-password-db` comes from scripts/identity-bootstrap.sh, so it is
+  # optional like the identity entries — a platform installed without
+  # `make install-identity` still starts (and needs no Trino credentials, because
+  # without the IdP Trino has no authentication).
   - name: TRINO_SUPERSET_PASSWORD
     valueFrom:
       secretKeyRef:
@@ -161,8 +183,10 @@ extraEnvRaw:
         optional: true
 
 # Pre-import the Trino database connection on init. Credential-free on purpose:
-# the URI cannot carry a secret, and the init script rewrites it to the
-# `superset` service account before the pod serves SQL Lab (#79).
+# the URI carries no secret. The password is supplied at connect time by
+# SQLALCHEMY_CUSTOM_PASSWORD_STORE (configOverrides above), from Secret
+# trino-password-db — so a rotation never leaves a stale password behind in
+# Superset's metadata database (#278).
 extraConfigs:
   import_datasources.yaml: |
     databases:
@@ -208,17 +232,8 @@ init:
       echo "Importing database connections.... "
       superset import_datasources -p {{ .Values.extraConfigMountPath }}/import_datasources.yaml
     fi
-    # The YAML above cannot carry a secret and `superset import_datasources` has no
-    # env substitution in 5.0.0, so the credential is applied here, from the Secret.
-    # Public TLS endpoint: the driver forces https for password auth, and Trino's
-    # in-cluster port is plain HTTP (see the follow-up ticket on coordinator TLS).
-    host="${STARDELT_PUBLIC_URL:-}"; host="${host#https://}"; host="${host%/}"
-    if [ -n "$host" ] && [ -n "${TRINO_SUPERSET_PASSWORD:-}" ]; then
-      superset set-database-uri -d "Trino Warehouse" \
-        -u "trino://superset:${TRINO_SUPERSET_PASSWORD}@trino.${host}:443/warehouse"
-    else
-      echo "no Trino service account (trino-password-db or stardelt-identity missing) — datasource stays credential-free"
-    fi
+    # The password is supplied at connect time by SQLALCHEMY_CUSTOM_PASSWORD_STORE
+    # (configOverrides above); the URI above stays credential-free on purpose.
   loadExamples: false
 
 # Components
@@ -226,6 +241,11 @@ supersetNode:
   replicas:
     enabled: true
     replicaCount: 1
+  # Reloader (make reloader) rolls the pods when the Trino service-account Secret
+  # changes. The password is read from the environment at connect time (#278), so
+  # a rotation needs nothing but this restart — no init Job, no SQL Lab round trip.
+  podAnnotations:
+    secret.reloader.stakater.com/reload: trino-password-db
   resources:
     requests: { cpu: "100m", memory: "512Mi" }
     limits:   { cpu: "2",    memory: "1Gi"  }
@@ -234,6 +254,11 @@ supersetWorker:
   replicas:
     enabled: true
     replicaCount: 1
+  # Async queries and alerts build engines here, so the worker needs the same
+  # Secret-triggered restart: a stale TRINO_SUPERSET_PASSWORD breaks background
+  # tasks exactly as it broke SQL Lab.
+  podAnnotations:
+    secret.reloader.stakater.com/reload: trino-password-db
   # Default celery prefork concurrency = CPU count = 24+ on this host, which
   # OOMs the worker pod (each prefork is a full Python process). Cap to 2.
   command:

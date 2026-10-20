@@ -11,9 +11,15 @@
 # minutes and deliberately needs no restart). Verified on a throwaway install: the annotation works
 # on the pod template, a Secret change rolls the workload within seconds, a workload without the
 # annotation is left alone.
+#
+# `reloadOnCreate`: a rotation replaces the Secret (delete, then re-create), which is a create event
+# and off by default — the pod would keep the old credential while the Secret had the new one
+# (platform#278). An update always reloads; this extends it to recreate.
 reloader:
   watchGlobally: false
   reloadStrategy: annotations
+  # See the header: a rotation recreates the Secret, which is a create event.
+  reloadOnCreate: true
   deployment:
     resources:
       requests: { cpu: 10m, memory: 64Mi }
