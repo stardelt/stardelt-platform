@@ -90,7 +90,7 @@ spec:
         - name: ghcr-creds
       containers:
         - name: nova
-          image: ghcr.io/stardelt/nova:dev@sha256:336673db8d87f3c1655300211cecadf10310041e9e6f6d6809855f052e4ba187
+          image: ghcr.io/stardelt/nova:dev@sha256:d970d22527e40eb08366af7df4a20099d77c340f8300529a09c14bc68d78f03a
           # `:dev` is a mutable tag, so it only takes effect when a pod starts:
           # Always re-pulls, but nothing here changes when CI publishes — after a
           # merge, roll the deployment (`kubectl -n stardelt rollout restart
