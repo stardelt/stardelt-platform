@@ -856,6 +856,30 @@ requests. Spark gets the credentials from Secret `stardelt-s3-creds` through
 `spark.kubernetes.executor.secretKeyRef.*` on every executor; nothing is written
 into a config file.
 
+### Catalog network access (interim)
+
+Lakekeeper has no authentication yet (`authz.backend: allowall`), so the network is the
+only control on who may read or change table metadata. `make install` and
+`make install-core` apply `manifests/lakekeeper-network-policy.yaml`
+(`NetworkPolicy lakekeeper-ingress`): only the Trino coordinator, Nova, the Spark Connect
+driver, Airflow task pods and the Lakekeeper bootstrap Job may open TCP 8181. Trino
+workers read Parquet from S3 and Spark executors read data files, so neither calls the
+catalog; the JupyterHub single-user egress policy already denies it. The policy is
+ingress-only — it does not touch what Lakekeeper reaches (Postgres, S3) — and it has no
+namespace-wide or CIDR rule. Kubelet probes come from the node, so the pod stays Ready.
+
+It needs a CNI that enforces NetworkPolicy: k3s does (the JupyterHub policies already
+rely on its controller), while plain Flannel does not. To remove the interim restriction,
+e.g. while debugging the catalog:
+
+```sh
+kubectl delete networkpolicy lakekeeper-ingress -n stardelt
+```
+
+Re-apply it with `kubectl apply -f manifests/lakekeeper-network-policy.yaml`; `make
+uninstall` removes it. A new consumer of the catalog needs its own `podSelector` entry —
+do not widen the policy with a namespace selector.
+
 ### Verifying the spine
 
 `scripts/verify-spark-iceberg.py` is the repeatable proof: it compares `count(*)`
