@@ -188,10 +188,13 @@ install: deps _context _helm-repos ## Install all stardelt components (idempoten
 	@kubectl apply -f manifests/airflow-pipelines.yaml
 
 	@echo "› [9/11] Superset"
+	@# The init Job's role script lives in the repo (#287); --set-file puts it into
+	@# the extra-config ConfigMap so Helm carries it and there is one copy to edit.
 	@helm upgrade --install superset superset/superset \
 	  --version $(SUPERSET_VERSION) \
 	  $(HELM_FLAGS) \
-	  -f helm-values/superset.yaml
+	  -f helm-values/superset.yaml \
+	  --set-file "extraConfigs.superset-analyst-role\.py=scripts/superset-analyst-role.py"
 
 	@echo "› [10/11] Nova (state store first: the Deployment reads its Secret)"
 	@kubectl apply -f manifests/nova-pg.yaml
