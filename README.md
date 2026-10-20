@@ -628,6 +628,20 @@ Airflow's api-server only, which is the pod that builds the FAB app. Both map th
 `stardelt-admins` to `Admin` (`AUTH_ROLES_MAPPING`, synced at every login) and register
 other realm users read-only (`Gamma` in Superset, `Viewer` in Airflow).
 
+Members of `stardelt-users` get SQL Lab and the warehouse's datasets in Superset: the group
+maps to `Gamma` plus `stardelt-analyst`, a role the init Job creates and converges
+(`scripts/superset-analyst-role.py`) — the built-in `sql_lab` and `Gamma` permission sets,
+Alpha's dataset/datasource additions, and `database_access` on the `Trino Warehouse` database,
+with no database write, upload or `all_database_access`/`all_datasource_access` permission.
+That one `database_access` also exposes every dataset of that database, because Superset has
+no SQL-Lab-without-Explore split at database level. The role is synced at every login, so
+removing someone from the group removes it at their next sign-in. Queries still run as the
+shared `superset` service account (`impersonate_logged_in_user` is off), so Trino records that
+account for every Superset user; per-user execution is the impersonation step decided in
+platform#279. That step must enable `CACHE_IMPERSONATION` in the same change: with
+impersonation on and the flag off, the result cache serves one user's cached chart to another
+(measured in platform#279).
+
 Two consequences worth knowing:
 
 - Any realm user can reach both UIs. Only `stardelt-admins` can administer them.
