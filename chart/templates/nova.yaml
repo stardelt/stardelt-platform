@@ -35,6 +35,37 @@ subjects:
   - kind: ServiceAccount
     name: nova
     namespace: {{ .Release.Namespace }}
+{{- if .Values.nova.secretStore.url }}
+---
+# Only when a secret store is configured: Nova creates and deletes `Connection`
+# resources in its own namespace for group and managed connections. No update,
+# no patch, no Secrets — the connection secret itself is written by the store.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: nova-connections
+  namespace: {{ .Release.Namespace }}
+  labels: { app.kubernetes.io/part-of: stardelt }
+rules:
+  - apiGroups: ["stardelt.io"]
+    resources: ["connections"]
+    verbs: ["get", "list", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nova-connections
+  namespace: {{ .Release.Namespace }}
+  labels: { app.kubernetes.io/part-of: stardelt }
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: nova-connections
+subjects:
+  - kind: ServiceAccount
+    name: nova
+    namespace: {{ .Release.Namespace }}
+{{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -144,6 +175,14 @@ spec:
             - name: NOVA_DATABASE_URL
               valueFrom:
                 secretKeyRef: { name: nova-pg-app, key: uri }
+            {{- end }}
+            {{- if .Values.nova.secretStore.url }}
+            - name: NOVA_SECRET_STORE_URL
+              value: {{ .Values.nova.secretStore.url | quote }}
+            - name: NOVA_SECRET_STORE_ROLE
+              value: {{ .Values.nova.secretStore.role | quote }}
+            - name: NOVA_SECRET_STORE_MOUNT
+              value: {{ .Values.nova.secretStore.mount | quote }}
             {{- end }}
             # Query-log collector (stardelt-nova#116): a second listener that no Ingress
             # routes, reachable inside the cluster only (Service port `internal`). The bearer

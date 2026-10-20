@@ -539,6 +539,13 @@ nova:
       requests: { cpu: "50m",  memory: "128Mi" }
       limits:   { cpu: "500m", memory: "256Mi" }
 
+  # The secret store Nova writes connection secrets to, with the signed-in person's own token.
+  # Empty: the Connections API answers 503 and Nova gets no extra permission.
+  secretStore:
+    url: ""
+    role: platform-users
+    mount: secret
+
 # ===========================================================================
 # Heavy components — off by default, same as `make install-core`.
 # Enable with `--set <name>.enabled=true` or in your own values file.
