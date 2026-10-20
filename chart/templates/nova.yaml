@@ -67,6 +67,37 @@ subjects:
     name: nova
     namespace: {{ .Release.Namespace }}
 {{- end }}
+{{- if .Values.nova.airflow.url }}
+---
+# Only when Airflow is configured: Nova lists `Pipeline` resources to show what
+# is scheduled and which runs belong to them (J1). Read-only — the Schedule
+# ticket adds create and delete.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: nova-pipelines
+  namespace: {{ .Release.Namespace }}
+  labels: { app.kubernetes.io/part-of: stardelt }
+rules:
+  - apiGroups: ["stardelt.io"]
+    resources: ["pipelines"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nova-pipelines
+  namespace: {{ .Release.Namespace }}
+  labels: { app.kubernetes.io/part-of: stardelt }
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: nova-pipelines
+subjects:
+  - kind: ServiceAccount
+    name: nova
+    namespace: {{ .Release.Namespace }}
+{{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -184,6 +215,19 @@ spec:
               value: {{ .Values.nova.secretStore.role | quote }}
             - name: NOVA_SECRET_STORE_MOUNT
               value: {{ .Values.nova.secretStore.mount | quote }}
+            {{- end }}
+            {{- if .Values.nova.airflow.url }}
+            # Airflow REST API for pipeline runs and logs, with the service user's
+            # credential from the Secret the spike (#243) created. Empty url = off.
+            - name: NOVA_AIRFLOW_URL
+              value: {{ .Values.nova.airflow.url | quote }}
+            - name: NOVA_AIRFLOW_USER
+              value: {{ .Values.nova.airflow.user | quote }}
+            - name: NOVA_AIRFLOW_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.nova.airflow.passwordSecret.name }}
+                  key: {{ .Values.nova.airflow.passwordSecret.key }}
             {{- end }}
             # Query-log collector (stardelt-nova#116): a second listener that no Ingress
             # routes, reachable inside the cluster only (Service port `internal`). The bearer
