@@ -119,7 +119,23 @@ t "break-glass token writes a group value"                 deny "$BG"    kv put 
 bg_ttl=$(BAO_TOKEN=$BG "$BAO" token lookup -format=json | python3 -c 'import json,sys;print(json.load(sys.stdin)["data"]["ttl"])')
 if [ "$bg_ttl" -le 900 ]; then pass=$((pass + 1)); printf 'PASS %-52s %s s\n' "break-glass token lives at most 15 minutes" "$bg_ttl"
 else fail=$((fail + 1)); printf 'FAIL %-52s %s s\n' "break-glass token lives at most 15 minutes" "$bg_ttl"; fi
+# Nova writes the non-secret settings as KV metadata next to the value (type, config, key names):
+# each scope may do that on its own paths and nowhere else (the first smoke test of the
+# connection routes failed on exactly this: the policies allowed metadata list/read/delete only).
+t "alice writes metadata on her group secret"       ok   "$ALICE" kv metadata put -custom-metadata=type=postgresql secret/connections/group/analytics/crm
+t "alice writes metadata on her personal secret"    ok   "$ALICE" kv metadata put -custom-metadata=type=pat secret/connections/user/sub-alice/pat
+t "alice writes metadata on bob's personal secret"  deny "$ALICE" kv metadata put -custom-metadata=type=pat secret/connections/user/sub-bob/pat
+t "alice writes metadata in another group"          deny "$ALICE" kv metadata put -custom-metadata=type=x secret/connections/group/finance/x
+t "alice writes metadata on a managed secret"       deny "$ALICE" kv metadata put -custom-metadata=type=x secret/connections/managed/sftp
+t "alice reads another group's metadata"            deny "$ALICE" kv metadata get secret/connections/group/finance/x
+t "admin writes metadata on a managed secret"       ok   "$ADMIN" kv metadata put -custom-metadata=type=sftp secret/connections/managed/sftp
+t "admin reads a managed secret's metadata"         ok   "$ADMIN" kv metadata get secret/connections/managed/sftp
+t "admin writes metadata on a group secret"         deny "$ADMIN" kv metadata put -custom-metadata=type=x secret/connections/group/analytics/crm
+t "admin writes metadata on a personal secret"      deny "$ADMIN" kv metadata put -custom-metadata=type=x secret/connections/user/sub-alice/pat
+t "break-glass token writes metadata on a group"    deny "$BG"    kv metadata put -custom-metadata=type=x secret/connections/group/analytics/crm
+t "platform reader writes metadata on managed"      deny "$PLAT"  kv metadata put -custom-metadata=type=x secret/connections/managed/sftp
 t "admin destroys a group secret (incident)"   ok   "$ADMIN" kv metadata delete secret/connections/group/analytics/crm
 t "alice reads it after it was destroyed"      deny "$ALICE" kv get secret/connections/group/analytics/crm
+t "admin destroys a managed secret"              ok   "$ADMIN" kv metadata delete secret/connections/managed/sftp
 echo "test-openbao-policies: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
