@@ -93,11 +93,7 @@ lint: ## Syntax-check (bash -n) + ShellCheck the scripts under scripts/ and dev/
 # ---------------------------------------------------------------------------
 SKIP_OBJECTS    ?=
 MAX_AGE_SECONDS ?= 900
-# The CloudNative-PG Cluster the guards read. Passed to the script as CLUSTER
-# *explicitly*: callers of `make` (stardelt-demos' verification gate does this)
-# export CLUSTER for the kind cluster's name, which would otherwise be read as
-# the Postgres Cluster name and fail the guard with
-# "cannot read Cluster stardelt/stardelt" before anything is installed (#76).
+# The CloudNative-PG Cluster the guards read.
 PG_CLUSTER      ?= lakekeeper-pg
 
 verify-backup-config: _context ## Assert the live Cluster still declares spec.backup (post-apply guard)

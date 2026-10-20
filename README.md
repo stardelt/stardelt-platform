@@ -2,7 +2,7 @@
 
 Production-shape deployment artifacts. Helm values, manifests, and scripts to install stardelt on any conformant Kubernetes cluster.
 
-> For a local laptop demo (kind cluster, sample data), see [github.com/stardelt/stardelt-demos](https://github.com/stardelt/stardelt-demos).
+> A laptop demo does not exist: the platform needs a real node (see docs getting-started).
 > Full documentation: [stardelt.io](https://stardelt.io)
 
 ---
@@ -646,7 +646,7 @@ for the `nova` client already.
 
 Two deliberate behaviours: the render **fails** when `nova.auth.mode=oidc` is set without
 an issuer (rather than shipping a pod that crash-loops), and `dev` stays the default
-everywhere, because CI, `make demo` and the kind gate have no IdP.
+everywhere, because CI and the Nova demo mode have no IdP.
 
 JupyterHub is behind that same login: `helm-values/jupyterhub.yaml` (and the chart's
 `jupyterhub:` block) uses `GenericOAuthenticator` with the realm's `jupyterhub` client,

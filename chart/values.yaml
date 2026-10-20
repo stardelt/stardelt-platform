@@ -498,7 +498,7 @@ nova:
   warehouseName: warehouse
   devUser: stardelt-dev
   # Sign-in (contract: docs/architecture/identity).
-  #   dev  — no login; what CI, `make demo` and the kind gate rely on.
+  #   dev  — no login; what CI and the Nova demo mode rely on.
   #   oidc — Nova is a client of the IdP configured under `identity:` above.
   #          Requires identity.mode=platform (Keycloak) or `external` + issuerUrl;
   #          the render fails fast otherwise instead of crash-looping the pod.
