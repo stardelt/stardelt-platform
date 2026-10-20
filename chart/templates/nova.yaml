@@ -70,8 +70,9 @@ subjects:
 {{- if .Values.nova.airflow.url }}
 ---
 # Only when Airflow is configured: Nova lists `Pipeline` resources to show what
-# is scheduled and which runs belong to them (J1). Read-only — the Schedule
-# ticket adds create and delete.
+# is scheduled and which runs belong to them (J1), and Schedule creates, replaces
+# (`PUT`, hence update not patch) and deletes them on behalf of the person. It
+# also reads `ServicePrincipal` resources to show which groups have one.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -81,7 +82,10 @@ metadata:
 rules:
   - apiGroups: ["stardelt.io"]
     resources: ["pipelines"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  - apiGroups: ["stardelt.io"]
+    resources: ["serviceprincipals"]
+    verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

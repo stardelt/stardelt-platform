@@ -36,8 +36,10 @@ subjects:
     name: nova
     namespace: stardelt
 ---
-# Nova lists `Pipeline` resources to show what is scheduled (J1, platform#254).
-# Read-only; the Schedule ticket adds create and delete.
+# Nova lists `Pipeline` resources to show what is scheduled (J1, platform#254),
+# and Schedule creates, replaces (`PUT`, hence update not patch) and deletes them
+# (platform#270). It also reads `ServicePrincipal` resources to show which groups
+# have one.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -47,7 +49,10 @@ metadata:
 rules:
   - apiGroups: ["stardelt.io"]
     resources: ["pipelines"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  - apiGroups: ["stardelt.io"]
+    resources: ["serviceprincipals"]
+    verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
