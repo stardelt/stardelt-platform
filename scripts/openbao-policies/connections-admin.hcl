@@ -5,6 +5,12 @@
 path "secret/data/connections/managed/*" {
   capabilities = ["create", "update"]
 }
+# Managed connections need their metadata written too (Nova create/rotate). Scoped to
+# `managed/` on purpose: an administrator still cannot alter the metadata of a user's or a
+# group's connection.
+path "secret/metadata/connections/managed/*" {
+  capabilities = ["create", "update"]
+}
 path "secret/metadata/connections/*" {
   capabilities = ["list", "read", "delete"]
 }

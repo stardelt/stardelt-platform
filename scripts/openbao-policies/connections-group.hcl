@@ -3,7 +3,8 @@ path "secret/data/connections/group/__GROUP__/*" {
   capabilities = ["create", "update", "read", "delete"]
 }
 path "secret/metadata/connections/group/__GROUP__/*" {
-  capabilities = ["list", "read", "delete"]
+  # See connections-user.hcl: Nova writes metadata next to the value on create and rotate.
+  capabilities = ["create", "update", "list", "read", "delete"]
 }
 path "secret/metadata/connections/group/__GROUP__" {
   capabilities = ["list"]
