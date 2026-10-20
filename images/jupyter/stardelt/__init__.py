@@ -27,10 +27,12 @@ import datetime
 import json
 import math
 import os
+import time
 import uuid
 from urllib.parse import urlsplit
 
 import pandas as pd
+import requests
 from trino.auth import JWTAuthentication
 from trino.dbapi import connect as _trino_connect
 
@@ -53,17 +55,75 @@ DEFAULT_BATCH_ROWS = 1_000
 # nowhere else, because Spark Connect has no authentication of its own.
 SPARK_REMOTE_DEFAULT = "sc://spark-connect.stardelt.svc.cluster.local:15002"
 
+# A pipeline pod has no hub behind it: when its token ages out, the grant that issued it is
+# the only way to get another one. Renew this long before `exp` so no statement races the
+# expiry (a statement is authenticated once, when it is submitted).
+TOKEN_REFRESH_SKEW_SECONDS = 60
 
-def _token_username(token):
-    """The username inside the JWT, without verifying it (Trino verifies)."""
+
+def _expiry(token):
+    """The `exp` claim of a JWT, or ``None`` when the token does not carry one."""
     if not token or token.count(".") != 2:
         return None
     payload = token.split(".")[1]
     payload += "=" * (-len(payload) % 4)
     try:
-        return json.loads(base64.urlsafe_b64decode(payload)).get("preferred_username")
+        expiry = json.loads(base64.urlsafe_b64decode(payload)).get("exp")
     except (ValueError, UnicodeDecodeError):
         return None
+    return float(expiry) if isinstance(expiry, (int, float)) else None
+
+
+def _can_refresh():
+    """Whether this pod holds pipeline credentials: a client-credentials grant, not a person."""
+    return bool(
+        os.environ.get("PIPELINE_TOKEN_URL", "").strip()
+        and os.environ.get("PIPELINE_CLIENT_SECRET", "").strip()
+    )
+
+
+def _fetch_token():
+    """A fresh token for the pod's own principal, from the client-credentials grant."""
+    client_id = os.environ.get("PIPELINE_CLIENT_ID", "").strip() or "pipeline-runner"
+    response = requests.post(
+        os.environ["PIPELINE_TOKEN_URL"].strip(),
+        data={
+            "grant_type": "client_credentials",
+            "client_id": client_id,
+            "client_secret": os.environ["PIPELINE_CLIENT_SECRET"].strip(),
+        },
+        timeout=15,
+    )
+    if response.status_code != 200:
+        raise RuntimeError(f"the token endpoint refused {client_id!r} (HTTP {response.status_code})")
+    return response.json()["access_token"]
+
+
+def _token():
+    """The token for the next statement, renewed when it is within the skew of expiry.
+
+    Hub pod: the token is the signed-in person's and only the hub can renew it, so an
+    expired one is a clear message, not a request a person cannot answer.
+    Pipeline pod: the token came from the pod's own client-credentials grant, so the same
+    grant gets another one. The new token replaces ``TRINO_TOKEN`` so ``stardelt.connection()``
+    (which reads the environment) uses the same one.
+    """
+    token = os.environ.get("TRINO_TOKEN", "").strip()
+    expiry = _expiry(token)
+    if token and (expiry is None or expiry - time.time() > TOKEN_REFRESH_SKEW_SECONDS):
+        return token
+    if not _can_refresh():
+        if not token:
+            raise RuntimeError(
+                "TRINO_TOKEN is not set — restart this server from the hub so it picks up your sign-in token."
+            )
+        raise RuntimeError(
+            "TRINO_TOKEN has expired and this pod has no pipeline credentials to renew it — "
+            "restart this server from the hub."
+        )
+    token = _fetch_token()
+    os.environ["TRINO_TOKEN"] = token
+    return token
 
 
 def _connect():
@@ -71,23 +131,16 @@ def _connect():
     url = os.environ.get("TRINO_URL", "").strip()
     if not url:
         raise RuntimeError("TRINO_URL is not set — this notebook is not running on the platform.")
-    token = os.environ.get("TRINO_TOKEN", "").strip()
-    if not token:
-        raise RuntimeError("TRINO_TOKEN is not set — restart this server from the hub so it picks up your sign-in token.")
-    user = (
-        os.environ.get("JUPYTERHUB_USER", "").strip()
-        or _token_username(token)
-        or "notebook"
-    )
-    # Trino denies a request whose declared user differs from the token's
-    # ("user X cannot impersonate user Y"), so the client user is the token's own.
+    token = _token()
+    # No declared user on purpose: Trino takes the session user from the token's principal
+    # (`preferred_username` or `sub`, whatever the platform configured), and denies a request
+    # whose declared user differs from it ("user X cannot impersonate user Y").
     parts = urlsplit(url)
     return _trino_connect(
         host=parts.hostname,
         port=parts.port or (443 if parts.scheme == "https" else 8080),
         http_scheme=parts.scheme,
         auth=JWTAuthentication(token),
-        user=user,
         source="stardelt-notebook-helper",
     )
 

@@ -8,7 +8,9 @@ round-trip dtypes — the dev-cluster check in the ticket covers.
 
 import base64
 import json
+import os
 import sys
+import time
 import types
 
 import pandas as pd
@@ -86,13 +88,15 @@ def test_sql_returns_dataframe(trino):
     conn = trino.instances[-1]
     assert conn.kwargs["host"] == "trino.example"
     assert conn.kwargs["port"] == 8443
-    assert conn.kwargs["user"] == "analyst"
+    assert "user" not in conn.kwargs  # the token decides who runs the statement
 
 
-def test_sql_prefers_hub_user(trino, monkeypatch):
+def test_sql_declares_no_user_even_in_a_hub_pod(trino, monkeypatch):
+    # A declared user that differs from the token's principal is refused by Trino
+    # ("cannot impersonate"); with `principal-field=sub` the hub name would always differ.
     monkeypatch.setenv("JUPYTERHUB_USER", "hub-person")
     stardelt.sql("SELECT 1")
-    assert trino.instances[-1].kwargs["user"] == "hub-person"
+    assert "user" not in trino.instances[-1].kwargs
 
 
 def test_sql_passes_params_through(trino):
@@ -322,3 +326,88 @@ def test_spark_reads_remote_from_env(trino, monkeypatch):
 
 def test_spark_docstring_states_credential_limitation():
     assert "shared storage credential" in stardelt.spark.__doc__
+
+
+# Token source and renewal --------------------------------------------------------
+
+
+def _jwt_exp(exp, username="svc"):
+    payload = base64.urlsafe_b64encode(json.dumps({"preferred_username": username, "exp": exp}).encode()).decode()
+    return f"header.{payload}.sig"
+
+
+class _Reply:
+    def __init__(self, status=200, token="fresh.token.value"):
+        self.status_code = status
+        self._token = token
+
+    def json(self):
+        return {"access_token": self._token}
+
+
+@pytest.fixture
+def pipeline_env(trino, monkeypatch):
+    """A pod without the hub's token but with the loader's client credentials."""
+    monkeypatch.delenv("TRINO_TOKEN", raising=False)
+    monkeypatch.setenv("PIPELINE_TOKEN_URL", "https://idp.example/token")
+    monkeypatch.setenv("PIPELINE_CLIENT_ID", "sp-analytics")
+    monkeypatch.setenv("PIPELINE_CLIENT_SECRET", "canary-secret-1f3a")
+    calls = []
+
+    def post(url, data=None, timeout=None):
+        calls.append((url, dict(data), timeout))
+        return _Reply()
+
+    monkeypatch.setattr(stardelt.requests, "post", post)
+    return calls
+
+
+def test_hub_token_is_used_unchanged(trino, monkeypatch):
+    token = _jwt_exp(time.time() + 3600)
+    monkeypatch.setenv("TRINO_TOKEN", token)
+    monkeypatch.setenv("PIPELINE_TOKEN_URL", "https://idp.example/token")
+    monkeypatch.setenv("PIPELINE_CLIENT_SECRET", "unused")
+    monkeypatch.setattr(stardelt.requests, "post", lambda *a, **k: pytest.fail("no refresh expected"))
+    stardelt.sql("SELECT 1")
+    assert os.environ["TRINO_TOKEN"] == token
+
+
+def test_client_credentials_used_when_the_hub_token_is_absent(trino, pipeline_env):
+    stardelt.sql("SELECT 1")
+    url, data, timeout = pipeline_env[0]
+    assert url == "https://idp.example/token"
+    assert data["grant_type"] == "client_credentials"
+    assert data["client_id"] == "sp-analytics"
+    assert timeout == 15
+    assert os.environ["TRINO_TOKEN"] == "fresh.token.value"
+
+
+def test_token_is_fetched_again_within_60_seconds_of_expiry(trino, pipeline_env, monkeypatch):
+    monkeypatch.setattr(stardelt.time, "time", lambda: 1000.0)
+    monkeypatch.setenv("TRINO_TOKEN", _jwt_exp(1100))  # 100 s left: keep
+    stardelt.sql("SELECT 1")
+    assert pipeline_env == []
+    monkeypatch.setenv("TRINO_TOKEN", _jwt_exp(1050))  # 50 s left: renew
+    stardelt.sql("SELECT 1")
+    assert len(pipeline_env) == 1
+
+
+def test_expired_hub_token_without_pipeline_credentials_is_one_line(trino, monkeypatch):
+    token = _jwt_exp(time.time() - 10)
+    monkeypatch.setenv("TRINO_TOKEN", token)
+    monkeypatch.delenv("PIPELINE_TOKEN_URL", raising=False)
+    monkeypatch.delenv("PIPELINE_CLIENT_SECRET", raising=False)
+    with pytest.raises(RuntimeError) as exc:
+        stardelt.sql("SELECT 1")
+    assert "\n" not in str(exc.value)
+    assert "expired" in str(exc.value)
+    assert token not in str(exc.value)
+
+
+def test_refused_token_request_names_the_client_not_the_secret(trino, pipeline_env, monkeypatch):
+    monkeypatch.setattr(stardelt.requests, "post", lambda *a, **k: _Reply(status=401))
+    with pytest.raises(RuntimeError) as exc:
+        stardelt.sql("SELECT 1")
+    message = str(exc.value)
+    assert "sp-analytics" in message and "401" in message
+    assert "canary-secret-1f3a" not in message

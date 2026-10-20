@@ -44,9 +44,11 @@ RUN python3 -m pip uninstall -y jupyterlab-git \
         'pyspark[connect]==4.2.0' \
         jupyterlab-git==0.55.0 \
         nbgitpuller==1.3.0 \
+        papermill==2.7.0 \
         trino==0.340.0 \
     && python3 -c "import pandas, pyarrow, pyspark, trino; print('pandas', pandas.__version__, '| pyarrow', pyarrow.__version__, '| pyspark', pyspark.__version__, '| trino', trino.__version__)" \
     && python3 -c "import jupyterlab_git, nbgitpuller; print('jupyterlab-git', jupyterlab_git.__version__, '| nbgitpuller', nbgitpuller.__version__)" \
+    && python3 -c "import papermill; print('papermill', papermill.__version__)" \
     && git --version \
     && { jupyter labextension list 2>&1 | tee /tmp/labext.txt | grep -i '@jupyterlab/git' || { echo '--- full labextension list ---'; cat /tmp/labext.txt; exit 1; }; } \
     && jupyter server extension list 2>&1 | grep -i 'nbgitpuller'
