@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Install the stardelt development CLIs into ~/.local/bin (no sudo).
-# Idempotent: skips anything already on PATH. Installs kubectl, helm, kind, hcloud.
+# Idempotent: skips anything already on PATH. Installs kubectl, helm, hcloud.
 #
 # Every download is checked against the SHA-256 the upstream project publishes next to
 # the artifact, and is only moved into $BIN once it matches. kubectl floats to the
@@ -33,7 +33,6 @@ case "$(uname -m)" in
   *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
 esac
 
-KIND_VERSION="${KIND_VERSION:-v0.32.0}"
 KUBECTL_VERSION="${KUBECTL_VERSION:-$(curl -fsSL https://dl.k8s.io/release/stable.txt)}"
 HELM_VERSION="${HELM_VERSION:-v3.18.4}"
 HCLOUD_VERSION="${HCLOUD_VERSION:-v1.70.1}"   # "latest" is accepted but is not reproducible
@@ -53,13 +52,6 @@ if have helm; then echo "helm:    $(command -v helm)"; else
   install -m 0755 "$tmp/linux-${GOARCH}/helm" "$BIN/helm"
 fi
 
-if have kind; then echo "kind:    $(command -v kind)"; else
-  echo "installing kind ${KIND_VERSION} ..."
-  url="https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-${GOARCH}"
-  download "$url" "$tmp/kind" "$url.sha256sum"
-  install -m 0755 "$tmp/kind" "$BIN/kind"
-fi
-
 if have hcloud; then echo "hcloud:  $(command -v hcloud)"; else
   echo "installing hcloud (${HCLOUD_VERSION}) ..."
   if [ "$HCLOUD_VERSION" = "latest" ]; then
@@ -74,4 +66,4 @@ fi
 
 echo
 echo "Ensure ${BIN} is on PATH, then:"
-echo "  kubectl version --client && helm version --short && kind version && hcloud version"
+echo "  kubectl version --client && helm version --short && hcloud version"
