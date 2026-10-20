@@ -423,13 +423,14 @@ proves every new value with a client-credentials token.
 the Lakekeeper chart takes the bridge's requested scope from that Secret and its default, the client
 scope `lakekeeper`, does not exist in this realm (`400 invalid_scope`); after the cutover (#304) the
 bridge's client holds `project_admin`, since it checks *other* principals' permissions and therefore
-has to be more than a reader. Lakekeeper still runs `allowall` and does not check these tokens yet —
-the callers start sending them in the follow-up steps (#283, #284); only then can one caller be
-revoked at a time.
+has to be more than a reader. Lakekeeper validates these tokens since platform#285 — an
+anonymous request is `401` and the audience must be `lakekeeper` — but authorisation is still
+`allowall`, so a valid client may read and change every table's metadata. The seven-client split
+is what makes the next step possible: one caller can be narrowed or revoked at a time.
 
 *Catalog sign-in for Trino, Spark Connect and the bootstrap Job (platform#283, step 2).* Those
 three callers now obtain a token from the realm's token endpoint and send it as
-`Authorization: Bearer` on every catalog call; Lakekeeper ignores it until it validates tokens.
+`Authorization: Bearer` on every catalog call; Lakekeeper validates it since platform#285.
 Trino's `warehouse` catalog gains `iceberg.rest-catalog.security=OAUTH2` plus the credential and
 token-endpoint properties in `helm-values/trino-identity.yaml` (not in the base values: Trino
 refuses to load a catalog with `security=OAUTH2` and no credential, and the base values are also
@@ -462,6 +463,44 @@ Secret also carries `token-url`, derived from the identity contract's issuer by
 `make sync-catalog-clients`. And every reference is `optional`, so an install without an IdP (no
 Secret) keeps Nova and Airflow running and both keep calling Lakekeeper anonymously — the
 `install-core` shape. No cluster permission changes: the Role is the same as before.
+
+*Catalog authentication is enforced (platform#285, step 5).* Lakekeeper is no longer anonymous:
+it validates the bearer token on every request and answers `401` when the header is missing, the
+signature is wrong, or the token is for another issuer or audience. The two settings are the ones
+the spike verified (`stardelt-platform#271`, P1.1) and they live in `helm-values/lakekeeper.yaml`
+as `catalog.extraEnv`: `LAKEKEEPER__OPENID_PROVIDER_URI` from ConfigMap `stardelt-identity`
+(`issuerUrl`) and `LAKEKEEPER__OPENID_AUDIENCE=lakekeeper`. They are extra env vars rather than
+`auth.oauth2.providerUri` because the issuer is install-time state and Helm cannot read a ConfigMap
+in a values file; every other component reads the identity contract the same way, and
+`optional: true` keeps an install without an IdP (`install-core`) anonymous. **Authorisation is
+still `allowall`**: authentication says *who* you are, not *what* you may do — a valid token still
+reaches every table's metadata until platform#304 turns on OpenFGA. The NetworkPolicy
+([Catalog network access](#catalog-network-access-interim)) stays as defence in depth.
+
+A new caller gets its own client; never share one:
+
+```sh
+make sync-principal KIND=service NAME=catalog-<caller> AUDIENCES=lakekeeper
+# Secret catalog-<caller> in namespace stardelt: client-id, client-secret, token-url
+```
+
+The caller exchanges those for a token at `token-url` with scope `openid` (the realm has no
+`lakekeeper` client scope; the `aud-lakekeeper` mapper adds the audience the catalog checks) and
+sends `Authorization: Bearer` on every catalog request. Its pod must also be admitted by
+`lakekeeper-ingress` — add a `podSelector` entry, never a namespace selector. The full list of
+platform callers is `make sync-catalog-clients` (`svc-catalog-*`, platform#282).
+
+Proof, from a pod the NetworkPolicy admits:
+
+```sh
+curl -s -o /dev/null -w '%{http_code}\n' http://lakekeeper:8181/management/v1/info          # 401
+curl -s -H @auth-header http://lakekeeper:8181/management/v1/info                            # 200
+```
+
+Rollback: `helm rollback lakekeeper` (the previous revision has no OPENID settings) and the
+catalog is anonymous again; re-apply with the `make install` step to turn validation back on.
+The Lakekeeper UI client is unchanged: the UI is not published (no Ingress) and keeps no
+sign-in wiring.
 
 *Sandbox secret store (opt-in, platform#160).* `make openbao` installs OpenBao (MPL-2.0, the one documented
 non-permissive component, see the licence page) as the secret store of a sandbox, the store that External Secrets and the
@@ -904,7 +943,8 @@ group name or a service client; the roles Lakekeeper assigns live there too.
 
 **It is deployed and backed up, and unused until `make catalog-authz`**
 (platform#304, authz 3/8). `helm-values/lakekeeper.yaml` still sets
-`authz.backend: allowall`, so no request is checked against these tuples yet —
+`authz.backend: allowall`, so no request is checked against these tuples yet
+(authentication is on since platform#285 — the token is validated, the tuple is not) —
 shipping this release changes nothing a person can do.
 
 ```sh
@@ -1031,8 +1071,10 @@ into a config file.
 
 ### Catalog network access (interim)
 
-Lakekeeper has no authentication yet (`authz.backend: allowall`), so the network is the
-only control on who may read or change table metadata. `make install` and
+Lakekeeper authenticates every request since platform#285, but it authorises with `allowall`: a
+valid token — any of the `svc-catalog-*` clients — may read and change the metadata of every table.
+Until real authorisation lands (#304), the network is what narrows *who can even attempt a call*,
+and it is the control that still holds if authentication regresses to anonymous. `make install` and
 `make install-core` apply `manifests/lakekeeper-network-policy.yaml`
 (`NetworkPolicy lakekeeper-ingress`): only the Trino coordinator, Nova, the Spark Connect
 driver, Airflow task pods and the Lakekeeper bootstrap Job may open TCP 8181. Trino
@@ -1117,7 +1159,7 @@ kubectl -n stardelt delete pods -l spark-role=executor
 | `sync-realm-user-management` | Grant `stardelt-admins` the four `realm-management` user-management roles and enforce brute-force protection on the live realm; idempotent, runs with both install paths |
 | `sync-oidc-clients` | Point the realm's confidential clients (`nova`, `superset`, `airflow`, `jupyterhub`; delegates `trino`) at Secret `stardelt-oidc-clients`; probe-first, idempotent, never prints a value (#85) |
 | `verify-oidc-clients` | Prove every client secret still authenticates at the token endpoint (`invalid_grant` vs `unauthorized_client`) and matches what the realm stores; names the drifting clients and the fix |
-| `sync-catalog-clients` | Create/converge the seven catalog-caller service clients (`svc-catalog-*`) and their Secrets, audience `lakekeeper`, no group; idempotent (#282, #303) |
+| `sync-catalog-clients` | Create/converge the seven catalog-caller service clients (`svc-catalog-*`) and their Secrets, audience `lakekeeper`, no group; idempotent (#282, #303; Lakekeeper validates them since #285) |
 | `delete-catalog-clients` | Delete those seven clients and Secrets; only `stardelt-managed=service` clients, needs `YES=1` |
 | `trino` | Install/upgrade Trino; adds `helm-values/trino-identity.yaml` (Keycloak OAuth2 + service-account password) when `stardelt-identity` exists |
 | `sync-trino-groups` | Sync the live realm's `stardelt-admins` membership into ConfigMap `trino-group-file` (Trino query visibility); idempotent, runs inside `make trino` (#125) |

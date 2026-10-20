@@ -61,8 +61,7 @@
 # Catalog sign-in (platform#283, step 2 of the catalog turn-on): the Iceberg REST
 # catalog authenticates as the service client svc-catalog-trino with the
 # client-credentials grant and sends Lakekeeper a bearer token on every catalog call.
-# Lakekeeper still runs `allowall` and ignores the header; this step makes the callers
-# correct, so the enforcement step can refuse an anonymous one.
+# Lakekeeper validates that token since platform#285 and refuses an anonymous call.
 #
 # Why the whole `warehouse` catalog is repeated here instead of one line added to
 # helm-values/trino.yaml: Helm replaces a map value instead of merging it, and Trino

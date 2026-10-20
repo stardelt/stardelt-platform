@@ -309,6 +309,21 @@ lakekeeper:
       requests: { cpu: "50m",  memory: "256Mi" }
       limits:   { cpu: "1",    memory: "512Mi" }
 
+    # Authentication (platform#285): the issuer comes from the identity contract
+    # (`stardelt-identity.issuerUrl`), which this chart also renders when
+    # identity.mode is not `none`; without it the two refs are absent and the
+    # catalog stays anonymous, like `install-core`. Same settings as
+    # helm-values/lakekeeper.yaml: token required, authorisation still allowall.
+    extraEnv:
+      - name: LAKEKEEPER__OPENID_PROVIDER_URI
+        valueFrom:
+          configMapKeyRef:
+            name: stardelt-identity
+            key: issuerUrl
+            optional: true
+      - name: LAKEKEEPER__OPENID_AUDIENCE
+        value: lakekeeper
+
 lakekeeperBootstrap:
   # Plain manifest (not a sub-chart): Job that accepts the Lakekeeper terms of
   # use and creates the default `warehouse` on S3. Idempotent: skips when

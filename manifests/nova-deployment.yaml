@@ -99,7 +99,7 @@ spec:
         - name: ghcr-creds
       containers:
         - name: nova
-          image: ghcr.io/stardelt/nova:dev@sha256:c9404f7fcf539ceb443180062b1cbc943d5baf9b4096dc3309e6be2dbc46c5e6
+          image: ghcr.io/stardelt/nova:dev@sha256:6312859fec139678d85a7692b7ccb3990c7a339d327b4f1bb7065b1f9fbd1d70
           # `:dev` is a mutable tag, so it only takes effect when a pod starts:
           # Always re-pulls, but nothing here changes when CI publishes — after a
           # merge, roll the deployment (`kubectl -n stardelt rollout restart
@@ -175,7 +175,8 @@ spec:
             # `token-url` is written by `make sync-catalog-clients` for the same reason.
             # Optional like the identity variables above: without an IdP the Secret does
             # not exist, all three stay unset, and Nova calls Lakekeeper anonymously —
-            # the `install-core` shape, which `allowall` still accepts.
+            # the `install-core` shape, where the catalog has no issuer and stays
+            # anonymous too (platform#285).
             - name: NOVA_CATALOG_CLIENT_ID
               valueFrom: { secretKeyRef: { name: svc-catalog-nova, key: client-id, optional: true } }
             - name: NOVA_CATALOG_CLIENT_SECRET
