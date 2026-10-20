@@ -3,11 +3,12 @@
 # warehouse create if it already exists (409 Conflict). If it exists, its storage
 # credential is refreshed from the S3 Secret, so a rotated key takes effect.
 #
-# Catalog sign-in (platform#283): every management call carries a client-credentials
-# token for `svc-catalog-bootstrap` — the Job's own identity (platform#282). Lakekeeper
-# still runs `allowall` and ignores the header; the Job is made correct now so the
-# enforcement step can refuse an anonymous call. Without an IdP the Secret and the
-# issuer are absent and the Job keeps calling anonymously, as it does today.
+# Catalog sign-in (platform#283, platform#285): every management call carries a
+# client-credentials token for `svc-catalog-bootstrap` — the Job's own identity
+# (platform#282). Lakekeeper validates that token now (platform#285), so the Job
+# was made correct in #283 and this is the proof that an authenticated caller still
+# bootstraps. Without an IdP the Secret and the issuer are absent and the Job keeps
+# calling anonymously (the `install-core` shape, where the catalog is anonymous too).
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -57,8 +58,8 @@ spec:
               umask 077
               # Catalog sign-in (platform#283, step 2 of the catalog turn-on). The Job
               # asks the realm for a token as `svc-catalog-bootstrap` and sends it on
-              # every management call; Lakekeeper ignores it until it validates tokens,
-              # but an exchange that fails must not fall back to anonymous silently.
+              # every management call; Lakekeeper validates it (platform#285), and an
+              # exchange that fails must not fall back to anonymous silently.
               # The credential is read from the mounted Secret files (`--data-urlencode
               # NAME@file` never puts it in argv), the token goes to a private file and
               # reaches curl through `-H @file`, and the EXIT trap below removes both.

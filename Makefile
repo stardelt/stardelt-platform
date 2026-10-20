@@ -173,6 +173,18 @@ install: deps _context _helm-repos ## Install all stardelt components (idempoten
 	  $(MAKE) --no-print-directory openfga; \
 	fi
 
+	@echo "› Catalog service clients (platform#282): svc-catalog-* for every caller of the catalog"
+	@# Before Lakekeeper, because authentication is on (platform#285): the bootstrap
+	@# Job below presents svc-catalog-bootstrap on its very first call, so the Secret
+	@# must exist before the release that enables validation. Trino's `warehouse`
+	@# catalog authenticates as svc-catalog-trino (platform#283) for the same reason:
+	@# its overlay reads that Secret, and a missing one makes the coordinator refuse
+	@# the catalog and `helm --wait` fail. Guarded by the identity ConfigMap; on a
+	@# cluster without an IdP there is no Secret and the catalog stays anonymous.
+	@if kubectl -n $(NAMESPACE) get configmap stardelt-identity >/dev/null 2>&1; then \
+	  $(MAKE) --no-print-directory sync-catalog-clients; \
+	fi
+
 	@echo "› [4/11] Lakekeeper"
 	@helm upgrade --install lakekeeper lakekeeper/lakekeeper \
 	  --version $(LAKEKEEPER_VERSION) \
@@ -183,14 +195,6 @@ install: deps _context _helm-repos ## Install all stardelt components (idempoten
 	@kubectl apply -f manifests/lakekeeper-bootstrap.yaml
 	@echo "› [5/11] catalog ingress NetworkPolicy (only the components that need it)"
 	@kubectl apply -f manifests/lakekeeper-network-policy.yaml
-
-# Before Trino: its `warehouse` catalog authenticates as svc-catalog-trino
-# (platform#283), so the Secret has to exist when the overlay that uses it is
-# applied — otherwise the coordinator refuses the catalog and `helm --wait` fails.
-	@if kubectl -n $(NAMESPACE) get configmap stardelt-identity >/dev/null 2>&1; then \
-	  echo "› Catalog service clients (platform#282): svc-catalog-* for every caller of the catalog"; \
-	  $(MAKE) --no-print-directory sync-catalog-clients; \
-	fi
 
 	@echo "› [6/11] Trino"
 	@$(MAKE) --no-print-directory trino
@@ -464,9 +468,11 @@ delete-principal: _context ## Delete a ServicePrincipal client and its Secret (s
 # (platform#282, step 1 of the catalog turn-on): the Trino coordinator, Nova, the Spark
 # Connect driver, the Airflow task pods and the bootstrap Job. Step 2 (platform#303) adds
 # the two permission managers — the OPA bridge sidecar in the Lakekeeper pod and the
-# operator's Catalog controller. Each token carries the audience `lakekeeper`. Lakekeeper
-# still runs `allowall` and does not check these yet; these steps only create the
-# identities, the callers send them in the follow-up tickets.
+# operator's Catalog controller. Each token carries the audience `lakekeeper`, and
+# Lakekeeper validates it since platform#285. A new caller gets a client the same way:
+# `make sync-catalog-clients`, or `make sync-principal KIND=service NAME=<name>
+# AUDIENCES=lakekeeper`; its Secret holds client-id/client-secret/token-url, and the
+# NetworkPolicy must admit the pod.
 CATALOG_CLIENTS := catalog-trino catalog-nova catalog-spark catalog-airflow catalog-bootstrap catalog-bridge catalog-operator
 
 .PHONY: sync-catalog-clients

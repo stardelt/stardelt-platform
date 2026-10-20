@@ -4,6 +4,7 @@
 # Decisions for the MVP:
 #   - bundled postgres OFF → use CNPG Cluster `lakekeeper-pg`
 #   - bundled OpenFGA OFF → authz backend = "allowall" (no real authz)
+#   - authentication ON (platform#285): every request needs a valid bearer token
 #   - helmWait true so `helm upgrade --wait` blocks until migrations land
 
 helmWait: true
@@ -32,3 +33,31 @@ catalog:
   resources:
     requests: { cpu: "50m",  memory: "256Mi" }
     limits:   { cpu: "1",    memory: "512Mi" }
+
+  # Authentication (platform#285, step 5 of the catalog turn-on): the two settings
+  # the spike verified (platform#271, P1.1) — `LAKEKEEPER__OPENID_PROVIDER_URI` and
+  # `LAKEKEEPER__OPENID_AUDIENCE`. A request without a valid token is now 401; the
+  # authoriser stays `allowall`, so a valid token is required but not restricted.
+  #
+  # They are extra env vars, not `auth.oauth2.providerUri`, because the issuer is
+  # install-time state: it lives in ConfigMap `stardelt-identity` (`issuerUrl`),
+  # and Helm cannot read a ConfigMap in a values file. Every other component reads
+  # the identity contract the same way (Trino, Superset, JupyterHub, the bootstrap
+  # Job), and `optional: true` keeps `install-core` — which has no IdP — anonymous
+  # instead of failing. `LAKEKEEPER__OPENID_AUDIENCE` is `lakekeeper`, the
+  # `aud-lakekeeper` mapper on each `svc-catalog-*` client (platform#282).
+  podAnnotations:
+    # Reloader restarts the catalog when the identity contract appears or its issuer
+    # changes: the env ref below is unaffected by a ConfigMap update, so without this
+    # a release that enables identity would keep serving anonymously until a manual
+    # restart. Same mechanism as Airflow and Superset (helm-values/reloader.yaml).
+    configmap.reloader.stakater.com/reload: stardelt-identity
+  extraEnv:
+    - name: LAKEKEEPER__OPENID_PROVIDER_URI
+      valueFrom:
+        configMapKeyRef:
+          name: stardelt-identity
+          key: issuerUrl
+          optional: true
+    - name: LAKEKEEPER__OPENID_AUDIENCE
+      value: lakekeeper

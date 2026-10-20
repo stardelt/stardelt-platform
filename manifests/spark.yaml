@@ -202,7 +202,8 @@ spec:
             # client secret never lands in spark-defaults.conf, an argv, or a log line.
             # Optional, like Trino's: without an IdP neither the Secret nor the ConfigMap
             # exists and the driver reaches Lakekeeper anonymously — the `install-core`
-            # shape, which Lakekeeper's `allowall` still accepts.
+            # shape, where the catalog has no issuer and accepts anonymous calls too
+            # (platform#285).
             - name: CATALOG_CLIENT_ID
               valueFrom:
                 secretKeyRef: { name: svc-catalog-spark, key: client-id, optional: true }

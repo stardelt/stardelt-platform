@@ -175,7 +175,8 @@ spec:
             # `token-url` is written by `make sync-catalog-clients` for the same reason.
             # Optional like the identity variables above: without an IdP the Secret does
             # not exist, all three stay unset, and Nova calls Lakekeeper anonymously —
-            # the `install-core` shape, which `allowall` still accepts.
+            # the `install-core` shape, where the catalog has no issuer and stays
+            # anonymous too (platform#285).
             - name: NOVA_CATALOG_CLIENT_ID
               valueFrom: { secretKeyRef: { name: svc-catalog-nova, key: client-id, optional: true } }
             - name: NOVA_CATALOG_CLIENT_SECRET
