@@ -136,7 +136,7 @@ Nova's state store (`nova-pg`, database `nova`: saved queries, personal settings
 | `nova.secretStore.role` | `platform-users` | `NOVA_SECRET_STORE_ROLE` — the store role a person's token is exchanged for. |
 | `nova.secretStore.mount` | `secret` | `NOVA_SECRET_STORE_MOUNT` — the store mount connection secrets are written under. |
 
-With `nova.secretStore.url` set, the chart also renders the `nova-connections` Role and RoleBinding: `get`, `list`, `create` and `delete` on `connections.stardelt.io` in the release namespace — nothing else, no Secrets access. Example: `--set nova.secretStore.url=http://openbao.<namespace>.svc.cluster.local:8200`.
+With `nova.secretStore.url` set, the chart also renders the `nova-connections` Role and RoleBinding: `get`, `list`, `create`, `delete` and `patch` on `connections.stardelt.io` in the release namespace — nothing else, no Secrets access. `patch` is for the break-glass notice Nova sets as an annotation on the `Connection`. Example: `--set nova.secretStore.url=http://openbao.<namespace>.svc.cluster.local:8200`.
 
 `make verify-backups` expects recent write activity on the catalog: its WAL-freshness check fails on an idle cluster, which is correct. The SeaweedFS filer needs **512Mi** of memory — at 256Mi it was OOM-killed in a loop and took S3 writes down with it (platform#230); raise it only with a measured peak, never by lowering another limit.
 
