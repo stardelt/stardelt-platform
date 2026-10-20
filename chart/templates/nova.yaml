@@ -217,6 +217,25 @@ spec:
             - name: NOVA_CATALOG_TOKEN_URL
               valueFrom:
                 secretKeyRef: { name: svc-catalog-nova, key: token-url, optional: true }
+            # Published notebooks (platform#290): Nova writes notebook versions into the
+            # versioned `notebooks` bucket over S3, with the platform identity in
+            # `s3Credentials` — the same Secret the object store and every other consumer
+            # read, so no new identity and no extra Role. The bucket is created and
+            # versioned by `make notebooks-bucket`; the routes land in stardelt-nova#225.
+            - name: NOVA_S3_URL
+              value: {{ tpl .Values.s3Credentials.endpoint . | quote }}
+            - name: NOVA_S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.s3Credentials.name }}
+                  key: access-key
+            - name: NOVA_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.s3Credentials.name }}
+                  key: secret-key
+            - name: NOVA_S3_NOTEBOOK_BUCKET
+              value: {{ .Values.nova.s3.notebookBucket | quote }}
             # Namespace whose workloads Nova reports (downward API).
             - name: POD_NAMESPACE
               valueFrom:

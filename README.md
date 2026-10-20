@@ -49,6 +49,30 @@ get the governed *Volumes* view in Nova (later).
 
 ---
 
+## Published notebooks (versioned bucket)
+
+Published notebooks live in the object store's `notebooks` bucket, with **versioning enabled**.
+Every publish is an immutable object version, and a scheduled notebook pins the version a person
+approved: a later publish, a delete or an S3-gateway restart does not change the bytes a pinned
+version returns (measured in spike #268). `make notebooks-bucket` — also run by `make install` —
+creates the bucket with the platform identity and turns versioning on. It is idempotent, and it
+prints only the bucket and its versioning state:
+
+```sh
+$ make notebooks-bucket
+› bucket notebooks: versioning Enabled
+```
+
+Nova writes to that bucket with `NOVA_S3_URL`, `NOVA_S3_ACCESS_KEY` and `NOVA_S3_SECRET_KEY`
+(the key pair in Secret `stardelt-s3-creds`, the same identity the object store and every other
+consumer already use — no new identity) and `NOVA_S3_NOTEBOOK_BUCKET=notebooks`. A notebook may
+call Nova with the token it already holds: the hub token carries audience `nova` through the
+`aud-nova` mapper on the `jupyterhub` and `stardelt-dev` clients (`make sync-nova-audience`, run by
+`make install-identity`). The publish, list and version routes themselves are in stardelt-nova#225;
+this repository creates the bucket and wires the identity.
+
+---
+
 ## Quickstart
 
 ```sh

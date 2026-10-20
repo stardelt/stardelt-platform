@@ -412,6 +412,18 @@
           }
         },
         {
+          "name": "aud-nova",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "nova",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
           "name": "aud-jupyterhub",
           "protocol": "openid-connect",
           "protocolMapper": "oidc-audience-mapper",

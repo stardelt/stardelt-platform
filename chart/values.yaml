@@ -546,6 +546,13 @@ nova:
     role: platform-users
     mount: secret
 
+  # Published notebooks (platform#290): Nova writes notebook versions into the versioned
+  # `notebooks` bucket with the platform S3 identity (`s3Credentials` above — the same key
+  # pair the object store and every other consumer use; no new identity). The bucket is
+  # created and versioned by `make notebooks-bucket` (scripts/create-notebooks-bucket.sh).
+  s3:
+    notebookBucket: notebooks
+
   # Airflow, to show pipeline runs and logs. Empty url switches the Pipelines API off (it answers 503) and Nova gets no extra permission.
   airflow:
     url: ""

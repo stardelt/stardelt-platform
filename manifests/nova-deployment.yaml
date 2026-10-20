@@ -99,7 +99,7 @@ spec:
         - name: ghcr-creds
       containers:
         - name: nova
-          image: ghcr.io/stardelt/nova:dev@sha256:0574c2c3938ee4b5c8b45b541f2fcb21bd0184cd669cdff9fa2a59527d4b7131
+          image: ghcr.io/stardelt/nova:dev@sha256:12fadf17dd5ad7e6e10a38511a47d1923ae7f9f31e011de1fa6fdd2000409116
           # `:dev` is a mutable tag, so it only takes effect when a pod starts:
           # Always re-pulls, but nothing here changes when CI publishes — after a
           # merge, roll the deployment (`kubectl -n stardelt rollout restart
@@ -182,6 +182,21 @@ spec:
               valueFrom: { secretKeyRef: { name: svc-catalog-nova, key: client-secret, optional: true } }
             - name: NOVA_CATALOG_TOKEN_URL
               valueFrom: { secretKeyRef: { name: svc-catalog-nova, key: token-url, optional: true } }
+            # Published notebooks (platform#290): Nova writes notebook versions into the
+            # versioned `notebooks` bucket with the platform S3 identity — the same Secret
+            # the object store and every other consumer already read, so there is no new
+            # identity and Nova's Role is unchanged (storage is reached over S3, not the
+            # Kubernetes API). The bucket is created and versioned by `make notebooks-bucket`
+            # (scripts/create-notebooks-bucket.sh); a missing bucket makes publishing fail,
+            # not Nova's start-up. The routes themselves land in stardelt-nova#225.
+            - name: NOVA_S3_URL
+              value: http://seaweedfs-s3.stardelt.svc.cluster.local:8333
+            - name: NOVA_S3_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: stardelt-s3-creds, key: access-key } }
+            - name: NOVA_S3_SECRET_KEY
+              valueFrom: { secretKeyRef: { name: stardelt-s3-creds, key: secret-key } }
+            - name: NOVA_S3_NOTEBOOK_BUCKET
+              value: notebooks
             # Forward the signed-in user's own access token to Trino (and later the
             # catalog) instead of letting Nova act as a shared service account.
             # This is master spec §7 on the query path: the token that signed the
