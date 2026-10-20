@@ -640,6 +640,11 @@ chart-install: _context ## Install/upgrade the umbrella chart as release `starde
 	  $(MAKE) --no-print-directory sync-realm-user-management; \
 	  $(MAKE) --no-print-directory sync-oidc-clients; \
 	  $(MAKE) --no-print-directory verify-oidc-clients; \
+	  $(MAKE) --no-print-directory sync-catalog-clients; \
+	  if kubectl -n $(NAMESPACE) get deploy nova >/dev/null 2>&1; then \
+	    echo "› Nova: restart so it reads the catalog client the sync just created"; \
+	    kubectl -n $(NAMESPACE) rollout restart deploy/nova; \
+	  fi; \
 	fi
 	@echo ""
 	@echo "stardelt installed from chart/. Run 'make pf' to open port-forwards."

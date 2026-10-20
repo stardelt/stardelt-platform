@@ -188,10 +188,10 @@ triggerer:
     requests: { cpu: "50m",  memory: "256Mi" }
     limits:   { cpu: "1",    memory: "512Mi" }
 
-# Reloader restarts the long-running Airflow pods when the S3 key changes (helm-values/reloader.yaml);
-# task pods are short-lived and read the key when they start.
+# Reloader restarts the long-running Airflow pods when the S3 key or the catalog client
+# changes (helm-values/reloader.yaml); task pods are short-lived and read both when they start.
 airflowPodAnnotations:
-  secret.reloader.stakater.com/reload: "stardelt-s3-creds"
+  secret.reloader.stakater.com/reload: "stardelt-s3-creds,svc-catalog-airflow"
 
 # Task logs go to the object store so they outlive the task pod (scheduled jobs J0, platform#118):
 # a KubernetesExecutor pod writes its log to s3://backups/airflow-logs/ when the task ends, and
@@ -260,6 +260,34 @@ extraEnv: |
         key: secret-key
   - name: AWS_DEFAULT_REGION
     value: us-east-1
+  # Catalog sign-in (platform#284, step 4 of the catalog turn-on): the loader DAG
+  # opens the Iceberg REST catalog itself (stardelt-demos dags/nyc_taxi_load.py), so
+  # every Airflow task pod gets the service client svc-catalog-airflow (KIND=service,
+  # platform#282) and the realm's token endpoint. All three keys come from that one
+  # Secret, so they appear and disappear together; `make sync-catalog-clients` writes
+  # `token-url` exactly so a consumer never sees a partial client (Nova refuses to
+  # start on one, and a DAG must fall back to anonymous rather than use half a pair).
+  # Nothing secret is written here — only secretKeyRefs. Optional: an install without
+  # an IdP has no Secret, the DAG keeps its current anonymous catalog properties, and
+  # Airflow still installs.
+  - name: CATALOG_CLIENT_ID
+    valueFrom:
+      secretKeyRef:
+        name: svc-catalog-airflow
+        key: client-id
+        optional: true
+  - name: CATALOG_CLIENT_SECRET
+    valueFrom:
+      secretKeyRef:
+        name: svc-catalog-airflow
+        key: client-secret
+        optional: true
+  - name: CATALOG_TOKEN_URL
+    valueFrom:
+      secretKeyRef:
+        name: svc-catalog-airflow
+        key: token-url
+        optional: true
   # Scheduled pipelines (platform#118, phase J0): the loader DAG in the image
   # (stardelt-demos dags/pipeline_loader.py) runs `sql` tasks on the query engine as the
   # service-account client `pipeline-runner` (scripts/keycloak-sync-pipeline-runner-client.sh).

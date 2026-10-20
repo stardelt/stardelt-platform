@@ -25,7 +25,10 @@
 # keeps one audience mapper per requested audience (plus a `groups` mapper for a
 # principal), makes a principal's service-account user a member of GROUP and of no other
 # group, gives a service client no group at all, and refuses a service account with an
-# admin-API role. Idempotent. Reaches Keycloak through svc/keycloak (port-forward)
+# admin-API role. Idempotent. A service client's Secret also carries `token-url` (the
+# realm's endpoint) beside `client-id` and `client-secret`, so the consumers that take
+# all three from one object — Nova, the Airflow task pods — see them appear and
+# disappear together. Reaches Keycloak through svc/keycloak (port-forward)
 # because the public `/admin` API is closed. Secrets travel only through files under a
 # mode-0700 temp dir and `--data @file` bodies, never argv, stdout or a log line; the
 # token claims printed at the end are not secret.
@@ -102,6 +105,29 @@ fi
 for tool in kubectl curl python3 base64; do
   command -v "$tool" >/dev/null 2>&1 || { echo "keycloak-sync-principal: $tool not found" >&2; exit 1; }
 done
+
+# A service client's Secret also carries the realm's token endpoint. The consumers of
+# these clients (Nova, the Airflow task pods) must see all three keys together: Nova
+# refuses to start on a partial configuration (stardelt-nova#222) and a loader must fall
+# back to anonymous only when the whole client is absent, and an optional env reference
+# cannot make one variable conditional on another. Deriving the URL here is what keeps
+# the id, the secret and the endpoint in one object that appears or disappears at once;
+# taking it from ConfigMap stardelt-identity would leave "ConfigMap present, Secret
+# missing" as a partial state. The issuer is the platform's public one, the value every
+# component already validates. ISSUER_URL overrides it (tests, an external IdP).
+TOKEN_URL=""
+if [ "$KIND" = service ] && [ "$mode" = sync ]; then
+  issuer="${ISSUER_URL:-}"
+  if [ -z "$issuer" ]; then
+    issuer="$(kubectl -n "$NAMESPACE" get configmap stardelt-identity \
+      -o jsonpath='{.data.issuerUrl}' 2>/dev/null || true)"
+  fi
+  case "$issuer" in
+    https://*) ;;
+    *) fail "no realm issuer: ConfigMap $NAMESPACE/stardelt-identity has no https issuerUrl (run 'make install-identity') and ISSUER_URL is not set" ;;
+  esac
+  TOKEN_URL="${issuer%/}/protocol/openid-connect/token"
+fi
 
 umask 077
 tmp="$(mktemp -d)"
@@ -205,6 +231,7 @@ fi
 # 5. The Secret is the source of truth for the client secret. Read it when present;
 #    otherwise (or on ROTATE) generate 40 characters and keep them in the temp dir.
 secret_present=""
+token_url_updated=""
 if kubectl -n "$NAMESPACE" get secret "$SECRET_NAME" >/dev/null 2>&1; then
   secret_present=1
   kubectl -n "$NAMESPACE" get secret "$SECRET_NAME" -o jsonpath='{.data.client-secret}' \
@@ -213,6 +240,18 @@ if kubectl -n "$NAMESPACE" get secret "$SECRET_NAME" >/dev/null 2>&1; then
   stored_client_id="$(kubectl -n "$NAMESPACE" get secret "$SECRET_NAME" -o jsonpath='{.data.client-id}' | base64 -d || true)"
   [ "$stored_client_id" = "$CLIENT_ID" ] \
     || fail "Secret $NAMESPACE/$SECRET_NAME has client-id '$stored_client_id', expected '$CLIENT_ID'"
+  # Converge the endpoint without touching the secret (so a rerun that changes nothing
+  # leaves the Secret's resourceVersion alone). Existing Secrets predate the key.
+  if [ -n "$TOKEN_URL" ] && [ "$ROTATE" != 1 ]; then
+    stored_token_url="$(kubectl -n "$NAMESPACE" get secret "$SECRET_NAME" \
+      -o jsonpath='{.data.token-url}' | base64 -d || true)"
+    if [ "$stored_token_url" != "$TOKEN_URL" ]; then
+      kubectl -n "$NAMESPACE" patch secret "$SECRET_NAME" --type=merge \
+        -p "{\"stringData\":{\"token-url\":\"$TOKEN_URL\"}}" >/dev/null \
+        || fail "Secret $NAMESPACE/$SECRET_NAME cannot be given its token-url"
+      token_url_updated=1
+    fi
+  fi
 fi
 if [ -z "$secret_present" ] || [ "$ROTATE" = 1 ]; then
   python3 > "$tmp/client-secret" <<'PY'
@@ -374,9 +413,10 @@ fi
 # 8. Persist the Secret when it was created here or when ROTATE asked for a new value.
 #    The value travels through a file, never argv; a mode-0700 temp dir holds it.
 if [ -z "$secret_present" ] || [ "$ROTATE" = 1 ]; then
+  secret_args=(--from-literal="client-id=$CLIENT_ID" --from-file="client-secret=$tmp/client-secret")
+  [ -z "$TOKEN_URL" ] || secret_args+=(--from-literal="token-url=$TOKEN_URL")
   kubectl -n "$NAMESPACE" create secret generic "$SECRET_NAME" \
-    --from-literal="client-id=$CLIENT_ID" \
-    --from-file="client-secret=$tmp/client-secret" \
+    "${secret_args[@]}" \
     --dry-run=client -o json > "$tmp/secret.json"
   python3 - "$tmp/secret.json" "$tmp/secret-final.json" "$NAME" <<'PY'
 import json, sys
@@ -394,6 +434,9 @@ PY
   else
     echo "› secret $NAMESPACE/$SECRET_NAME: rotated"
   fi
+fi
+if [ -n "$token_url_updated" ]; then
+  echo "› secret $NAMESPACE/$SECRET_NAME: token-url converged"
 fi
 
 # 9. One audience mapper per requested audience, and — for a principal — a groups mapper

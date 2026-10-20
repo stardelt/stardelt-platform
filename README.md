@@ -381,9 +381,10 @@ Connect driver), `svc-catalog-airflow` (the task pods) and `svc-catalog-bootstra
 bootstrap Job). `make sync-catalog-clients` converges all five through the same script with
 `KIND=service`: no owner group and no `groups` claim (each is a component, not a person), an
 `aud-lakekeeper` audience mapper, the attribute `stardelt-managed=service`, and a Secret named after
-the client in namespace `stardelt`, whose keys `client-id` and `client-secret` are the source of
-truth. Rotation is a principal's: `ROTATE=1 make sync-catalog-clients` writes a new value to
-Keycloak first, then to each Secret, and proves every new value with a client-credentials token.
+the client in namespace `stardelt`, whose keys `client-id`, `client-secret` and `token-url` (the
+realm's endpoint, written for a service client) are the source of truth. Rotation is a principal's:
+`ROTATE=1 make sync-catalog-clients` writes a new value to Keycloak first, then to each Secret, and
+proves every new value with a client-credentials token.
 `make delete-catalog-clients YES=1` removes them, and only clients carrying
 `stardelt-managed=service` are accepted. Lakekeeper still runs `allowall` and does not check these
 tokens yet — the callers start sending them in the follow-up steps (#283, #284); only then can one
@@ -410,6 +411,20 @@ token; `openid` is a default scope of every client and is accepted, while the
 Lakekeeper will check. Evidence that a caller asked for a token is Keycloak's own event log —
 `kubectl -n stardelt logs deploy/keycloak | grep 'type="CLIENT_LOGIN"'` names the client id and the
 grant type, never the token.
+
+*Catalog sign-in for Nova and the Airflow task pods (platform#284, step 4).* The last two interactive
+callers of the catalog now have their own service clients too. Nova reads
+`NOVA_CATALOG_CLIENT_ID`, `NOVA_CATALOG_CLIENT_SECRET` and `NOVA_CATALOG_TOKEN_URL` from Secret
+`svc-catalog-nova` (manifest and chart), and every Airflow pod — the KubernetesExecutor task pods
+included — reads `CATALOG_CLIENT_ID`, `CATALOG_CLIENT_SECRET` and `CATALOG_TOKEN_URL` from
+`svc-catalog-airflow`, rendered in `helm-values/airflow.yaml` and the umbrella chart's
+`airflow.extraEnv`. Two details matter. All three variables come from the **same** Secret, because
+Nova refuses to start on a partial configuration (`stardelt-nova#222`) and an optional
+`secretKeyRef` cannot make one variable conditional on another; that is why a service client's
+Secret also carries `token-url`, derived from the identity contract's issuer by
+`make sync-catalog-clients`. And every reference is `optional`, so an install without an IdP (no
+Secret) keeps Nova and Airflow running and both keep calling Lakekeeper anonymously — the
+`install-core` shape. No cluster permission changes: the Role is the same as before.
 
 *Sandbox secret store (opt-in, platform#160).* `make openbao` installs OpenBao (MPL-2.0, the one documented
 non-permissive component, see the licence page) as the secret store of a sandbox, the store that External Secrets and the
