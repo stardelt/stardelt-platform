@@ -135,6 +135,7 @@ Nova's state store (`nova-pg`, database `nova`: saved queries, personal settings
 | `nova.secretStore.url` | `""` | Address of the secret store Nova signs in to with the person's own token, passed as `NOVA_SECRET_STORE_URL`. Empty = the Connections API answers 503 and no extra RBAC is rendered. |
 | `nova.secretStore.role` | `platform-users` | `NOVA_SECRET_STORE_ROLE` — the store role a person's token is exchanged for. |
 | `nova.secretStore.mount` | `secret` | `NOVA_SECRET_STORE_MOUNT` — the store mount connection secrets are written under. |
+| `nova.airflow.*` | url `""`, user `nova-api`, passwordSecret `airflow-nova-api`/`password` | Airflow REST API for pipeline runs and logs, passed as `NOVA_AIRFLOW_URL`, `NOVA_AIRFLOW_USER` and `NOVA_AIRFLOW_PASSWORD` (a `secretKeyRef`, never a value). Empty `url` = the Pipelines API answers 503 and no extra RBAC is rendered. With `url` set, the chart also renders the `nova-pipelines` Role and RoleBinding: `get`, `list` and `watch` on `pipelines.stardelt.io` in the release namespace — no create, no delete. Example: `--set nova.airflow.url=http://airflow-api-server:8080`. |
 
 With `nova.secretStore.url` set, the chart also renders the `nova-connections` Role and RoleBinding: `get`, `list`, `create`, `delete` and `patch` on `connections.stardelt.io` in the release namespace — nothing else, no Secrets access. `patch` is for the break-glass notice Nova sets as an annotation on the `Connection`. Example: `--set nova.secretStore.url=http://openbao.<namespace>.svc.cluster.local:8200`.
 

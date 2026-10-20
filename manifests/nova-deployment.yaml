@@ -36,6 +36,34 @@ subjects:
     name: nova
     namespace: stardelt
 ---
+# Nova lists `Pipeline` resources to show what is scheduled (J1, platform#254).
+# Read-only; the Schedule ticket adds create and delete.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: nova-pipelines
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+rules:
+  - apiGroups: ["stardelt.io"]
+    resources: ["pipelines"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nova-pipelines
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: nova-pipelines
+subjects:
+  - kind: ServiceAccount
+    name: nova
+    namespace: stardelt
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -184,6 +212,20 @@ spec:
               value: platform-users
             - name: NOVA_SECRET_STORE_MOUNT
               value: secret
+            # Airflow (J1, platform#254): the Pipelines page reads runs and logs with the
+            # `nova-api` service user (Secret `airflow-nova-api`, key `password`, created by
+            # the #243 spike). The chart renders the same three values when
+            # `nova.airflow.url` is set — keep them here so a `kubectl apply` of this
+            # manifest cannot drop them from the live Deployment.
+            - name: NOVA_AIRFLOW_URL
+              value: http://airflow-api-server.stardelt.svc.cluster.local:8080
+            - name: NOVA_AIRFLOW_USER
+              value: nova-api
+            - name: NOVA_AIRFLOW_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: airflow-nova-api
+                  key: password
             - name: RUST_LOG
               value: info,tower_http=info
           readinessProbe:

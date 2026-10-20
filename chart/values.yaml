@@ -546,6 +546,12 @@ nova:
     role: platform-users
     mount: secret
 
+  # Airflow, to show pipeline runs and logs. Empty url switches the Pipelines API off (it answers 503) and Nova gets no extra permission.
+  airflow:
+    url: ""
+    user: nova-api
+    passwordSecret: { name: airflow-nova-api, key: password }
+
 # ===========================================================================
 # Heavy components — off by default, same as `make install-core`.
 # Enable with `--set <name>.enabled=true` or in your own values file.
