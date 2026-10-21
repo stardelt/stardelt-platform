@@ -63,7 +63,8 @@ OPABridge:
   #     catalog itself (Lakekeeper's `get_config`, the `browse` verb), so a
   #     person who may see a catalog may see its functions. The unmapped
   #     catalogs (system, tpch, tpcds) are already allowed through
-  #     allowUnmanagedCatalogs.
+  #     allowUnmanagedCatalogs — the engine's file rules are what reserve them
+  #     for administrators (platform#363), and both authorizers must allow.
   #
   # And one rule is not about a catalog at all: Impersonation (platform#310,
   # #342) — the `superset` service account may act as one person (a Keycloak

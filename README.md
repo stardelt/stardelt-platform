@@ -387,7 +387,7 @@ plain development default when it does not.
 | `http-server.authentication.allow-insecure-over-http=false` | a plain-HTTP statement is refused (403, no query id) **before** any authenticator runs, so the insecure authenticator — the one that trusts `X-Trino-User` — is unreachable |
 | `http-server.process-forwarded=true` | the ingress still terminates Let's Encrypt TLS and forwards HTTP to 8080 with `X-Forwarded-Proto`, which Trino treats as secure; the public path is unchanged |
 | `internal-communication.shared-secret=${ENV:…}` | required as soon as an authenticator is enabled |
-| `accessControl` (file `rules.json`: `queries` and `tables`) | query visibility is owner-only: each user sees and kills only their own queries, members of `stardelt-admins` see and kill all (viewing/killing one's own needs no rule — it is built-in). The `tables` rules deny everyone but `stardelt-admins` the cluster-wide `system.runtime.tasks`, `.transactions` and `.optimizer_rule_stats` (`tasks` lists other users' queries) and grant every other table as before; `system.runtime.queries` (own queries only) and `.nodes` stay open (platform#181) |
+| `accessControl` (file `rules.json`: `catalogs`, `queries`, `tables`, `impersonation`) | query visibility is owner-only: each user sees and kills only their own queries, members of `stardelt-admins` see and kill all (viewing/killing one's own needs no rule — it is built-in). The `catalogs` rules (platform#363) reserve `system`, `tpch` and `tpcds` for administrators: a non-administrator's `SHOW CATALOGS` no longer lists them and a statement against one is refused by the engine (`Access Denied: Cannot access catalog …`); the last rule grants `all` to every other catalog, which is Trino's own default (the bridge and Lakekeeper decide those). The `tables` rules deny everyone but `stardelt-admins` the cluster-wide `system.runtime.tasks`, `.transactions` and `.optimizer_rule_stats` (`tasks` lists other users' queries), so even an administrator-only `system` catalog keeps its worst tables out of reach of a non-admin (platform#181). `system.runtime.queries` and `.nodes` are inside that administrator-only catalog now |
 | `coordinatorExtraConfig: access-control.config-files` + `coordinator.additionalConfigFiles` (`access-control-opa.properties`) | the second access control, platform#311: Trino also asks the catalog's OPA bridge (`lakekeeper-opa:8282`) before every catalog/schema/table/column operation, so the `Catalog` grants decide who reads what — see "Who may read what" below. Both systems have to allow a statement; the bridge therefore only ever removes access. Fail-closed: an unreachable bridge denies every statement |
 | `coordinator.additionalConfigFiles` (`group-provider.properties`) + `trino-groups` volume | the file group provider reads ConfigMap `trino-group-file` (written by CronJob `access-sync`, never committed): the `stardelt-admins` line the query rules read, and one `wh-<name>` line per `SqlWarehouse`, which is what the resource-group selectors match; `file.refresh-period=30s` picks remounts up with no restart. The strings are Keycloak user ids, matching `principal-field=sub` |
 | `coordinator.additionalConfigFiles` (`resource-groups.properties`) + `trino-warehouses` volume, `configmap.reloader.stakater.com/reload` | the resource-group file manager (`configuration-manager=file`) reads `/etc/trino/warehouses/resource-groups.json` from ConfigMap `trino-warehouses` — the file CronJob `access-sync` renders from the `SqlWarehouse` objects (platform#312, platform#313). It is loaded **once** at startup, so Reloader restarts the coordinator when that ConfigMap changes; the chart's own `resourceGroups` block stays unset (it would render and mount a file of its own). See "Warehouses" below |
@@ -455,8 +455,9 @@ the zero-concurrency `no-warehouse` root group instead, which answers `Too many 
 Keycloak user outside `stardelt-users` — runs in `wh-small` rather than in a queue that never
 moves.
 
-Which class a query ran in is visible in `system.runtime.queries`, as an administrator (everybody
-else sees only their own queries):
+Which class a query ran in is visible in `system.runtime.queries` as an administrator — the
+catalog is administrator-only since platform#363 (an ordinary person's query log is Nova's,
+which reads its own store):
 
 ```sql
 SELECT "user", resource_group_id FROM system.runtime.queries ORDER BY created DESC LIMIT 20
@@ -965,9 +966,11 @@ ORDER BY created DESC LIMIT 20;
 ```
 
 `user` is the person's `sub`; Nova's query log resolves it to the display name from its own
-session. Administrator membership (`stardelt-admins`) is required to see other people's
-queries — everyone else sees only their own (`helm-values/trino-identity.yaml`, `queries`
-rules). Async SQL Lab (Celery worker) carries the same person, so a `runAsync` query and a
+session. `system.runtime.queries` is in the administrator-only `system` catalog since
+platform#363; among administrators, the `queries` rules decide who may view or kill which
+query (`helm-values/trino-identity.yaml`), and an ordinary person sees their own queries in
+Nova's log instead. Async SQL Lab (Celery worker) carries the same person, so a `runAsync`
+query and a
 chart load agree.
 
 Applying it to the live cluster is two rolled releases (`make trino` and the Superset upgrade
@@ -1483,8 +1486,11 @@ authorizer.
 `make bridge-replay` asks every captured shape for the three seed people and one
 `stardelt-admins` member (their Keycloak `sub`), from a throwaway pod labelled like the
 coordinator so `lakekeeper-ingress` admits it to 8282. It prints five tables — the
-contract, the operations 480 did not send, the reads that must keep working
-(`SELECT 1`, `system.runtime.nodes`, `information_schema`), the permission matrix, and the
+contract, the operations 480 did not send, the reads the bridge must allow (`SELECT 1`,
+`information_schema`, and `system.runtime.nodes` — whose bridge answer is still `allow` for
+everyone, while the file rules have made the catalog administrator-only since
+platform#363; for an ordinary person the engine refuses before the bridge is asked), the
+permission matrix, and the
 impersonation rows — and exits 1 on an HTTP error, a non-JSON body, an empty body, a
 missing `result`, a wrong matrix or impersonation row, or a must-work read that is denied.
 `--data-only` keeps the matrix and the impersonation rows: that is the regression check
@@ -1497,9 +1503,14 @@ deliberate and it covers exactly the catalogs this platform does not manage: `sy
 `tpch` and `tpcds` (the engines' built-ins). Every `Catalog` object is mapped by
 `make catalogs`, so a data catalog is never in that set; if one ever is (a typo, a render
 that printed nothing), its grants are not enforced — that is the failure mode
-`make verify-catalog-permissions` and `make bridge-replay` are for. The same mechanism is
-why `SELECT * FROM system.runtime.nodes` and `SHOW FUNCTIONS FROM tpch.tiny` work for
-everyone: those catalogs are not ours to govern.
+`make verify-catalog-permissions` and `make bridge-replay` are for. The bridge still allows
+those three catalogs for everyone; what a person may actually reach is decided one layer
+up, because both authorizers must allow: the `catalogs` rules in
+`helm-values/trino-identity.yaml` reserve `system`, `tpch` and `tpcds` for administrators
+(platform#363, "Who may read what"). `SELECT * FROM system.runtime.nodes` and
+`SHOW FUNCTIONS FROM tpch.tiny` are therefore administrator-only, while the bridge's own
+answers about them are unchanged — the replay keeps asking them, because it tests the
+bridge, and the differential compares the bridge's two paths, not the file rules.
 
 **What the capture changed** (`platform#333`, before the switch):
 
@@ -1566,8 +1577,49 @@ before every catalog, schema, table and column operation (`make catalog-enforce`
   cluster-internal tables away from ordinary users. A statement must be allowed by both.
 - Trino takes its catalog list from the same answer, so a person sees exactly the catalogs
   their groups grant — in the SQL editor, in Nova's catalog switcher (a 30-second cache),
-  in Superset's catalog list and in a notebook's `SHOW CATALOGS`. `system`, `tpch` and
-  `tpcds` are the engine's own catalogs, not managed here, and stay visible to everyone.
+  in Superset's catalog list and in a notebook's `SHOW CATALOGS`. **`system`, `tpch` and
+  `tpcds` are for administrators** (platform#363, below): they are the engine's own
+  catalogs, not managed here, so no `Catalog` grant can describe them — and the bridge lets
+  every catalog it does not manage through, which is why the file rules, not the bridge,
+  are the layer that reserves them.
+
+**The three engine catalogs are administrator-only** (`platform#363`). `system` is
+Trino's own metadata catalog — `runtime.nodes`, `runtime.queries`, `runtime.tasks`,
+`metadata.*`, `jdbc.*` — and `tpch`/`tpcds` are the sample connectors the chart mounts.
+Nobody's data lives in them, so no `Catalog` grant can express who may read them, and
+nobody needs them for ordinary work: Nova's query log has its own store, cancel goes
+through the statement's `nextUri`, Superset reflects through `information_schema`/`SHOW`,
+and notebooks use the managed catalogs. The reservation is a `catalogs` section in
+`helm-values/trino-identity.yaml` — administrators `all`, `(system|tpch|tpcds)` `none`,
+then a catch-all `all` for every other catalog (first match wins; without the catch-all a
+catalog no rule matches would be denied, which would hide the managed five too). Trino
+hides a catalog from `SHOW CATALOGS` when a person's catalog access is `none`, so the
+shrink is immediate in the SQL editor, Nova, Superset and notebooks, and a statement that
+names one is refused by the engine:
+
+```text
+PERMISSION_DENIED: Access Denied: Cannot access catalog tpch
+```
+
+Built-in functions are **not** catalog access: `SELECT abs(-1)`, `now()`,
+`SHOW FUNCTIONS`, `SHOW SESSION LIKE 'query_max%'` and `EXPLAIN SELECT 1` are the
+acceptance battery and stay available to everyone. The documented smoke test
+`SELECT * FROM system.runtime.nodes` is administrator-only from here on; use
+`SELECT 1` as an ordinary person. `CALL system.runtime.kill_query` stays refused — for
+administrators too — because the bridge has no `ExecuteProcedure` rule at all (a
+pre-existing gap, not introduced by this reservation). Superset's catalog list comes from
+`SHOW CATALOGS`, so it follows the person; adding a dataset and previewing it read
+`information_schema`, and only the *table comment* lookup uses
+`system.metadata.table_comments` — that one is denied now, Superset catches it and the
+dataset has no comment (its dialect's own `PERMISSION_DENIED` fallback never fires,
+because SQLAlchemy wraps the driver error before the dialect sees it).
+
+To see it: a person's `SHOW CATALOGS` lists only the managed catalogs, an
+administrator's still lists the three extra, and the three engine catalogs answer
+administrators only. The policy is live when the coordinator has rolled on the
+`checksum/access-control-config` annotation and `/etc/trino/access-control/rules.json`
+inside the pod carries the `catalogs` section — the two places to look when a person
+still sees `tpch`.
 
 **What is not covered.**
 
@@ -1643,7 +1695,9 @@ SEED_CATALOGS=1 make seed-dev-access YES=1   # apply dev/seed/catalogs.yaml (the
 The **permission fixtures** are opt-in, for people who want group differences to exercise:
 `make seed-permission-fixtures YES=1` applies `dev/seed/fixtures/permission-fixtures.yaml`
 (Catalogs `finance`, `product`, `sandbox` with different grants per group) and creates the
-`schema seed`, `table nation` (25 rows from `tpch.tiny`) in each. They need the seed's
+`schema seed`, `table nation` (25 rows with the TPCH nation columns, built from
+`sequence(0, 24)` — no read of `tpch`, which is administrator-only since platform#363) in
+each. They need the seed's
 people and groups, so run `make seed-dev-access YES=1` first; `make
 unseed-permission-fixtures YES=1` deletes exactly those three Catalogs and never a
 baseline one. Deleting a Catalog deletes no data, so the `seed` schema stays in the

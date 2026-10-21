@@ -8,8 +8,9 @@
 #
 # `make catalog-enforce-rollback` renders exactly this: the file access control
 # alone. It is the recovery path, not a state to run in — without the bridge
-# Trino authorizes by the file rules only, so every person sees every catalog
-# and the `Catalog` grants enforce nothing.
+# Trino authorizes by the file rules only, so every person sees every *managed*
+# catalog (the three engine catalogs stay administrator-only, platform#363) and
+# the `Catalog` grants enforce nothing.
 #
 # Why an overlay and not an edit: `helm upgrade` is the only writer, both files
 # are tracked, and a rollback has to be one command that a person under pressure

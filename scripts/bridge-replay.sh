@@ -19,15 +19,22 @@
 #    classified from the operation — `must-allow` (a person cannot use Trino
 #    without it: ExecuteQuery, SetSystemSessionProperty, ReadSystemInformation,
 #    ShowFunctions/FilterFunctions), `owner-only` (a question about someone
-#    else's query: false is by design) or `grants` (the catalog decides). A
+#    else's query: false by design for everyone but an administrator, who may
+#    view and kill any query — the file rules' `queries` section and the
+#    bridge's admin branch both allow it) or `grants` (the catalog decides). A
 #    `must-allow` row answered false is a DEFECT; an `owner-only` row answered
-#    true is a FAIL. `ImpersonateUser` is the exception: its asking identity is
-#    always `superset`, so it is asked in table 5.
+#    true for a non-administrator asker is a FAIL. `ImpersonateUser` is the
+#    exception: its asking identity is always `superset`, so it is asked in
+#    table 5.
 # 2. The operations Trino 480 did not send in this capture (FilterFunctions,
 #    CreateViewWithSelectFromColumns, ViewQueryOwnedBy, ReadSystemInformation),
 #    asked with the shape the plugin builds for them.
-# 3. The reads that must keep working for an ordinary person: SELECT 1
-#    (ExecuteQuery), system.runtime.nodes, information_schema.
+# 3. The reads the bridge must allow: SELECT 1 (ExecuteQuery),
+#    information_schema, and `system.runtime.nodes` — the last one is answered
+#    from `allowUnmanagedCatalogs`, and the engine's file rules have made that
+#    catalog administrator-only (platform#363), so an ordinary person is refused
+#    before the bridge is asked. It stays a row because the bridge's answer is
+#    part of the contract (an administrator reaches it through both layers).
 # 4. The permission matrix: AccessCatalog/FilterCatalogs on every Ready Catalog
 #    in the namespace, CreateSchema on each, and SelectFromColumns/InsertIntoTable
 #    on `<catalog>.seed.nation` (skipped where that table is absent) and on
@@ -593,7 +600,9 @@ if not data_only:
          "grants", None, {name: expect_by_catalog["warehouse"][name]["select"] for name in names}, True),
         ("probe_view_owned", "ViewQueryOwnedBy", ALLOW,
          {"operation": "ViewQueryOwnedBy", "resource": {"user": {"user": "<peer>"}}},
-         "owner-only", None, {name: False for name in names}, False),
+         # The administrator may view anybody's query (file rules: `queries`
+         # allows view/kill for `stardelt-admins`; bridge: `allow_admin_system_access`).
+         "owner-only", None, {name: name == "admin" for name in names}, False),
         ("probe_read_system", "ReadSystemInformation", ALLOW,
          {"operation": "ReadSystemInformation"},
          "must-allow", None, {name: True for name in names}, False),
@@ -806,8 +815,20 @@ for section, title in sections:
                 note = "(denied: %s)" % ",".join(denied)
                 exit_code = 1
         elif klass == "owner-only":
-            leaked = [name for name in names
-                      if per_person[name] is True or (isinstance(per_person[name], list) and per_person[name])]
+            # These questions are about somebody else's query, and the captured
+            # body says who asks: the context identity is `<peer>` and the
+            # resource is `<sub>` (see `query_input`), so row i's answer is the
+            # answer for the *next* principal in the list, not for the person
+            # the column is named after. An administrator may view any query
+            # (`queries` file rules, the bridge's admin branch), so exactly the
+            # rows whose asker is the administrator may come back allowed.
+            leaked = []
+            for index, name in enumerate(names):
+                asker = names[(index + 1) % len(names)]
+                allowed = per_person[name] is True or (
+                    isinstance(per_person[name], list) and per_person[name])
+                if allowed and asker != "admin":
+                    leaked.append("%s (asked by %s)" % (name, asker))
             if leaked:
                 verdict = "FAIL"
                 note = "(allowed: %s)" % ",".join(leaked)

@@ -42,11 +42,13 @@
 #
 # The permission fixtures are the old three-catalog matrix (finance, product,
 # sandbox) with different grants per group, plus the `seed.nation` table (25 rows
-# from tpch.tiny) in each: for people who want to exercise group differences.
-# They need the seed's people and groups, so run `make seed-dev-access YES=1`
-# first; `unseed-permission-fixtures` deletes exactly the three Catalogs and
-# never a baseline one. Deleting a Catalog deletes no data, so the seed schema
-# stays in the fixture warehouses (orphan warehouses to the next sync tick).
+# with the old TPCH nation columns, built from `sequence(1, 25)` and no catalog
+# read — `tpch` is administrator-only since platform#363) in each: for people who
+# want to exercise group differences. They need the seed's people and groups, so
+# run `make seed-dev-access YES=1` first; `unseed-permission-fixtures` deletes
+# exactly the three Catalogs and never a baseline one. Deleting a Catalog deletes
+# no data, so the seed schema stays in the fixture warehouses (orphan warehouses
+# to the next sync tick).
 #
 # Refuses when ConfigMap `stardelt-identity` says `environment: production`: a
 # seed of fake people and open catalogs is a development aid, not an install
@@ -274,8 +276,11 @@ if [ "$mode" = fixtures ]; then
   kubectl apply -f "$FIXTURES_FILE"
   converge_catalogs
 
-  # The data the probe reads: schema `seed`, table `nation` (25 rows from
-  # tpch.tiny) in every fixture catalog, through the Trino service account.
+  # The data the probe reads: schema `seed`, table `nation` (25 rows with the
+  # TPCH nation columns) in every fixture catalog, through the Trino service
+  # account. The rows come from `sequence(1, 25)`, not from `tpch.tiny.nation`:
+  # the engine's sample catalogs are administrator-only since platform#363, and
+  # the service account is not an administrator.
   kubectl -n "$NAMESPACE" get secret trino-password-db -o jsonpath='{.data.superset-password}' | base64 -d >"$tmp/superset-pw"
   [ -s "$tmp/superset-pw" ] || fail "Secret $NAMESPACE/trino-password-db has no superset-password — run 'make install-identity'"
 
@@ -333,7 +338,10 @@ PY
 
   for catalog in "${FIXTURES_CATALOGS[@]}"; do
     trino_retry "CREATE SCHEMA IF NOT EXISTS $catalog.$SEED_SCHEMA" >/dev/null
-    trino_retry "CREATE TABLE IF NOT EXISTS $catalog.$SEED_SCHEMA.$SEED_TABLE AS SELECT * FROM tpch.tiny.nation" >/dev/null
+    trino_retry "CREATE TABLE IF NOT EXISTS $catalog.$SEED_SCHEMA.$SEED_TABLE AS
+SELECT nationkey, 'nation-' || CAST(nationkey AS varchar) AS name,
+       nationkey % 5 AS regionkey, CAST('seed row' AS varchar) AS comment
+FROM UNNEST(sequence(0, 24)) AS t(nationkey)" >/dev/null
     rows="$(trino_retry "SELECT count(*) AS rows FROM $catalog.$SEED_SCHEMA.$SEED_TABLE")"
     count="$(printf '%s' "$rows" | jq -r '.[0][0] // ""')"
     [ "$count" = 25 ] || fail "$catalog.$SEED_SCHEMA.$SEED_TABLE has $rows rows, expected 25"
