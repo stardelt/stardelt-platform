@@ -24,6 +24,13 @@
 # There is deliberately no static catalog here: the catalog is per person, and
 # the notebook helper configures it with the person's token when it creates the
 # session (images/jupyter/stardelt, platform#317).
+#
+# Two S3 clients live here, with separate credentials. Iceberg's S3FileIO reads
+# the platform's own storage with the Secret key the executors carry; Hadoop's
+# S3A reads *public* buckets only, pinned to the anonymous provider, so the
+# platform key can never sign an S3A request (platform#347). S3A is for public
+# datasets (NOAA GHCN, Ookla, ...), not for private buckets and not for the
+# lakehouse — that data is read through Trino or an Iceberg table.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -85,7 +92,7 @@ data:
     # Iceberg runtime and AWS bundle (images/spark/Dockerfile).
     # Single space before the digest: the pinned reference is 136 characters,
     # just inside the 140 the YAML lint allows.
-    spark.kubernetes.container.image ghcr.io/stardelt/spark:dev@sha256:ab2ef9286e6b8bf21b89405e698e957c7deb909eac2c59d36869b682d220c1b1
+    spark.kubernetes.container.image ghcr.io/stardelt/spark:dev@sha256:a14b0aba7dfe61f381f0682fa8188a8bd451273aa00fae7fc9f393609ed3ac1a
     spark.kubernetes.container.image.pullPolicy             IfNotPresent
     spark.kubernetes.container.image.pullSecrets            ghcr-creds
     spark.kubernetes.authenticate.executor.serviceAccountName spark-connect
@@ -96,10 +103,14 @@ data:
     spark.kubernetes.executor.secretKeyRef.AWS_SECRET_ACCESS_KEY stardelt-s3-creds:secret-key
 
     # --- Sizing on the shared 16 GB node ------------------------------------
-    # Driver: 1g heap, 2 GiB container limit (README has the budget table).
+    # Driver: 1g heap, 3 GiB container limit; about 0.7 GiB of a busy driver is off-heap Arrow/Netty buffers (README has the budget table).
     # Executors: 1 core + 1g heap + 384m overhead each, at most two at a time,
     # scaled to zero when idle.
     spark.driver.memory                                     1g
+    # A collect()/toPandas() result above 512m fails instead of filling the driver heap.
+    spark.driver.maxResultSize                              512m
+    # Free a finished job's broadcasts and metadata sooner than the 30min default.
+    spark.cleaner.periodicGC.interval                       5min
     spark.executor.memory                                   1g
     spark.executor.memoryOverhead                           384m
     spark.executor.cores                                    1
@@ -134,6 +145,28 @@ data:
     # data credentials, and the driver signs its own S3 requests with them. A
     # vended-credential catalog is platform#272's follow-up, not this change.
     spark.sql.extensions                                    org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
+
+    # --- Public S3 over S3A: anonymous reads only ---------------------------
+    # `spark.read.parquet("s3a://<public bucket>/...")` in a notebook; `s3://`
+    # is the same filesystem under the other scheme. Both are needed because
+    # user code and public dataset examples use either form.
+    #
+    # The credentials provider is the point of this block: S3A's default chain
+    # would pick up AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY — the executors'
+    # platform key — and sign with it. Anonymous is forced instead, so S3A can
+    # only read what the whole internet can read. A private bucket fails with an
+    # access error; the platform bucket (`lakehouse`) is not readable this way
+    # (use Trino or an Iceberg table, where the catalog's grants apply).
+    #
+    # No fs.s3a.endpoint: S3A talks to AWS and resolves the bucket's region, so
+    # buckets in any region work. The Spark pods have internet egress (no
+    # NetworkPolicy on them — they are not part of the umbrella chart); no new
+    # egress rule or Secret is added by this block.
+    spark.hadoop.fs.s3a.impl                                org.apache.hadoop.fs.s3a.S3AFileSystem
+    spark.hadoop.fs.s3.impl                                 org.apache.hadoop.fs.s3a.S3AFileSystem
+    spark.hadoop.fs.s3a.aws.credentials.provider            org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider
+    spark.hadoop.fs.s3a.connection.ssl.enabled              true
+    spark.hadoop.fs.s3a.path.style.access                   false
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -171,7 +204,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: spark-connect
-          image: ghcr.io/stardelt/spark:dev@sha256:ab2ef9286e6b8bf21b89405e698e957c7deb909eac2c59d36869b682d220c1b1
+          image: ghcr.io/stardelt/spark:dev@sha256:a14b0aba7dfe61f381f0682fa8188a8bd451273aa00fae7fc9f393609ed3ac1a
           imagePullPolicy: IfNotPresent
           command: ["/opt/spark/bin/stardelt-connect-server"]
           env:
@@ -205,7 +238,7 @@ spec:
             failureThreshold: 6
           resources:
             requests: { cpu: "250m", memory: "1Gi" }
-            limits: { cpu: "1", memory: "2Gi" }
+            limits: { cpu: "1", memory: "3Gi" }
           securityContext:
             allowPrivilegeEscalation: false
             capabilities: { drop: ["ALL"] }

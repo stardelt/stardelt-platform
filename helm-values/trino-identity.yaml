@@ -290,6 +290,12 @@ coordinator:
       group-provider.name=file
       file.group-file=/etc/trino/groups/groups.txt
       file.refresh-period=30s
+    # The bridge authorizer file the switch (platform#311) loads through
+    # `access-control.config-files` in coordinatorExtraConfig above — before
+    # the switch it is mounted but not listed, so Trino ignores it (a
+    # properties file no one lists has no effect). Turning the bridge on
+    # before the engine principal is a `sub` would deny every query.
+    #
     # The catalog's access control (platform#311): Trino asks the OPA bridge —
     # a sidecar of the catalog on Service `lakekeeper-opa`, which answers from
     # Lakekeeper's OpenFGA grants — before every catalog, schema, table, column
@@ -300,16 +306,24 @@ coordinator:
     # Trino property and would be ignored, leaving the plugin to fail on the
     # first batched filter Trino sends.
     #
-    # This file is loaded through `access-control.config-files` in
-    # coordinatorExtraConfig above, next to the chart's
-    # `access-control.properties`; both have to allow a statement. The bridge's
-    # own rules (which catalogs a person may see, the ImpersonateUser row, the
-    # session-property and function rules) live in helm-values/lakekeeper.yaml
-    # under `OPABridge`, not here.
+    # `opa.policy.uri` and `opa.policy.batched-uri` are the stardelt front entry
+    # points (platform#359): `data.stardelt.allow` answers every single question,
+    # `data.stardelt.batch` the batched ones, and both are the chart's own rules
+    # whenever the catalog decision table (published by access-sync every 2
+    # minutes) cannot answer — that is the only difference from pointing at
+    # `/v1/data/trino/*` directly. The paths are the same strings
+    # `scripts/lib/bridge.sh` holds — `make lint` (scripts/check-bridge-uri.sh)
+    # fails if this file names another one, so the replay and the latency probe
+    # keep asking what the engine asks.
+    #
+    # Both files must allow a statement. The bridge's own rules (which catalogs
+    # a person may see, the ImpersonateUser row, the session-property and
+    # function rules) live in helm-values/lakekeeper.yaml under `OPABridge`, not
+    # here.
     access-control-opa.properties: |
       access-control.name=opa
-      opa.policy.uri=http://lakekeeper-opa.stardelt.svc.cluster.local:8282/v1/data/trino/allow
-      opa.policy.batched-uri=http://lakekeeper-opa.stardelt.svc.cluster.local:8282/v1/data/trino/batch
+      opa.policy.uri=http://lakekeeper-opa.stardelt.svc.cluster.local:8282/v1/data/stardelt/allow
+      opa.policy.batched-uri=http://lakekeeper-opa.stardelt.svc.cluster.local:8282/v1/data/stardelt/batch
   additionalVolumes:
     - name: trino-groups
       configMap: { name: trino-group-file }

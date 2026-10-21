@@ -1,0 +1,70 @@
+# The dev seed's permission fixtures (platform#309, opt-in since platform#365):
+# three catalogs with different grants per group, so the permission probe has a
+# `true` and a `false` for the same verb. The baseline layout is
+# `dev/seed/catalogs.yaml` (the maintainer's five catalogs); this file is not
+# applied by `make seed-dev-access`.
+#
+#   make seed-permission-fixtures YES=1      # apply this file + the seed.nation tables
+#   make unseed-permission-fixtures YES=1    # delete exactly these three Catalogs
+#
+# Both targets need the seed's people and groups (`make seed-dev-access YES=1`),
+# because a grant is a group and the probe asks as `dev-finops`, `dev-analytics`
+# and `dev-outsider`. The expected rows follow the live Catalog objects, not a
+# table in a script: `make verify-catalog-permissions` recomputes them from what
+# is applied here.
+#
+# `finance` is finops' writable domain; `analytics` may read it. `product` is the
+# other way round. `sandbox` is the one every signed-in person may use. Owner
+# groups hold `manage_grants` only (ownership is not a data verb, design §5.3),
+# which is why finops' and analytics' data verbs are spelled out on their own
+# catalogs.
+apiVersion: stardelt.io/v1alpha1
+kind: Catalog
+metadata:
+  name: finance
+  namespace: stardelt
+spec:
+  lakehouseRef: { name: main }
+  displayName: "Finance"
+  description: "Contracted revenue, orders and billing — the fixtures' read/write domain."
+  owner: finops
+  grants:
+    - { group: finops, verb: browse }
+    - { group: finops, verb: select }
+    - { group: finops, verb: write }
+    - { group: finops, verb: create }
+    - { group: analytics, verb: browse }
+    - { group: analytics, verb: select }
+---
+apiVersion: stardelt.io/v1alpha1
+kind: Catalog
+metadata:
+  name: product
+  namespace: stardelt
+spec:
+  lakehouseRef: { name: main }
+  displayName: "Product"
+  description: "Product, catalogue and session data — the fixtures' analytics domain."
+  owner: analytics
+  grants:
+    - { group: analytics, verb: browse }
+    - { group: analytics, verb: select }
+    - { group: analytics, verb: write }
+    - { group: analytics, verb: create }
+    - { group: finops, verb: browse }
+---
+apiVersion: stardelt.io/v1alpha1
+kind: Catalog
+metadata:
+  name: sandbox
+  namespace: stardelt
+spec:
+  lakehouseRef: { name: main }
+  displayName: "Sandbox"
+  description: "Scratch space every signed-in person may use."
+  owner: stardelt-admins
+  grants:
+    - { group: stardelt-users, verb: browse }
+    - { group: stardelt-users, verb: select }
+    - { group: stardelt-users, verb: write }
+    - { group: stardelt-users, verb: create }

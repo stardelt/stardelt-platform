@@ -9,10 +9,15 @@ codes — without a cluster. The Kubernetes half is stubbed at `k8s_request` wit
 in-memory Catalog, the one seam the job has there (the real thing needs the Pod's
 ServiceAccount token and CA file).
 """
+import base64
+import contextlib
 import importlib.util
+import io
 import json
+import logging
 import re
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -29,6 +34,25 @@ S3 = {
     "access-key": "test-access-key",
     "secret-key": "test-secret-key",
 }
+
+# The fixture token's `sub`: the identity behind `oidc~<sub>` that Lakekeeper records
+# as the creator's `ownership` on a warehouse. The canary test asserts it never
+# reaches a log line.
+TOKEN_SUB = "fixture-sub-9d41"
+
+
+def _jwt_part(payload):
+    """One base64url JWT segment, unpadded, the way a token carries it."""
+    raw = json.dumps(payload).encode()
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+
+# Unsigned fixture JWT: the job reads the payload and never checks the signature.
+TEST_TOKEN = "%s.%s.%s" % (
+    _jwt_part({"alg": "none", "typ": "JWT"}),
+    _jwt_part({"sub": TOKEN_SUB, "iss": "http://keycloak/realms/stardelt"}),
+    "not-a-signature",
+)
 
 
 class FakeLakekeeper:
@@ -175,7 +199,11 @@ class FakeLakekeeper:
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.url = "http://127.0.0.1:%d" % self.server.server_address[1]
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        # A short poll interval: `shutdown()` waits for one, and every test starts
+        # three of these servers.
+        self.thread = threading.Thread(
+            target=self.server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True
+        )
         self.thread.start()
 
     @staticmethod
@@ -208,6 +236,50 @@ class FakeLakekeeper:
             for entry in self.role_assignments.get(role_id, [])
             if entry.get("type") == "assignee"
         }
+
+    def stop(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+class FakeOpa:
+    """The OPA data API the catalog decision table is published to (platform#359).
+
+    Records every `PUT` body so the tests can assert the document the bridge will
+    read, and answers `status` (204 by default, so a failed push is a case a test
+    can ask for).
+    """
+
+    def __init__(self):
+        self.bodies = []
+        self.status = 204
+        self.paths = []
+        state = self
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *args):
+                pass
+
+            def do_PUT(self):
+                length = int(self.headers.get("Content-Length") or 0)
+                state.bodies.append(json.loads(self.rfile.read(length) or b"{}"))
+                state.paths.append(self.path)
+                raw = b""
+                self.send_response(state.status)
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = "http://127.0.0.1:%d/v1/data/stardelt/access" % self.server.server_address[1]
+        # A short poll interval: `shutdown()` waits for one, and every test starts
+        # three of these servers.
+        self.thread = threading.Thread(
+            target=self.server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True
+        )
+        self.thread.start()
 
     def stop(self):
         self.server.shutdown()
@@ -290,7 +362,11 @@ class FakeKeycloak:
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.url = "http://127.0.0.1:%d" % self.server.server_address[1]
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        # A short poll interval: `shutdown()` waits for one, and every test starts
+        # three of these servers.
+        self.thread = threading.Thread(
+            target=self.server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True
+        )
         self.thread.start()
 
     def stop(self):
@@ -330,6 +406,8 @@ class JobTestCase(unittest.TestCase):
     def setUp(self):
         self.fake = FakeLakekeeper()
         self.addCleanup(self.fake.stop)
+        self.opa = FakeOpa()
+        self.addCleanup(self.opa.stop)
         self._saved = (
             access_sync.LAKEKEEPER_URL,
             access_sync.KEYCLOAK_URL,
@@ -337,15 +415,17 @@ class JobTestCase(unittest.TestCase):
             access_sync.keycloak_token,
             access_sync.PLATFORM_BUCKET,
             access_sync.STATIC_ASSIGNEES,
+            access_sync.OPA_DATA_URL,
             access_sync.s3_credentials,
             access_sync.list_catalogs,
             access_sync.k8s_request,
             access_sync.ROLE_PAGE,
         )
         access_sync.LAKEKEEPER_URL = self.fake.url
-        access_sync.lakekeeper_token = lambda: "test-token"
+        access_sync.lakekeeper_token = lambda: TEST_TOKEN
         access_sync.PLATFORM_BUCKET = S3["bucket"]
         access_sync.STATIC_ASSIGNEES = "{}"
+        access_sync.OPA_DATA_URL = self.opa.url
         access_sync.s3_credentials = lambda: dict(S3)
         self.addCleanup(self._restore)
 
@@ -357,6 +437,7 @@ class JobTestCase(unittest.TestCase):
             access_sync.keycloak_token,
             access_sync.PLATFORM_BUCKET,
             access_sync.STATIC_ASSIGNEES,
+            access_sync.OPA_DATA_URL,
             access_sync.s3_credentials,
             access_sync.list_catalogs,
             access_sync.k8s_request,
@@ -808,6 +889,104 @@ class SyncWarehouseGrantsTest(JobTestCase):
             [{"type": "select", "role": "role-someone-else"}],
         )
 
+    def test_own_ownership_is_not_foreign(self):
+        """The creator tuple Lakekeeper writes for this client is the sync's own record.
+
+        It is the one assignment every created warehouse has (and the adopted
+        `warehouse`, created before authorization existed, does not), so counting it
+        made every created Catalog `Drift=True/ForeignGrants`. It is not drift, it is
+        never deleted, and a second tick is still a no-op.
+        """
+        role_id = self.fake.create_role("finance")
+        own = {"type": "ownership", "user": "oidc~" + TOKEN_SUB}
+        self.fake.warehouse_assignments[self.warehouse_id] = [
+            own,
+            {"type": "select", "role": role_id},
+        ]
+        posts = len(self.posts())
+        self.assertEqual(
+            access_sync.sync_warehouse_grants(
+                self.warehouse_id, {("select", "finance")}, {"finance": role_id}
+            ),
+            (0, 0, 0),
+        )
+        self.assertEqual(len(self.posts()), posts, "the own ownership must not be deleted")
+        self.assertIn(own, self.fake.warehouse_assignments[self.warehouse_id])
+        self.assertEqual(
+            access_sync.sync_warehouse_grants(
+                self.warehouse_id, {("select", "finance")}, {"finance": role_id}
+            ),
+            (0, 0, 0),
+        )
+        self.assertEqual(len(self.posts()), posts, "a converged tick must not POST")
+
+    def test_another_users_ownership_is_foreign(self):
+        """Only *this* client's ownership is ours; anybody else's is drift."""
+        role_id = self.fake.create_role("finance")
+        self.fake.warehouse_assignments[self.warehouse_id] = [
+            {"type": "ownership", "user": "oidc~somebody-else"},
+            {"type": "select", "role": role_id},
+        ]
+        self.assertEqual(
+            access_sync.sync_warehouse_grants(
+                self.warehouse_id, {("select", "finance")}, {"finance": role_id}
+            ),
+            (0, 0, 1),
+        )
+
+    def test_foreign_role_grant_is_foreign(self):
+        role_id = self.fake.create_role("finance")
+        self.fake.warehouse_assignments[self.warehouse_id] = [
+            {"type": "describe", "role": "role-zz-foreign"},
+        ]
+        self.assertEqual(
+            access_sync.sync_warehouse_grants(
+                self.warehouse_id, {("select", "finance")}, {"finance": role_id}
+            ),
+            (1, 0, 1),
+        )
+
+
+class OwnUserTest(JobTestCase):
+    def test_own_user_id_from_token_payload(self):
+        """The `sub` comes from the payload; the signature is never checked."""
+        self.assertTrue(TEST_TOKEN.endswith(".not-a-signature"), "fixture is unsigned")
+        self.assertEqual(access_sync.own_user_id(), "oidc~" + TOKEN_SUB)
+
+    def test_own_user_id_is_none_without_a_readable_sub(self):
+        access_sync.lakekeeper_token = lambda: "opaque-token"
+        self.assertIsNone(access_sync.own_user_id())
+
+    def test_own_user_id_never_logged(self):
+        """caplog canary: the principal stays out of stdout, stderr and the log."""
+        role_id = self.fake.create_role("finance")
+        warehouse_id = self.fake.add_warehouse("warehouse")
+        records = []
+
+        class Sink(logging.Handler):
+            def emit(self, record):
+                records.append(record.getMessage())
+
+        sink = Sink()
+        root = logging.getLogger()
+        previous_level = root.level
+        root.addHandler(sink)
+        root.setLevel(logging.DEBUG)
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                own = access_sync.own_user_id()
+                access_sync.sync_warehouse_grants(
+                    warehouse_id, {("select", "finance")}, {"finance": role_id}
+                )
+        finally:
+            root.removeHandler(sink)
+            root.setLevel(previous_level)
+        self.assertEqual(own, "oidc~" + TOKEN_SUB)
+        logged = "\n".join(records + [out.getvalue(), err.getvalue()])
+        self.assertNotIn(TOKEN_SUB, logged)
+        self.assertNotIn(TEST_TOKEN, logged)
+
 
 class EnsureAdminGrantTest(JobTestCase):
     def test_writes_project_admin_once(self):
@@ -830,6 +1009,124 @@ class StaticAssigneesTest(JobTestCase):
         access_sync.STATIC_ASSIGNEES = "superset"
         with self.assertRaises(SystemExit):
             access_sync.static_assignees()
+
+
+class CatalogVerbListsTest(JobTestCase):
+    """The catalog-level decision table (platform#359): who may do what, per catalog."""
+
+    def test_applies_lakekeepers_verb_implications(self):
+        """`write` implies `select` implies `browse`; `create` implies `browse`."""
+        spec = {
+            "grants": [
+                {"group": "readers", "verb": "browse"},
+                {"group": "queries", "verb": "select"},
+                {"group": "etl", "verb": "write"},
+                {"group": "builders", "verb": "create"},
+            ]
+        }
+        members = {
+            "readers": {"sub-read"},
+            "queries": {"sub-query"},
+            "etl": {"sub-etl"},
+            "builders": {"sub-build"},
+        }
+        lists = access_sync.catalog_verb_lists(spec, members, {})
+        self.assertEqual(lists["browse"], ["sub-build", "sub-etl", "sub-query", "sub-read"])
+        self.assertEqual(lists["select"], ["sub-etl", "sub-query"])
+        self.assertEqual(lists["write"], ["sub-etl"])
+        self.assertEqual(lists["create"], ["sub-build"])
+
+    def test_the_owner_group_holds_no_verb(self):
+        """Ownership is `manage_grants` and must not imply reading (design §5.3)."""
+        lists = access_sync.catalog_verb_lists(
+            {"owner": "finops", "grants": []}, {"finops": {"sub-finops"}}, {}
+        )
+        self.assertEqual(lists, {"browse": [], "select": [], "write": [], "create": []})
+
+    def test_a_static_assignee_is_its_own_user_string(self):
+        """`superset` has no Keycloak user: the table holds the string Trino sends."""
+        lists = access_sync.catalog_verb_lists(
+            {"grants": [{"group": "stardelt-users", "verb": "select"}]},
+            {"stardelt-users": {"sub-1"}},
+            {"stardelt-users": {"superset"}},
+        )
+        self.assertEqual(lists["select"], ["sub-1", "superset"])
+        self.assertEqual(lists["browse"], ["sub-1", "superset"])
+
+    def test_the_owner_group_still_gets_the_verb_it_is_also_granted(self):
+        lists = access_sync.catalog_verb_lists(
+            {"owner": "finops", "grants": [{"group": "finops", "verb": "browse"}]},
+            {"finops": {"sub-finops"}},
+            {},
+        )
+        self.assertEqual(lists["browse"], ["sub-finops"])
+        self.assertEqual(lists["select"], [])
+
+    def test_an_unknown_verb_is_ignored(self):
+        lists = access_sync.catalog_verb_lists(
+            {"grants": [{"group": "x", "verb": "frobnicate"}]}, {"x": {"sub-x"}}, {}
+        )
+        self.assertEqual(lists["browse"], [])
+
+
+class AccessTableTest(JobTestCase):
+    def test_admins_are_in_all_and_drift_is_a_boolean(self):
+        table = access_sync.access_table(
+            [
+                ("gold", {"grants": [{"group": "stardelt-users", "verb": "select"}]}, 0),
+                ("bronze", {"grants": []}, 2),
+            ],
+            {"stardelt-admins": {"sub-admin"}, "stardelt-users": {"sub-1"}},
+            {},
+        )
+        self.assertIsInstance(table["generatedAt"], int)
+        self.assertEqual(table["catalogs"]["gold"]["all"], ["sub-admin"])
+        self.assertEqual(table["catalogs"]["gold"]["select"], ["sub-1"])
+        self.assertFalse(table["catalogs"]["gold"]["drift"])
+        self.assertTrue(table["catalogs"]["bronze"]["drift"])
+
+    def test_admins_hold_every_verb_through_all(self):
+        """`all` is every administrator; the bridge treats it as all four verbs."""
+        table = access_sync.access_table(
+            [("gold", {"grants": []}, 0)], {"stardelt-admins": {"sub-admin"}}, {}
+        )
+        entry = table["catalogs"]["gold"]
+        self.assertEqual(entry["all"], ["sub-admin"])
+        for verb in ("browse", "select", "write", "create"):
+            self.assertEqual(entry[verb], [], verb)
+
+
+class PublishAccessTableTest(JobTestCase):
+    def test_puts_the_document_and_logs_counts_only(self):
+        table = access_sync.access_table(
+            [("gold", {"grants": [{"group": "stardelt-users", "verb": "browse"}]}, 0)],
+            {"stardelt-users": {"sub-1", "sub-2"}},
+            {},
+        )
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            self.assertTrue(access_sync.publish_access_table(table))
+        self.assertEqual(self.opa.bodies, [table])
+        self.assertEqual(self.opa.paths, ["/v1/data/stardelt/access"])
+        logged = out.getvalue() + err.getvalue()
+        self.assertIn("opa data: published 1 catalogs", logged)
+        self.assertNotIn("sub-1", logged, "the table's contents never reach a log line")
+        self.assertNotIn("sub-2", logged)
+
+    def test_a_refused_push_is_logged_and_not_raised(self):
+        """A push failure costs latency, never correctness: the tick still succeeds."""
+        self.opa.status = 500
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            self.assertFalse(access_sync.publish_access_table({"generatedAt": 0, "catalogs": {}}))
+        self.assertIn("opa data: not published (500)", err.getvalue())
+
+    def test_an_unreachable_opa_is_logged_and_not_raised(self):
+        access_sync.OPA_DATA_URL = "http://127.0.0.1:1/v1/data/stardelt/access"
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            self.assertFalse(access_sync.publish_access_table({"generatedAt": 0, "catalogs": {}}))
+        self.assertIn("opa data: not published", err.getvalue())
 
 
 CATALOG = {
@@ -949,6 +1246,52 @@ class MainTest(JobTestCase):
             {"type": "modify", "role": users_role},
             self.fake.warehouse_assignments[self.fake.warehouses["warehouse"]],
         )
+
+    def test_publishes_the_catalog_table_the_bridge_reads(self):
+        """The document at `data.stardelt.access`: verbs as grants, `all` = admins."""
+        self.assertEqual(access_sync.main(), 0)
+        self.assertEqual(len(self.opa.bodies), 1)
+        table = self.opa.bodies[0]
+        entry = table["catalogs"]["warehouse"]
+        self.assertEqual(entry["browse"], ["sub-1", "sub-2"])
+        self.assertEqual(entry["select"], ["sub-1", "sub-2"])
+        self.assertEqual(entry["write"], [], "the owner group's manage is not a data verb")
+        self.assertEqual(entry["create"], [])
+        self.assertEqual(entry["all"], ["sub-admin"])
+        self.assertFalse(entry["drift"])
+        self.assertLess(abs(table["generatedAt"] - int(time.time())), 60)
+
+    def test_a_catalog_whose_grants_did_not_apply_is_not_published(self):
+        """Lakekeeper may then still hold a grant the spec dropped: ask it, do not guess."""
+        catalog = json.loads(json.dumps(CATALOG))
+        catalog["spec"]["grants"].append({"group": "ghost", "verb": "select"})
+        self.kubernetes = self.use_catalogs(catalog)
+        self.assertEqual(access_sync.main(), 0)
+        self.assertEqual(len(self.opa.bodies), 1)
+        self.assertEqual(self.opa.bodies[0]["catalogs"], {})
+
+    def test_a_drifted_catalog_is_published_with_drift_true(self):
+        """The sync cannot enumerate a foreign grant, so the bridge must not answer."""
+        self.fake.warehouse_assignments["warehouse-1"] = [
+            {"type": "describe", "role": "role-zz-foreign"}
+        ]
+        self.assertEqual(access_sync.main(), 0)
+        entry = self.opa.bodies[0]["catalogs"]["warehouse"]
+        self.assertTrue(entry["drift"])
+
+    def test_a_refused_push_does_not_fail_the_tick(self):
+        self.opa.status = 503
+        self.assertEqual(access_sync.main(), 0, "a push failure must not fail the tick")
+        self.assertEqual(self.kubernetes.condition("GrantsReady")["status"], "True")
+
+    def test_the_published_table_never_reaches_a_log_line(self):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            self.assertEqual(access_sync.main(), 0)
+        logged = out.getvalue() + err.getvalue()
+        self.assertIn("opa data: published 1 catalogs", logged)
+        for principal in ("sub-1", "sub-2", "sub-admin", TOKEN_SUB):
+            self.assertNotIn(principal, logged)
 
 
 if __name__ == "__main__":

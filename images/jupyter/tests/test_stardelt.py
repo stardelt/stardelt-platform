@@ -443,6 +443,20 @@ class FakeSparkSession:
         self.conf = FakeSparkConf(self.configs)
         self.catalog = FakeSparkCatalog(module)
         self.stopped = False
+        # Like the real client: ``is_stopped`` is the local flag the helper set,
+        # ``version`` is the round trip that notices a restarted server. ``broken``
+        # stands for "the driver closed this client" (pyspark raises on the call).
+        self.broken = False
+
+    @property
+    def is_stopped(self):
+        return self.stopped
+
+    @property
+    def version(self):
+        if self.broken:
+            raise RuntimeError("closed")
+        return "4.2.0"
 
     def stop(self):
         self.stopped = True
@@ -593,6 +607,90 @@ def test_second_call_refreshes_token(fake_spark, monkeypatch):
     assert second.configs["spark.sql.catalog.warehouse.token"] == "token-two-317"
     assert first.stopped
     assert len(fake_spark.sessions) == 2
+
+
+# A cached session is only reused while the server still knows it: the driver can
+# restart under a notebook (platform#377), and then the local `is_stopped` flag is
+# still false while every call raises NO_ACTIVE_SESSION. The notice is one line and
+# never carries the token or a catalog name.
+
+NOTICE = "the Spark server restarted or closed the session"
+
+
+def test_alive_cached_session_is_reused_and_nothing_printed(fake_spark, visible_catalogs, capsys):
+    first = stardelt.spark()
+    second = stardelt.spark()
+    assert second is first
+    assert len(fake_spark.sessions) == 1
+    captured = capsys.readouterr()
+    assert captured.out == "" and captured.err == ""
+
+
+def test_stopped_cached_session_is_replaced_with_the_notice_once(
+    fake_spark, visible_catalogs, capsys
+):
+    first = stardelt.spark()
+    first.stopped = True
+    second = stardelt.spark()
+    assert second is not first
+    assert first.stopped
+    assert len(fake_spark.sessions) == 2
+    assert stardelt._SPARK_SESSION is second
+    # The replacement is live, so the next call reuses it and stays quiet.
+    assert stardelt.spark() is second
+    assert len(fake_spark.sessions) == 2
+    assert capsys.readouterr().err.count(NOTICE) == 1
+
+
+def test_version_failure_replaces_the_session(fake_spark, visible_catalogs, capsys):
+    first = stardelt.spark()
+    first.broken = True  # the driver restarted: the client is closed, the flag is not
+    assert first.is_stopped is False
+    second = stardelt.spark()
+    assert second is not first
+    assert len(fake_spark.sessions) == 2
+    assert stardelt._SPARK_SESSION is second
+    assert NOTICE in capsys.readouterr().err
+
+
+def test_dead_session_is_stopped_best_effort_even_if_stop_raises(
+    fake_spark, visible_catalogs, capsys, monkeypatch
+):
+    first = stardelt.spark()
+    first.broken = True
+    calls = []
+
+    def exploding_stop():
+        calls.append(True)
+        raise RuntimeError("the client is already gone")
+
+    monkeypatch.setattr(first, "stop", exploding_stop)
+    second = stardelt.spark()
+    assert calls == [True]
+    assert second is not first
+    assert len(fake_spark.sessions) == 2
+    assert NOTICE in capsys.readouterr().err
+
+
+def test_token_change_builds_a_new_session_without_the_notice(fake_spark, monkeypatch, capsys):
+    tokens = iter(["token-one-377", "token-two-377"])
+    monkeypatch.setattr(stardelt, "_token", lambda: next(tokens))
+    monkeypatch.setattr(stardelt, "sql", lambda _query: _catalogs("warehouse"))
+    first = stardelt.spark()
+    second = stardelt.spark()
+    assert second is not first
+    assert second.configs["spark.sql.catalog.warehouse.token"] == "token-two-377"
+    assert NOTICE not in capsys.readouterr().err
+
+
+def test_notice_contains_no_token_and_no_catalog_name(fake_spark, visible_catalogs, capsys):
+    first = stardelt.spark()
+    first.broken = True
+    stardelt.spark()
+    err = capsys.readouterr().err
+    assert NOTICE in err
+    assert "canary-token-317" not in err
+    assert "warehouse" not in err and "bronze" not in err
 
 
 def test_trino_down_falls_back_to_warehouse(fake_spark, monkeypatch, capsys):

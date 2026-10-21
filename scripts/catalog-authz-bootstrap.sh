@@ -267,15 +267,38 @@ check "node memory ${node_mem:-?}% (< 85%)" $r
 # 8. The questions a query depends on (platform#333). The bridge must answer the
 #    captured Trino 480 requests the way the seed's grants say — the replay's
 #    data rows are the regression gate before anyone points Trino's authorizer
-#    at it (platform#311). It needs the dev seed (#309) to have people to ask
-#    as; on a cluster without it there is nothing to compare against and the
-#    step is skipped, not failed.
-if kubectl -n "$NAMESPACE" get secret dev-seed-users >/dev/null 2>&1 \
-   && kubectl -n "$NAMESPACE" get catalogs.stardelt.io/finance >/dev/null 2>&1; then
+#    at it (platform#311). It needs the dev seed (#309): people to ask as AND the
+#    four Catalogs the matrix asserts about. On a cluster without them there is
+#    nothing to compare against and the step is skipped, not failed.
+have_seed=1
+kubectl -n "$NAMESPACE" get secret dev-seed-users >/dev/null 2>&1 || have_seed=0
+for catalog in finance product sandbox warehouse; do
+  kubectl -n "$NAMESPACE" get "catalogs.stardelt.io/$catalog" >/dev/null 2>&1 || have_seed=0
+done
+if [ "$have_seed" = 1 ]; then
   NAMESPACE="$NAMESPACE" bash scripts/bridge-replay.sh --data-only >"$TMP/bridge-replay.log" 2>&1
   check "the bridge answers the replay's data rows (make bridge-replay --data-only)" $?
 else
-  info "skipped: bridge replay (no dev seed — run 'make seed-dev-access YES=1' to enable it)"
+  info "skipped: bridge replay (the dev seed's four Catalogs are not installed — 'make seed-dev-access YES=1')"
+fi
+
+# 9. The cost of the question that used to grow with the catalog count
+#    (platform#359): FilterCatalogs with every catalog, five cold runs, a median
+#    above 0.2 s fails, and one AccessCatalog / SelectFromColumns above 0.05 s.
+#    It also proves the front entry point returns the chart's own answer for
+#    every seed person and the administrator. Needs the seed people, not the
+#    seed catalogs: it asks about whatever this cluster has.
+if kubectl -n "$NAMESPACE" get secret dev-seed-users >/dev/null 2>&1; then
+  NAMESPACE="$NAMESPACE" bash scripts/bridge-latency.sh >"$TMP/bridge-latency.log" 2>&1
+  check "FilterCatalogs <= 0.2 s and one question <= 0.05 s median, answers unchanged (make bridge-latency)" $?
+
+  # 10. The correctness gate of the decision table (platform#359): the front
+  #     entry points against the chart's own rules, for every catalog, every
+  #     table that exists, and every principal — plus one in no group at all.
+  NAMESPACE="$NAMESPACE" bash scripts/bridge-replay.sh --differential >"$TMP/bridge-differential.log" 2>&1
+  check "the front entry points answer exactly what the chart's rules answer (make bridge-differential)" $?
+else
+  info "skipped: bridge latency and differential (no dev seed people in the realm — 'make seed-dev-access YES=1')"
 fi
 
 printf '\n  %d passed, %d failed\n' "$PASS" "$FAIL"

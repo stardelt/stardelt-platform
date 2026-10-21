@@ -50,6 +50,11 @@ FIXTURE="scripts/tests/fixtures/trino-opa-requests.json"
 # request bodies the replay needs at least; below that the battery ran short.
 MIN_PAIRS=20
 
+# The two policy paths Trino is configured with — one source for the scripts
+# that ask the bridge and the capture that records what Trino asks (#359).
+# shellcheck source=lib/bridge.sh disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/lib/bridge.sh"
+
 fail() { echo "bridge-capture: $*" >&2; exit 1; }
 
 for tool in kubectl python3; do
@@ -127,11 +132,13 @@ io.trino=INFO
 EOF
 
 # The authorizer the switch (#311) turns on, with both URIs — including the
-# batch one, so the capture proves whether 480 sends anything there.
-cat >"$tmp/access-control.properties" <<'EOF'
+# batch one, so the capture proves whether 480 sends anything there. The paths
+# are the ones Trino is configured with (scripts/lib/bridge.sh), so a re-capture
+# records the questions where the engine will ask them.
+cat >"$tmp/access-control.properties" <<EOF
 access-control.name=opa
-opa.policy.uri=http://localhost:8282/v1/data/trino/allow
-opa.policy.batched-uri=http://localhost:8282/v1/data/trino/batch
+opa.policy.uri=http://localhost:8282$BRIDGE_ALLOW_PATH
+opa.policy.batched-uri=http://localhost:8282$BRIDGE_BATCH_PATH
 opa.log-requests=true
 opa.log-responses=true
 EOF

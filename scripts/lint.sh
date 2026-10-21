@@ -54,4 +54,10 @@ bash scripts/check-notebook-image-pin.sh
 echo "› script: check-catalog-template"
 bash scripts/check-catalog-template.sh
 
+# The policy paths the scripts ask and the paths Trino is configured with are one value
+# (platform#359): a replay that asks /v1/data/trino/batch while the engine asks
+# /v1/data/stardelt/batch would pass for the wrong reason.
+echo "› script: check-bridge-uri"
+bash scripts/check-bridge-uri.sh
+
 echo "lint: OK"

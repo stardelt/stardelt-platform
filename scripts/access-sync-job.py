@@ -36,9 +36,11 @@ The sync owns only what it created: roles whose description starts with
 `stardelt group `, nothing else — a role with a foreign description is reported as a
 conflict and never edited. Grants on a managed warehouse held by a role this job
 manages that the spec does not declare are removed; grants held by anything else
-(the project-level `data_admin` of the platform's service accounts, the bootstrap
-user's ownership, a person) are left alone and only *counted* in the Catalog's
-`Drift` condition (reason plus count, no names).
+(the project-level `data_admin` of the platform's service accounts, a person's
+ownership, a person) are left alone and only *counted* in the Catalog's `Drift`
+condition (reason plus count, no names). The sync's own `ownership` on a warehouse it
+created (`own_user_id()`, the creator tuple Lakekeeper writes) is its own record and
+is not drift.
 
 The admin group (`ADMIN_GROUP`, default `stardelt-admins`) is always managed: its
 role exists, holds its members, and is a `project_admin` of the project, so every
@@ -72,6 +74,28 @@ travels only in the create body; logs carry catalog names, group names, counts a
 HTTP status codes, never principals, subjects, usernames, tokens, keys or response
 bodies (a create body is the one place the storage key appears, and a response body
 can echo it).
+
+After the grants of a tick are written, the same information is published as OPA
+data at `OPA_DATA_URL` (`http://lakekeeper-opa:8282/v1/data/stardelt/access`,
+platform#359):
+
+    {"generatedAt": <epoch seconds>,
+     "catalogs": {"<name>": {"drift": false,
+                             "all":    [<subs of the admin group>],
+                             "browse": [...], "select": [...],
+                             "write":  [...], "create": [...]}}}
+
+The bridge's front rule (`stardelt.front.rego`) answers the catalog-level
+authorization questions from it, so `SHOW CATALOGS` and every query stop paying
+~0.15 s per catalog to Lakekeeper. The table is derived from the same `Catalog`
+objects this job writes to Lakekeeper and is an ACCELERATOR only: the bridge
+falls back to Lakekeeper when it is stale, when a catalog is missing from it, or
+when that catalog carries a foreign grant (`drift`). The verb implications are
+applied here, once (Lakekeeper's model: `modify` implies `select` implies
+`describe`, `create` implies `describe`), and every list holds the exact string
+Trino sends as the user — the Keycloak `sub`, or a bare `STATIC_ASSIGNEES`
+principal (`superset`) without the `oidc~` prefix. A failed push is logged and
+never fails the tick.
 """
 import base64
 import json
@@ -79,6 +103,7 @@ import os
 import re
 import ssl
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -87,6 +112,13 @@ from datetime import datetime, timezone
 NAMESPACE = os.environ.get("NAMESPACE", "stardelt")
 LAKEKEEPER_URL = os.environ.get("LAKEKEEPER_URL", "http://lakekeeper:8181").rstrip("/")
 KEYCLOAK_URL = os.environ.get("KEYCLOAK_URL", "http://keycloak:8080").rstrip("/")
+# Where the catalog decision table goes: the OPA bridge's data API in the
+# Lakekeeper pod (platform#359). NetworkPolicy `lakekeeper-ingress` admits this
+# pod on 8282 for exactly this write.
+OPA_DATA_URL = os.environ.get(
+    "OPA_DATA_URL",
+    "http://lakekeeper-opa.stardelt.svc.cluster.local:8282/v1/data/stardelt/access",
+)
 REALM = os.environ.get("REALM", "stardelt")
 ADMIN_GROUP = os.environ.get("ADMIN_GROUP", "stardelt-admins")
 # JSON `{"<group>": ["<principal>"]}`: assignees that have no Keycloak user.
@@ -120,6 +152,24 @@ VERB_RELATIONS = {
     "create": "create",
     "manage": "manage_grants",
 }
+
+# What each verb implies in Lakekeeper's OpenFGA model (`modify` implies `select`
+# implies `describe`; `create` implies `describe`). The catalog decision table
+# stores the *effective* verbs, so the bridge's policy needs no second copy of
+# this and cannot drift from it. `manage` is absent on purpose: `manage_grants`
+# grants no data right, so the owner group holds no verb unless it is also
+# granted one.
+IMPLIED_VERBS = {
+    "browse": ("browse",),
+    "select": ("select", "browse"),
+    "write": ("write", "select", "browse"),
+    "create": ("create", "browse"),
+}
+# The four verbs the table holds, one list each.
+TABLE_VERBS = ("browse", "select", "write", "create")
+# How long the publish may take. It is a small JSON document; a hung OPA must
+# not hold the tick.
+OPA_TIMEOUT = 10
 # The description marks a role as ours; any other role is never edited.
 ROLE_PREFIX = "stardelt group "
 # Keycloak lists members and Lakekeeper lists roles 100 at a time; both page.
@@ -134,6 +184,8 @@ K8S_API = "https://kubernetes.default.svc"
 
 _TOKEN = None  # Lakekeeper client-credentials token, cached for one run, never logged
 _KC_TOKEN = None  # Keycloak client-credentials token, cached for one run, never logged
+_OWN_USER = None  # `oidc~<sub>` of this job's Lakekeeper client (own_user_id), never logged
+_OWN_USER_TOKEN = None  # the token _OWN_USER was decoded from; recompute when it changes
 # Filled by main() from Secret stardelt-s3-creds: the one bucket every catalog shares
 # until per-catalog buckets exist.
 PLATFORM_BUCKET = ""
@@ -279,6 +331,37 @@ def lakekeeper_token():
     _TOKEN = token
     del client_secret, body
     return _TOKEN
+
+
+def own_user_id():
+    """`oidc~<sub>` of the Lakekeeper client this run authenticates as, or None.
+
+    Lakekeeper writes an `ownership` assignment for the principal that creates a
+    warehouse; for a Catalog this job creates, that principal is this client. The
+    `sub` is read from the payload of the token `lakekeeper_token()` already holds —
+    base64url, signature *not* verified, because this is the token this process just
+    received over TLS, not a credential somebody else handed in. Computed once per
+    token (one decode per run) and never printed or logged: the `sub` is a principal,
+    like every other subject this job refuses to name.
+
+    Returns None when the token carries no readable `sub`; the caller then counts
+    every assignment it does not manage, exactly as before this helper existed.
+    """
+    global _OWN_USER, _OWN_USER_TOKEN
+    token = lakekeeper_token()
+    if token == _OWN_USER_TOKEN:
+        return _OWN_USER
+    _OWN_USER_TOKEN, _OWN_USER = token, None
+    try:
+        payload = token.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    except (IndexError, TypeError, ValueError):
+        return None
+    sub = claims.get("sub") if isinstance(claims, dict) else None
+    if not isinstance(sub, str) or not sub:
+        return None
+    _OWN_USER = "oidc~" + sub
+    return _OWN_USER
 
 
 def keycloak_token():
@@ -448,6 +531,95 @@ def static_assignees():
     return {group: set(principals) for group, principals in parsed.items()}
 
 
+def group_users(group, members, static):
+    """Every Trino user string that is a member of `group`.
+
+    Trino puts the OIDC `sub` in `input.context.identity.user`, which is exactly
+    what Keycloak returns as a member's `id`; a `STATIC_ASSIGNEES` principal (the
+    PASSWORD account `superset`) is its own user string. Lakekeeper sees them as
+    `oidc~<sub>` / `oidc~<principal>`, so the prefix is the *only* difference
+    between the two representations and it is added where Lakekeeper needs it
+    (`sync_assignees`), never here.
+    """
+    return members.get(group, set()) | static.get(group, set())
+
+
+def catalog_verb_lists(spec, members, static):
+    """`{verb: sorted(users)}` for one Catalog, implications applied.
+
+    The union is over the groups the spec grants a verb to, with each verb widened
+    to what it implies in Lakekeeper (`write` also gives `select` and `browse`, so
+    a person who may write can also see the catalog). The owner group is not in
+    here: ownership is `manage_grants` and grants no data right.
+    """
+    held = {}
+    for grant in (spec or {}).get("grants") or []:
+        verb, group = grant.get("verb"), grant.get("group")
+        if verb in IMPLIED_VERBS and group:
+            held.setdefault(group, set()).add(verb)
+    lists = {verb: set() for verb in TABLE_VERBS}
+    for group, verbs in held.items():
+        users = group_users(group, members, static)
+        for verb in verbs:
+            for effective in IMPLIED_VERBS[verb]:
+                lists[effective] |= users
+    return {verb: sorted(lists[verb]) for verb in TABLE_VERBS}
+
+
+def access_table(catalogs, members, static):
+    """The document published as `data.stardelt.access` (platform#359).
+
+    `catalogs` is a list of `(name, spec, foreign_count)`: the Catalogs whose
+    grants this tick applied. A catalog with any foreign grant is published with
+    `drift: true` and the bridge will not answer for it at all — the sync cannot
+    enumerate a subject it does not manage, so it cannot promise the answer.
+    """
+    admins = sorted(group_users(ADMIN_GROUP, members, static))
+    entries = {}
+    for name, spec, foreign in catalogs:
+        entry = catalog_verb_lists(spec, members, static)
+        entry["drift"] = bool(foreign)
+        entry["all"] = admins
+        entries[name] = entry
+    return {"generatedAt": int(time.time()), "catalogs": entries}
+
+
+def publish_access_table(table):
+    """PUT the table at `OPA_DATA_URL`; True when OPA took it.
+
+    Never fails the tick: the bridge falls back to Lakekeeper when the document is
+    missing or stale, so a broken push costs latency and nothing else. Logs the
+    catalog count and the status only — never a user, and never the body.
+    """
+    body = json.dumps(table, sort_keys=True).encode("utf-8")
+    request = urllib.request.Request(
+        OPA_DATA_URL,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="PUT",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=OPA_TIMEOUT) as response:
+            status = response.status
+    except urllib.error.HTTPError as e:
+        e.close()
+        status = e.code
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        print("opa data: not published (%s)" % e, file=sys.stderr)
+        return False
+    if status not in (200, 204):
+        print("opa data: not published (%s)" % status, file=sys.stderr)
+        return False
+    print("opa data: published %d catalogs" % len(table["catalogs"]))
+    drift = sum(1 for entry in table["catalogs"].values() if entry["drift"])
+    if drift:
+        print(
+            "opa data: %d catalog(s) with drift are answered by Lakekeeper, not locally"
+            % drift
+        )
+    return True
+
+
 def declared_groups(spec):
     """The groups a Catalog's spec names: its owner and every grant group."""
     groups = set()
@@ -586,11 +758,14 @@ def sync_warehouse_grants(warehouse_id, desired, role_ids, managed_role_ids=None
     `role_ids`) — a grant held by one of those that the spec does not declare is
     removed. Everything else (another role, a person, the platform's service accounts
     at project level) is left alone and only counted as `foreign`, because the sync
-    never edits a subject it does not own. `apply=False` reads and counts without
-    writing — used when one of the Catalog's groups cannot be resolved, so a broken
-    spec removes nothing.
+    never edits a subject it does not own. One exception: the `ownership` assignment
+    Lakekeeper wrote for the sync's *own* client when it created the warehouse
+    (`own_user_id()`) is the sync's own record, not drift, so it is neither counted
+    nor deleted. `apply=False` reads and counts without writing — used when one of the
+    Catalog's groups cannot be resolved, so a broken spec removes nothing.
     """
     managed = set(role_ids.values()) if managed_role_ids is None else set(managed_role_ids)
+    own = own_user_id()
     status, body = lk("GET", "/management/v1/permissions/warehouse/%s/assignments" % warehouse_id)
     if status != 200 or body is None:
         raise GrantsFailed("cannot read the grants of a warehouse (HTTP %s)" % status)
@@ -608,8 +783,22 @@ def sync_warehouse_grants(warehouse_id, desired, role_ids, managed_role_ids=None
     writes = sorted(declared - current)
     deletes = sorted({entry for entry in current if entry[1] in managed} - declared)
     # Every assignment whose subject is not a role of ours: another role, a person,
-    # the bootstrap user's ownership. Counted, never edited, never named.
-    foreign = len([entry for entry in assignments if entry.get("role") not in managed])
+    # the platform's service accounts. Counted, never edited, never named — except
+    # this job's own `ownership` tuple, which is the sync's own record, not drift.
+    def is_own_ownership(entry):
+        return (
+            own is not None
+            and entry.get("type") == "ownership"
+            and entry.get("user") == own
+        )
+
+    foreign = len(
+        [
+            entry
+            for entry in assignments
+            if entry.get("role") not in managed and not is_own_ownership(entry)
+        ]
+    )
     if not apply or (not writes and not deletes):
         return 0, 0, foreign
     status, _ = lk(
@@ -935,6 +1124,11 @@ def main():
     managed_role_ids = {role["id"] for role in list_roles() if is_managed_role(role)}
 
     # 4. Catalogs: warehouse first, then its grants.
+    #    `published` collects the Catalogs the catalog decision table may cover:
+    #    a Catalog whose grants this tick did not fully apply is left out, because
+    #    Lakekeeper may then still hold a grant the spec no longer declares — the
+    #    bridge must ask Lakekeeper about it (platform#359).
+    published = []
     for item in catalogs:
         name = (item.get("metadata") or {}).get("name") or ""
         spec = item.get("spec") or {}
@@ -963,6 +1157,7 @@ def main():
         elif blockers:
             grants_ready = False
             reason, message = blockers[0].reason, blockers[0].message
+        applied = grants_ready
         try:
             written, removed, drift = sync_warehouse_grants(
                 warehouse_id,
@@ -974,8 +1169,11 @@ def main():
         except SyncProblem as problem:
             failures += 1
             grants_ready = False
+            applied = False
             reason, message = problem.reason, problem.message
             written, removed, drift = 0, 0, 0
+        if applied:
+            published.append((name, spec, drift))
         # A stable reason and message across ticks: `created` vs `exists` is a
         # property of this run, and putting it in the status would make the second
         # tick rewrite the first one's result (the ticket's idempotence check).
@@ -991,6 +1189,12 @@ def main():
             "catalog %s: %s grants %d declared, %d written, %d removed, %d foreign"
             % (name, action, len(desired), written, removed, drift)
         )
+
+    # 5. The catalog decision table (platform#359): after the grants were written,
+    #    so the bridge never sees a permission the warehouse does not have. A
+    #    failed push costs latency (the bridge falls back to Lakekeeper), never
+    #    correctness, so it is logged and the tick still succeeds.
+    publish_access_table(access_table(published, members, static))
 
     # Deleted Catalogs leave their warehouses and data behind (design §2.5): report,
     # never delete.

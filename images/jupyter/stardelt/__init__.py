@@ -76,7 +76,9 @@ CATALOG_NAME_RE = re.compile(r"^[a-z][a-z0-9]{0,39}$")
 
 # The session spark() built last, and the token it was built with. A renewed
 # token means a new session: Spark reads `spark.sql.catalog.*` when it creates
-# the session state, so an already-initialized catalog cannot be re-keyed.
+# the session state, so an already-initialized catalog cannot be re-keyed. A
+# session the server no longer knows is cleared here too (see
+# `_cached_spark_session`): the driver may have restarted under it.
 _SPARK_SESSION = None
 _SPARK_TOKEN = None
 
@@ -422,6 +424,40 @@ def _catalog_names():
     ]
 
 
+def _cached_spark_session(token):
+    """The session `spark()` may reuse for ``token``, or ``None`` to build a new one.
+
+    A cached session is only good while the server still knows it. ``is_stopped``
+    is a local client flag: after the driver restarts the client closes itself and
+    every call raises ``NO_ACTIVE_SESSION``, so liveness is proved by reading
+    ``version``, which is a round trip. A dead session is dropped here (best-effort
+    ``stop()``, one line on stderr) and the caller builds a fresh one.
+    """
+    global _SPARK_SESSION
+
+    session = _SPARK_SESSION
+    if session is None or _SPARK_TOKEN != token:
+        return None
+    try:
+        if session.is_stopped:
+            raise RuntimeError("the session is stopped")
+        session.version
+    except Exception:  # noqa: BLE001 - any failure here means "not usable"
+        _SPARK_SESSION = None
+        try:
+            session.stop()
+        except Exception:  # noqa: BLE001 - an already-gone client is not an error
+            pass
+        print(
+            "stardelt.spark: the Spark server restarted or closed the session — "
+            "opened a new one. DataFrames, temp views and settings of the old "
+            "session are gone.",
+            file=sys.stderr,
+        )
+        return None
+    return session
+
+
 def spark(app_name="stardelt-notebook"):
     """Open a Spark Connect session for bulk work, as the signed-in person.
 
@@ -439,12 +475,16 @@ def spark(app_name="stardelt-notebook"):
     live session does not re-key an initialized catalog, so a later call with a
     renewed token builds a new session and stops the previous one.
 
+    If the Spark server restarted, the next call opens a new session; DataFrames and temp views of the old one are gone, and a running job is not retried.
+
     ``SPARK_REMOTE`` selects the endpoint (default the in-cluster Connect service).
     Limitations, stated rather than implied: Spark Connect has no authentication of
     its own and is ClusterIP-only, row/column masks are Trino-only (design
     ``multitenant-catalogs.md`` §5.8), and tables written through Spark use the
     cluster's shared storage credential — use Spark where Trino cannot, not to
-    bypass a policy. The token is never printed or returned.
+    bypass a policy. Public S3 buckets are readable anonymously (``s3a://`` and
+    ``s3://``); private buckets and the platform's own storage are not. The token is
+    never printed or returned.
     """
     from pyspark.sql import SparkSession
 
@@ -456,8 +496,9 @@ def spark(app_name="stardelt-notebook"):
 
     names = _catalog_names()
     token = _token()
-    if _SPARK_SESSION is not None and _SPARK_TOKEN == token:
-        return _SPARK_SESSION
+    cached = _cached_spark_session(token)
+    if cached is not None:
+        return cached
 
     catalog_uri = os.environ.get("STARDELT_CATALOG_URI", CATALOG_URI_DEFAULT).strip()
     s3_endpoint = os.environ.get("STARDELT_S3_ENDPOINT", S3_ENDPOINT_DEFAULT).strip()

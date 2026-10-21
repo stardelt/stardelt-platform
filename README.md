@@ -1295,8 +1295,8 @@ hand-written request shape, no guess about what 480 sends (`platform#333`).
   operations (`user`).
 - **Batched.** With `opa.policy.batched-uri` set, as the bridge's chart config does,
   `FilterCatalogs`, `FilterSchemas`, `FilterTables` and `FilterColumns` arrive at
-  `/v1/data/trino/batch` as one request: `{"action": {"operation": "FilterCatalogs",
-  "filterResources": [{"catalog": {"name": "system"}}, …]}}`, answered with
+  `/v1/data/stardelt/batch` (the front entry point, below) as one request: `{"action": {"operation":
+  "FilterCatalogs", "filterResources": [{"catalog": {"name": "system"}}, …]}}`, answered with
   `{"result": [<allowed index>, …]}`. The index order is the order the resources were
   sent in, and it is not sorted — the answer is a set of positions, not a list of names.
   Without that URI the plugin sends one request per resource instead.
@@ -1312,6 +1312,69 @@ hand-written request shape, no guess about what 480 sends (`platform#333`).
   name under `resource.<kind>.catalogName` (or `resource.catalog.name`). A body that
   lacks either gets `false` **before** any call to Lakekeeper, which is why the
   Lakekeeper audit log shows no batch-check at all.
+
+**The front entry points and the catalog decision table** (`platform#359`). Every question
+that reaches Lakekeeper costs about 0.15 s *per distinct catalog* (PR #364 measured it: one
+check 0.11 s, eight distinct warehouses in one request 0.9 s), so `SHOW CATALOGS` cost 1 to
+2 s cold and every query paid about 350 ms — the reason `platform#311` rolled the switch
+back. The price is Lakekeeper's per-entity authorization, not transport, so batching cannot
+remove it; the answers have to come from somewhere else.
+
+They come from a table CronJob `access-sync` already computes every two minutes. After the
+grants of a tick are written, it publishes the catalog-level permissions as OPA data
+(`scripts/access-sync-job.py`, `PUT /v1/data/stardelt/access` on the bridge):
+
+```json
+{"generatedAt": 1761055200,
+ "catalogs": {"gold": {"drift": false, "all": ["<admin sub>"],
+                      "browse": ["<sub>", "superset"], "select": ["<sub>"],
+                      "write": [], "create": []}}}
+```
+
+Each list holds the exact string Trino sends as the user (the Keycloak `sub`, or a bare
+`STATIC_ASSIGNEES` principal such as `superset`), with Lakekeeper's verb implications
+already applied (`write` implies `select` implies `browse`; `create` implies `browse`), and
+`all` is the platform administrators, who hold `project_admin` in Lakekeeper. Trino is
+pointed at `data/stardelt/allow` (`opa.policy.uri`) and `data/stardelt/batch`
+(`opa.policy.batched-uri`) — `stardelt.front.rego` in `helm-values/lakekeeper.yaml` — and the
+two rules answer:
+
+- **the catalog-level questions** (`AccessCatalog`, `FilterCatalogs`) from the table, in both
+  directions, whenever the table is fresh and the catalog has no drift. That is the
+  acceleration: zero Lakekeeper calls;
+- **the hot object-level operations** (`SelectFromColumns`, `InsertIntoTable`, `CreateSchema`,
+  `CreateTable`, `CreateView`, `ShowSchemas`/`FilterSchemas`, `ShowTables`/`FilterTables`,
+  `ShowColumns`/`FilterColumns`) as an **allow-only** fast path. A denial is never the
+  table's: the chart's rules ask Lakekeeper, which also knows object ownership and any grant
+  below the catalog;
+- **everything else** — drops, renames, alters, `ExecuteQuery`, session properties,
+  impersonation, functions — by the chart's own rules, unchanged.
+
+The table is an accelerator, never the authority. It is ignored when it is older than six
+minutes (the sync publishes every two, so a normal table is at most ~2.5 minutes old), when a
+catalog is missing from it (a `Catalog` that became Ready since the last tick), and when that
+catalog carries `drift` — a grant on its warehouse held by a subject the sync does not
+manage, which it cannot enumerate and therefore must not answer for. A failed push is logged
+as `opa data: not published (<status>)` and never fails the sync tick: the bridge then falls
+back to Lakekeeper and only the latency changes.
+
+**The trust note.** The table is derived from the same `Catalog` objects the sync writes to
+Lakekeeper; Lakekeeper stays the authority. The table is valid for at most six minutes
+(usually 2.5), it can only widen answers at object level where Lakekeeper confirms them by
+default, and its write API is reachable only from the `access-sync` and Trino-coordinator
+pods (NetworkPolicy `lakekeeper-ingress`) — the same trust boundary as the bridge's own
+Lakekeeper credential.
+
+Three checks keep the accelerator honest. `make bridge-differential`
+(`scripts/bridge-replay.sh --differential`) asks the front
+entry points and the chart's own rules the same question for every catalog, every existing
+table and every principal (including one that is in no group) and fails on any difference —
+there is no "known difference". `scripts/test_bridge_policies.py` (CI, `make
+test-bridge-policies`) proves the same against a stub Lakekeeper that counts calls, so "a
+fresh table answers without asking" is a number, not a claim. `make bridge-latency` measures
+it. `make lint` (`scripts/check-bridge-uri.sh`) keeps the paths in this file,
+`scripts/lib/bridge.sh` and the values file identical, so the replay asks what the engine
+asks.
 
 **Who may impersonate whom** (`platform#342`). Exactly one principal may act as someone
 else, and only as a person: `superset`, the PASSWORD account Superset authenticates to
@@ -1340,6 +1403,11 @@ make bridge-capture    # throwaway Trino + a stub authorizer that allows and rec
 make bridge-replay     # the contract, the probes, the must-work reads, the matrix,
                        # the impersonation rows
 bash scripts/bridge-replay.sh --data-only   # only the matrix and impersonation (the gate)
+bash scripts/bridge-replay.sh --differential   # the front entry points against the
+                       # chart's own rules: every catalog, every table, every principal
+make bridge-latency    # FilterCatalogs with every catalog: five cold runs, the median
+                       # must stay <= 0.2 s, and one AccessCatalog/SelectFromColumns
+                       # question <= 0.05 s, with the old path's answers unchanged
 ```
 
 `make bridge-capture` runs the coordinator image with no authentication, the `tpch` catalog
@@ -1489,19 +1557,40 @@ unchanged.
 
 ---
 
-### Dev seed: four catalogs, three people, one matrix
+### Dev seed: the maintainer layout is the baseline, fixtures are opt-in
 
-A small permission set you can check by hand, for development and for demoing the model
-(platform#309). `make seed-dev-access YES=1` creates:
+The dev seed is a small permission set you can check by hand, for development and for
+demoing the model (platform#309). Its **baseline is the layout the maintainer runs** —
+`warehouse`, `shared`, `bronze`, `silver`, `gold`, each granted the four data verbs to
+`stardelt-users` (`dev/seed/catalogs.yaml`) — and the seed does not touch the Catalog
+objects at all unless you ask it to (layout decision, platform#365).
+
+`make seed-dev-access YES=1` creates the cheap, invisible half:
 
 | object | what it is |
 |---|---|
-| group `finops` | owns `finance`, reads and writes it |
-| group `analytics` | owns `product`, may read `finance` |
+| group `finops` | owns `finance` (when the fixtures are applied) |
+| group `analytics` | owns `product`, may read `finance` (when the fixtures are applied) |
 | users `dev-finops`, `dev-analytics`, `dev-outsider` | one person per row; all also in the default group `stardelt-users` |
 | the existing user `analyst` | added to `analytics` (a person, not a seed user) |
-| Catalogs `warehouse`, `finance`, `product`, `sandbox` | from `dev/seed/catalogs.yaml` |
-| schema `seed`, table `nation` (25 rows) | created in `finance`, `product` and `sandbox` through the Trino service account |
+
+It also runs one access-sync so the new memberships reach Lakekeeper now rather than on
+the next two-minute tick, and it prints that no Catalog was touched. It never recreates a
+Catalog that does not exist: if you deleted one, that was a decision, not drift. When you
+do want the file applied — a fresh cluster, or a deleted baseline catalog back — say so:
+
+```sh
+SEED_CATALOGS=1 make seed-dev-access YES=1   # apply dev/seed/catalogs.yaml (the five baseline Catalogs)
+```
+
+The **permission fixtures** are opt-in, for people who want group differences to exercise:
+`make seed-permission-fixtures YES=1` applies `dev/seed/fixtures/permission-fixtures.yaml`
+(Catalogs `finance`, `product`, `sandbox` with different grants per group) and creates the
+`schema seed`, `table nation` (25 rows from `tpch.tiny`) in each. They need the seed's
+people and groups, so run `make seed-dev-access YES=1` first; `make
+unseed-permission-fixtures YES=1` deletes exactly those three Catalogs and never a
+baseline one. Deleting a Catalog deletes no data, so the `seed` schema stays in the
+fixture warehouses (orphan warehouses to the next sync tick).
 
 `dev-outsider` gets no domain group: it is the row of `false`. All three seed users are
 marked in Keycloak with the attribute `stardelt-managed=seed`; that attribute is what
@@ -1518,47 +1607,58 @@ committed:
 kubectl -n stardelt get secret dev-seed-users -o jsonpath='{.data.dev-finops}' | base64 -d
 ```
 
-The matrix the grants encode, and the one `make verify-catalog-permissions` proves by
-asking the OPA bridge the same question Trino asks it (`POST
-http://lakekeeper-opa:8282/v1/data/trino/allow`, from a throwaway pod labelled like the
-Trino coordinator so `lakekeeper-ingress` admits it):
+`make verify-catalog-permissions` proves the permissions against the OPA bridge by asking
+it the same questions Trino asks (`POST http://lakekeeper-opa:8282/v1/data/trino/allow`,
+from a throwaway pod labelled like the Trino coordinator so `lakekeeper-ingress` admits
+it). Its expectation is **computed from the live Catalog objects and the live Keycloak
+group memberships**, not from a table in the script (platform#365): a person may do a
+verb when the union of their groups' grants holds it — `write ⇒ select ⇒ browse`,
+`create ⇒ browse` — and a member of `stardelt-admins` may do everything. Edit a grant in
+Nova and the next run follows it; no script change. Ownership is not a data verb: the
+owner group gets `manage_grants` only.
 
-| operation | `dev-finops` | `dev-analytics` | `dev-outsider` |
+| verb | question |
+|---|---|
+| `browse` | `AccessCatalog <catalog>` |
+| `select` | `SelectFromColumns <catalog>.seed.nation` |
+| `write` | `InsertIntoTable <catalog>.seed.nation` |
+| `create` | `CreateSchema <catalog>.seed_probe` |
+
+A table question on a table Lakekeeper does not have is answered `false` for everyone, so
+`select`/`write` rows are asked only where `<catalog>.seed.nation` exists (the fixtures
+create it in `finance`, `product` and `sandbox`) — the admin's own answer is the existence
+check. Everywhere else only `browse` and `create` rows are asked. With the fixtures the
+differentiated rows are the point:
+
+| catalog | `dev-finops` | `dev-analytics` | `dev-outsider` |
 |---|:--:|:--:|:--:|
-| `AccessCatalog finance` | true | true | false |
-| `SelectFromColumns finance.seed.nation` | true | true | false |
-| `InsertIntoTable finance.seed.nation` | true | false | false |
-| `AccessCatalog product` | true | true | false |
-| `SelectFromColumns product.seed.nation` | false | true | false |
-| `InsertIntoTable product.seed.nation` | false | true | false |
-| `AccessCatalog sandbox` | true | true | true |
-| `InsertIntoTable sandbox.seed.nation` | true | true | true |
-| `SelectFromColumns warehouse.covid.covid_summary` | true | true | true |
+| `finance` | browse, select, write, create | browse, select | — |
+| `product` | browse | browse, select, write, create | — |
+| `sandbox` | all four | all four | all four |
 
-`AccessCatalog` is `browse` (Lakekeeper `describe`) — on a catalog it is also the ability
-to address it, which is why it differs from a table's `select`. `warehouse` keeps today's
-behaviour for `stardelt-users` (browse, select, write, create); narrowing it is a later,
-announced change (internal note `design/multitenant-catalogs.md` §9 Q6). `sandbox` is the
-one new catalog every signed-in person may use.
+On the maintainer layout every grant is uniform, so every person passes every row — the
+oracle says so, and the equality itself is the check that group wiring works.
 
 ```sh
-make seed-dev-access YES=1        # idempotent: a second run reports everything as present
-make verify-catalog-permissions   # table of PASS/FAIL, exit 1 on any mismatch
-make unseed-dev-access YES=1      # delete the seed users, groups, catalogs and Secret
+make seed-dev-access YES=1              # groups, people, Secret; no Catalog touched
+SEED_CATALOGS=1 make seed-dev-access YES=1   # also apply dev/seed/catalogs.yaml
+make verify-catalog-permissions         # PASS/FAIL table from the live objects; exit 1 on a mismatch
+make seed-permission-fixtures YES=1     # opt-in finance/product/sandbox + seed.nation
+make unseed-permission-fixtures YES=1   # remove exactly those three Catalogs
+make unseed-dev-access YES=1            # delete the seed people, groups and Secret (keeps every Catalog)
 ```
 
-Both mutating targets need `YES=1` and refuse when ConfigMap `stardelt-identity` says
-`environment: production`: this is a development aid, not an install step. The seed runs
-`make access-sync-now` and `make catalogs`, so the first run restarts Trino once (the
-catalog set changed) and takes about a minute.
+Every mutating target needs `YES=1` and refuses when ConfigMap `stardelt-identity` says
+`environment: production`: this is a development aid, not an install step. `make
+seed-dev-access` does not roll Trino — only `SEED_CATALOGS=1`, the two fixture targets and
+a deleted catalog change the catalog set, and those converge through `make catalogs`
+(about a minute, and the coordinator restart drops running queries: pick a quiet moment).
 
-`unseed` deletes only what the seed created: the users and groups carrying
-`stardelt-managed=seed`, the Catalogs `finance`, `product` and `sandbox`, and Secret
-`dev-seed-users` (its passwords belong to users that no longer exist). It never deletes
-the `warehouse` Catalog, a Lakekeeper warehouse, a schema or a table — deleting a Catalog
-deletes no data. The `seed` schema stays, the seed warehouses stay (reported as orphan
-warehouses by the next sync tick), and `analyst` stays a person. Run `make catalogs` after
-an unseed if you want Trino to forget the removed catalogs before the next seed.
+`unseed-dev-access` deletes only what the seed created: the users and groups carrying
+`stardelt-managed=seed` and Secret `dev-seed-users` (its passwords belong to users that no
+longer exist). It never deletes a Catalog, a Lakekeeper warehouse, a schema or a table.
+`analyst` stays a person; the baseline Catalogs and the fixtures stay until you run the
+fixtures' own unseed.
 
 ---
 
@@ -1638,6 +1738,32 @@ plus the Iceberg 1.12 runtime and AWS bundle. The jars are baked in at image bui
 time (checksum-verified from Maven Central), so a pod never downloads dependencies —
 the install stays air-gap-friendly when the registry is mirrored.
 
+### Reading public S3 with Spark
+
+A notebook can read a **public** S3 bucket directly — no catalog, no Iceberg table —
+with either URI form:
+
+```python
+spark = stardelt.spark()
+spark.read.csv("s3a://noaa-ghcn-pds/csv.gz/by_year/1763.csv.gz").count()
+spark.read.parquet("s3://ookla-open-data/parquet/performance/type=fixed/year=2023/quarter=1/").limit(5).show()
+```
+
+The image carries `hadoop-aws` 3.4.2 (Hadoop's S3A filesystem) and the AWS SDK v2
+bundle that version needs, so `s3a://` resolves; `s3://` is mapped to the same
+filesystem class (`spark.hadoop.fs.s3.impl`). Both are anonymous and **only**
+anonymous: `spark.hadoop.fs.s3a.aws.credentials.provider` is
+`AnonymousAWSCredentialsProvider`, so S3A never signs a request — a private bucket
+fails with an access error, and the platform's own storage (`s3a://lakehouse/`) is
+not readable this way. Read that data through Trino or an Iceberg table, where the
+catalog's grants apply.
+
+`spark.hadoop.fs.s3a.endpoint` is unset on purpose: S3A talks to AWS and resolves the
+bucket's region, so buckets in any region work. That also means the Spark pods use
+their internet egress. They have no NetworkPolicy (Spark is not part of the umbrella
+chart), so egress is open today; this feature adds no rule and no Secret. The jars
+ship in the image, so the only thing that leaves the cluster is the read itself.
+
 ### Shape and the memory budget
 
 One Deployment runs the Connect server as a long-running driver with **Kubernetes as
@@ -1647,17 +1773,35 @@ service), so an idle platform pays for the driver only:
 
 | Part | Request | Limit | Steady state |
 |------|---------|-------|--------------|
-| Driver (`spark-connect`) | 250m / 1 GiB | 1 CPU / 2 GiB | ~0.5 GiB measured |
+| Driver (`spark-connect`) | 250m / 1 GiB | 1 CPU / 3 GiB | 0.5 GiB idle, 1.8 GiB under a large job (2026-10-21) |
 | Executor, each (max 2) | 1 CPU / 1.4 GiB | JVM heap `1g` + `384m` overhead | 0.6–1.4 GiB, only while querying |
 
-On the shared 16 GB dev node the driver measured 529 MiB and the node stayed at
-~64–69 % with an executor running, well inside the headroom left by Trino,
-Airflow, Superset and JupyterHub. Executors are released after
+On the shared 16 GB dev node the driver idles at about 0.5 GiB and a large notebook job
+took it to 1.8 GiB of the 3 GiB limit on 2026-10-21, while the node stayed inside the
+headroom left by Trino, Airflow, Superset and JupyterHub. The request stays at 1 GiB
+(the node's requests are at 99 % of allocatable, so a larger request would leave the
+driver Pending); only the limit has room. Executors are released after
 `shuffleTracking.timeout` (180 s) plus the idle timeout, so a query leaves the
 node as it was a few minutes later.
 Change the numbers in `manifests/spark.yaml` (ConfigMap `spark-connect-config` +
 the driver's `resources`) and re-run `make install-spark`; the target restarts the
 driver only when the ConfigMap actually changed.
+
+**What a notebook can do to the driver.** Every notebook shares this one driver
+(`replicas: 1`), so a result that lands in it lands in everyone's way. `collect()` and
+`toPandas()` are capped at `spark.driver.maxResultSize` (512 MiB): above that the call
+fails in the notebook with `Total size of serialized results of N tasks (...) is bigger
+than spark.driver.maxResultSize` and the driver keeps serving. Without the cap Spark's
+default is 1 GiB, as large as the whole heap, so one big result could exhaust it. The
+cap does not bound everything a notebook can do to the driver: on 2026-10-21 a load that
+turned 250,000-row chunks into DataFrames (tasks of 11 MiB, no big result) got the driver
+OOMKilled at the 2 GiB limit, which is why the limit is 3 GiB: heap 1g plus JVM direct
+memory up to its default cap of 1g plus about 0.4g of metaspace, code and threads is about
+2.4 GiB (arithmetic, not a measurement). When a call fails
+that way, write the result to a table (`df.writeTo("<catalog>.<schema>.<table>").createOrReplace()`)
+and read it back, or aggregate first; do not raise the limit. The
+[notebook cheat sheet](images/jupyter/stardelt/README.md#keeping-the-shared-driver-healthy)
+(platform#374) has the patterns that keep the driver small.
 
 ### Catalog wiring
 
@@ -1858,6 +2002,7 @@ kubectl -n stardelt delete pods -l spark-role=executor
 | `verify-catalog-permissions` | Prove the nine-row permission matrix against the OPA bridge, one PASS/FAIL per cell; exit 1 on any mismatch (platform#309) |
 | `bridge-capture` | Capture the authorization requests the Trino coordinator's image sends to an OPA authorizer, from a throwaway pod with a stub, into `scripts/tests/fixtures/trino-opa-requests.json`; refresh after a Trino upgrade (platform#333) |
 | `bridge-replay` | Replay the captured requests against the live bridge for the three seed people and an admin: contract, probes, must-work reads and the matrix; exit 1 on an error, empty answer or wrong row. `--data-only` is the matrix gate (platform#333) |
+| `bridge-latency` | `FilterCatalogs` with every catalog of the cluster plus system/tpch/tpcds, five cold runs per seed person and the admin: prints min/median/max and exits 1 above a 1.0 s median; asserts every answer equals the chart's per-catalog path (platform#359) |
 | `catalog-enforce` | **The switch** (platform#311): Trino asks the bridge and the engine user becomes the Keycloak `sub`. Gated in order — `access-sync-now`, `verify-catalog-permissions`, `bridge-replay --data-only`, the group file by `sub`, Lakekeeper with `OPABridge.adminUsers`, `make trino` — and stops at the first failure. See [Who may read what](#who-may-read-what) |
 | `catalog-enforce-rollback` | The recovery path: the group-sync CronJob back to `GROUP_PRINCIPAL=username` first (so the five-minute writer cannot re-apply `sub` mid-rollback), then the group file by usernames, then Trino on the file access control alone (`helm-values/trino-identity-file-only.yaml`), waiting for the rollout. `deps` is a prerequisite, so a missing tool cannot stop it after it has started changing state. One command, for a failed cell of the switch's verification |
 | `trino` | Install/upgrade Trino; adds `helm-values/trino-identity.yaml` (Keycloak OAuth2 + service-account password) when `stardelt-identity` exists |
@@ -1932,8 +2077,9 @@ scripts/
   identity-bootstrap.sh Generate the IdP Secrets + render realm/identity ConfigMaps
   keycloak-sync-trino-client.sh  Sync the live realm's Trino token settings (import skips an existing realm)
   lib/keycloak-admin.sh Shared Keycloak admin-API access (port-forward, forwarded headers, master token)
-  seed-dev-access.sh    Dev seed: groups, people, four Catalogs, the seed tables (platform#309)
-  verify-catalog-permissions.sh  Prove the permission matrix against the OPA bridge (platform#309)
+  seed-dev-access.sh    Dev seed: groups, people, Secret (baseline Catalogs only with SEED_CATALOGS=1); opt-in permission fixtures (platform#309, #365)
+  lib/catalog-layout.py The permission oracle: expected grants from the live Catalog objects and Keycloak groups (platform#365)
+  verify-catalog-permissions.sh  Prove the live Catalog grants against the OPA bridge (platform#309, #365)
   lint.sh               bash -n + ShellCheck the shell scripts (make lint)
   port-forwards.sh      Background port-forwards to all services
   protect-branches.sh   Apply `main` branch protection in all five stardelt repos
