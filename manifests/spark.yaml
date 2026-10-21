@@ -103,10 +103,14 @@ data:
     spark.kubernetes.executor.secretKeyRef.AWS_SECRET_ACCESS_KEY stardelt-s3-creds:secret-key
 
     # --- Sizing on the shared 16 GB node ------------------------------------
-    # Driver: 1g heap, 2 GiB container limit (README has the budget table).
+    # Driver: 1g heap, 3 GiB container limit; about 0.7 GiB of a busy driver is off-heap Arrow/Netty buffers (README has the budget table).
     # Executors: 1 core + 1g heap + 384m overhead each, at most two at a time,
     # scaled to zero when idle.
     spark.driver.memory                                     1g
+    # A collect()/toPandas() result above 512m fails instead of filling the driver heap.
+    spark.driver.maxResultSize                              512m
+    # Free a finished job's broadcasts and metadata sooner than the 30min default.
+    spark.cleaner.periodicGC.interval                       5min
     spark.executor.memory                                   1g
     spark.executor.memoryOverhead                           384m
     spark.executor.cores                                    1
@@ -234,7 +238,7 @@ spec:
             failureThreshold: 6
           resources:
             requests: { cpu: "250m", memory: "1Gi" }
-            limits: { cpu: "1", memory: "2Gi" }
+            limits: { cpu: "1", memory: "3Gi" }
           securityContext:
             allowPrivilegeEscalation: false
             capabilities: { drop: ["ALL"] }
