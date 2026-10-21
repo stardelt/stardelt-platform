@@ -367,7 +367,7 @@ RESTORE
     return 1
   fi
 
-  ok "[$app] ${object_key} (${object_size} bytes, ${object_age}s old) restored into restoretest: ${restored} tables == live ${live}"
+  ok "[$app] PASS — ${object_key} (${object_size} bytes, ${object_age}s old) restored into restoretest: ${restored} tables == live ${live}"
   cleanup
   return 0
 }
@@ -382,7 +382,7 @@ for app in "${apps[@]}"; do
 done
 
 if [ "$failed" -gt 0 ]; then
-  echo "verify-pgdump: FAILED ($failed target(s))" >&2
+  echo "verify-pgdump: FAIL ($failed of ${#apps[@]} target(s))" >&2
   exit 1
 fi
-echo "verify-pgdump: OK"
+echo "verify-pgdump: PASS (${#apps[@]} target(s))"
