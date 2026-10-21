@@ -48,4 +48,10 @@ fi
 echo "› script: check-notebook-image-pin"
 bash scripts/check-notebook-image-pin.sh
 
+# The extra Trino catalogs are rendered from helm-values/catalog.properties.tmpl, which must stay
+# the identity overlay's `warehouse` block (platform#308): drift only shows up as a property
+# missing in one catalog at query time.
+echo "› script: check-catalog-template"
+bash scripts/check-catalog-template.sh
+
 echo "lint: OK"

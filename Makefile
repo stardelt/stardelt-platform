@@ -48,7 +48,7 @@ CHART_EXTRA ?=
 # client redirect URIs on the app subdomains. Same default as `dev-dns`.
 BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 
-.PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator openfga trino upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-up dev-down dev-dns dev-dns-down
+.PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator openfga trino catalogs upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-up dev-down dev-dns dev-dns-down
 .PHONY: chart-deps chart-template chart-install
 .PHONY: verify-backups verify-backups-identity verify-backups-nova verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
 .PHONY: sync-oidc-clients verify-oidc-clients verify-trino-tls verify-trino-auth sync-trino-groups sync-trino-group-sync-client sync-pipeline-runner-client sync-dev-client openbao test-openbao-policies seaweedfs-admin
@@ -189,7 +189,8 @@ install: deps _context _helm-repos ## Install all stardelt components (idempoten
 	@helm upgrade --install lakekeeper lakekeeper/lakekeeper \
 	  --version $(LAKEKEEPER_VERSION) \
 	  $(HELM_FLAGS) \
-	  -f helm-values/lakekeeper.yaml
+	  -f helm-values/lakekeeper.yaml \
+	  $$(NAMESPACE=$(NAMESPACE) bash scripts/render-catalogs.sh bridge-arg)
 
 	@echo "› [5/11] Lakekeeper bootstrap"
 	@kubectl apply -f manifests/lakekeeper-bootstrap.yaml
@@ -382,7 +383,8 @@ trino: deps _context ## Install/upgrade Trino, with OAuth2+TLS when a platform I
 	    --version $(TRINO_VERSION) \
 	    $(HELM_FLAGS) \
 	    -f helm-values/trino.yaml $(TRINO_EXTRA) $(TRINO_QUERYLOG) \
-	    -f helm-values/trino-identity.yaml; \
+	    -f helm-values/trino-identity.yaml \
+	    $$(NAMESPACE=$(NAMESPACE) bash scripts/render-catalogs.sh trino-args); \
 	else \
 	  echo "› Trino $(TRINO_VERSION) — no platform IdP, so no authentication (dev only)"; \
 	  helm upgrade --install trino trino/trino \
@@ -554,6 +556,37 @@ access-sync-now: _context ## Run one access-sync Job now, wait for it and print 
 	    || { kubectl -n $(NAMESPACE) logs "job/$$name" 2>/dev/null || true; \
 	         echo "job $$name did not complete — see the log above" >&2; exit 1; }; \
 	  kubectl -n $(NAMESPACE) logs "job/$$name"
+
+# ---------------------------------------------------------------------------
+# More catalogs (platform#308, authz 6/8) — the Catalog objects become Trino
+# catalogs and bridge mappings.
+#
+# A `Catalog` that access-sync turned Ready needs three more things to be usable:
+# the OPA bridge must map its Trino catalog name to its warehouse, the Trino
+# coordinator needs a catalog properties file, and the engine has to load it.
+# scripts/render-catalogs.sh reads the objects and renders both arguments — no
+# list of names lives in this repo; `warehouse` stays in the values files
+# (helm-values/trino-identity.yaml repeats its properties, see the header there).
+#
+# Needs the identity install, like access-sync: the first step runs the CronJob as
+# Job, so a cluster without a realm and `svc-catalog-operator` fails there and
+# nothing reaches Lakekeeper.
+#
+# Trino cannot load a catalog live (the chart mounts a read-only ConfigMap), so
+# an added or removed catalog rolls the coordinator and the worker — about a
+# minute, and the coordinator restart drops running queries: pick a quiet moment.
+# A run with nothing new renders the same ConfigMap and leaves both pods alone.
+# ---------------------------------------------------------------------------
+.PHONY: catalogs
+catalogs: _context ## Converge Catalogs into Trino catalogs + bridge mappings (restarts Trino when the set changed)
+	@$(MAKE) --no-print-directory access-sync-now
+	@helm upgrade --install lakekeeper lakekeeper/lakekeeper \
+	  --version $(LAKEKEEPER_VERSION) \
+	  $(HELM_FLAGS) \
+	  -f helm-values/lakekeeper.yaml \
+	  $$(NAMESPACE=$(NAMESPACE) bash scripts/render-catalogs.sh bridge-arg)
+	@kubectl -n $(NAMESPACE) rollout status deploy/lakekeeper --timeout=5m
+	@$(MAKE) --no-print-directory trino
 
 # The public client developer tools on a laptop sign in with (platform#157): the device grant and
 # PKCE to a loopback address. `make sync-dev-client DEV_CLIENT_ENABLED=false` switches it off.

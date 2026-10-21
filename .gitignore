@@ -16,6 +16,10 @@ chart/Chart.lock
 # Python bytecode (notebook helper tests run locally too)
 __pycache__/
 
+# Rendered catalog properties for the extra Catalogs (scripts/render-catalogs.sh);
+# they are built per release from the live Catalog objects.
+.build/
+
 # Python build output of the notebook helper (`pip install ./images/jupyter` writes it next to the sources)
 images/jupyter/build/
 *.egg-info/

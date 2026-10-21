@@ -1,0 +1,41 @@
+connector.name=iceberg
+iceberg.catalog.type=rest
+iceberg.rest-catalog.uri=http://lakekeeper.stardelt.svc.cluster.local:8181/catalog
+iceberg.rest-catalog.warehouse=@NAME@
+iceberg.rest-catalog.vended-credentials-enabled=false
+# The caller's own identity: client id and secret come from Secret
+# svc-catalog-trino via the coordinator's and worker's env (helm-values/trino.yaml);
+# each Trino JVM does its own client-credentials exchange and refreshes the token
+# before it expires. The endpoint is the realm's token endpoint, built from
+# ConfigMap stardelt-identity's issuerUrl — no secret and no token in this file.
+iceberg.rest-catalog.security=OAUTH2
+iceberg.rest-catalog.oauth2.server-uri=${ENV:CATALOG_TOKEN_URL}
+iceberg.rest-catalog.oauth2.credential=${ENV:CATALOG_CLIENT_ID}:${ENV:CATALOG_CLIENT_SECRET}
+# Without this Iceberg asks for `scope=catalog`, which this realm does not have.
+iceberg.rest-catalog.oauth2.scope=openid
+fs.native-s3.enabled=true
+s3.endpoint=http://seaweedfs-s3.stardelt.svc.cluster.local:8333
+s3.region=us-east-1
+s3.path-style-access=true
+s3.aws-access-key=${ENV:S3_ACCESS_KEY}
+s3.aws-secret-key=${ENV:S3_SECRET_KEY}
+# Single-replica SeaweedFS volume server can't sustain Trino's default
+# parallel HTTP range requests (broken pipe / connection reset). Throttle
+# both connection pool and the Iceberg metadata enumeration threads.
+s3.max-connections=16
+iceberg.split-manager-threads=4
+iceberg.metadata.parallelism=2
+# Worker-local file-system cache for object-store reads (platform#134,
+# Trino 480: `fs.cache.*` per catalog; there is no cache-manager setting
+# in 480). Measured on the dev cluster 2026-10-19 against a 38M-row /
+# 0.66 GB full scan of nyc_taxi.yellow_trips: repeat scans drop from
+# 154 S3 GETs + 660 MB to 1 GET + 0 MB, wall time 1.5-1.9s -> 1.2-1.7s.
+# The win is S3 offload (the single-replica SeaweedFS volume server is
+# the bottleneck the throttles above protect), not latency — Parquet
+# decode dominates on one node. Best-effort local cache only: a pod
+# restart or scale-to-zero (M-02) discards it with the emptyDir, and the
+# next scan repopulates (cold scan is slower: 5.1s vs 3.2s uncached).
+fs.cache.enabled=true
+fs.cache.directories=/var/trino/cache
+fs.cache.max-sizes=10GB
+fs.cache.ttl=7d
