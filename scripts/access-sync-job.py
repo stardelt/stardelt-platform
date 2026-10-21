@@ -95,7 +95,9 @@ applied here, once (Lakekeeper's model: `modify` implies `select` implies
 `describe`, `create` implies `describe`), and every list holds the exact string
 Trino sends as the user — the Keycloak `sub`, or a bare `STATIC_ASSIGNEES`
 principal (`superset`) without the `oidc~` prefix. A failed push is logged and
-never fails the tick.
+never fails the tick. A tick that removes a grant drops the document first
+(`invalidate_access_table`), so the bridge asks Lakekeeper until the next publish
+instead of answering from a table that still lists the removed grant (platform#384).
 """
 import base64
 import json
@@ -189,6 +191,10 @@ _OWN_USER_TOKEN = None  # the token _OWN_USER was decoded from; recompute when i
 # Filled by main() from Secret stardelt-s3-creds: the one bucket every catalog shares
 # until per-catalog buckets exist.
 PLATFORM_BUCKET = ""
+# True once this tick dropped the decision table before a removal, so a second removal
+# in the same tick does not repeat the DELETE (nothing republishes in between,
+# platform#384). Reset by main().
+_TABLE_DROPPED = False
 
 
 class SyncProblem(Exception):
@@ -588,8 +594,10 @@ def publish_access_table(table):
     """PUT the table at `OPA_DATA_URL`; True when OPA took it.
 
     Never fails the tick: the bridge falls back to Lakekeeper when the document is
-    missing or stale, so a broken push costs latency and nothing else. Logs the
-    catalog count and the status only — never a user, and never the body.
+    missing or stale. A failed push leaves the previous table; a removal drops the
+    table first (`invalidate_access_table`), so that table never lists a removed
+    grant. Logs the catalog count and the status only — never a user, and never the
+    body.
     """
     body = json.dumps(table, sort_keys=True).encode("utf-8")
     request = urllib.request.Request(
@@ -617,6 +625,41 @@ def publish_access_table(table):
             "opa data: %d catalog(s) with drift are answered by Lakekeeper, not locally"
             % drift
         )
+    return True
+
+
+def invalidate_access_table():
+    """DELETE the published table, before a grant is removed; True when it is gone.
+
+    The table is believed for up to six minutes, so a revocation must never wait for
+    the next publish: a tick that removes an assignee or a warehouse grant drops the
+    document first and only then asks Lakekeeper to remove it (platform#384). A
+    missing document is the normal state after a drop — the bridge's front rule then
+    asks Lakekeeper (`fresh` is false) — so 204, 200 and 404 all mean done.
+
+    Never raises and never fails the removal: a DELETE that does not arrive costs
+    latency after the removal, not correctness during it. Once per tick, even when
+    the request fails, because a second DELETE in the same tick cannot help. Logs the
+    status only — never a user, and never the body.
+    """
+    global _TABLE_DROPPED
+    if _TABLE_DROPPED:
+        return True
+    _TABLE_DROPPED = True
+    request = urllib.request.Request(OPA_DATA_URL, method="DELETE")
+    try:
+        with urllib.request.urlopen(request, timeout=OPA_TIMEOUT) as response:
+            status = response.status
+    except urllib.error.HTTPError as e:
+        e.close()
+        status = e.code
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        print("opa data: not dropped (%s)" % e, file=sys.stderr)
+        return False
+    if status not in (200, 204, 404):
+        print("opa data: not dropped (%s)" % status, file=sys.stderr)
+        return False
+    print("opa data: dropped before a removal")
     return True
 
 
@@ -737,6 +780,11 @@ def sync_assignees(role_id, subs):
     deletes = sorted(current - desired)
     if not writes and not deletes:
         return 0, 0
+    # A removal must not be answered from a table that still lists the person: drop
+    # it before Lakekeeper removes the grant (platform#384). A failed DELETE does not
+    # stop the removal — a revoke still happens.
+    if deletes:
+        invalidate_access_table()
     status, _ = lk(
         "POST",
         "/management/v1/permissions/role/%s/assignments" % role_id,
@@ -801,6 +849,10 @@ def sync_warehouse_grants(warehouse_id, desired, role_ids, managed_role_ids=None
     )
     if not apply or (not writes and not deletes):
         return 0, 0, foreign
+    # Same rule as `sync_assignees`: a grant that is about to be removed must not be
+    # answered from the table (platform#384).
+    if deletes:
+        invalidate_access_table()
     status, _ = lk(
         "POST",
         "/management/v1/permissions/warehouse/%s/assignments" % warehouse_id,
@@ -1054,7 +1106,10 @@ def patch_status(name, phase, warehouse_id, reason, message, grants=None):
 
 def main():
     """Converge every Catalog, then report warehouses no Catalog claims."""
-    global PLATFORM_BUCKET
+    global PLATFORM_BUCKET, _TABLE_DROPPED
+    # One drop per tick is enough: a removal drops the table, nothing republishes it
+    # until step 5, so a second removal needs no second DELETE (platform#384).
+    _TABLE_DROPPED = False
     s3 = s3_credentials()
     PLATFORM_BUCKET = s3["bucket"]
     catalogs = list_catalogs()
@@ -1191,9 +1246,11 @@ def main():
         )
 
     # 5. The catalog decision table (platform#359): after the grants were written,
-    #    so the bridge never sees a permission the warehouse does not have. A
-    #    failed push costs latency (the bridge falls back to Lakekeeper), never
-    #    correctness, so it is logged and the tick still succeeds.
+    #    so the bridge never sees a permission the warehouse does not have. A failed
+    #    push leaves the previous table and the bridge falls back to Lakekeeper; a
+    #    removal dropped the table before it happened (`invalidate_access_table`), so
+    #    the bridge never answers from a table that lists a removed grant
+    #    (platform#384), and it is published again here.
     publish_access_table(access_table(published, members, static))
 
     # Deleted Catalogs leave their warehouses and data behind (design §2.5): report,
