@@ -1147,6 +1147,66 @@ is asked — by Nova today, by the OPA bridge when Trino's `access-control` move
 (a later authz step). Until then a person's Trino queries are not narrowed by
 `Catalog.spec.grants`.
 
+### More catalogs: Trino and the bridge
+
+A `Catalog` is usable when three things agree, and `make catalogs` derives all three
+from the objects themselves (platform#308):
+
+```sh
+kubectl apply -f finance.yaml      # the Catalog from above
+make catalogs                      # access-sync → bridge mapping → Trino
+```
+
+1. **Lakekeeper / the OPA bridge.** The warehouse comes from access-sync (above). The
+   bridge needs every Trino catalog name mapped to its warehouse: an unmapped catalog
+   falls under `allowUnmanagedCatalogs: true`, which permits it *without asking
+   Lakekeeper* — so its grants would not be enforced. The mapping is chart value
+   `OPABridge.catalogs` (`[{trinoCatalog, lakekeeperWarehouse}]`), rendered into
+   ConfigMap `lakekeeper-opa-policies`, key `catalogs.rego`:
+
+   ```sh
+   kubectl -n stardelt get cm lakekeeper-opa-policies -o jsonpath='{.data.catalogs\.rego}'
+   ```
+
+   `helm-values/lakekeeper.yaml` keeps the static `warehouse` entry and is never edited
+   for a new catalog: `make catalogs` passes `--set-json OPABridge.catalogs=…` built
+   from the live objects (Helm replaces the array, so the argument carries `warehouse`
+   as well; with nothing new it prints nothing and the values file stands).
+2. **Trino.** One properties file per Ready Catalog, rendered by
+   `scripts/render-catalogs.sh` from `helm-values/catalog.properties.tmpl` — the identity
+   overlay's `warehouse` block with `iceberg.rest-catalog.warehouse=@NAME@` — into
+   `.build/catalogs/<name>.properties` (git-ignored) and passed to the chart as
+   `--set-file catalogs.<name>=…` by `make trino`. `warehouse` itself stays in
+   `helm-values/trino.yaml` + `helm-values/trino-identity.yaml`. `--set-file` and not
+   another values file because the *set* of catalogs is dynamic — a values file would have
+   to be generated per release anyway, while `--set-file` adds one key on top of the two
+   tracked files and edits neither. (Helm merges the `catalogs` map key by key: a second
+   `-f` that repeats `catalogs.warehouse` replaces that catalog's whole properties block —
+   which is why the identity overlay repeats it verbatim. `--set-file` keeps that
+   arrangement.) `scripts/check-catalog-template.sh` (`make lint`) keeps the template
+   identical to the overlay's block.
+3. **The engine.** Adding or removing a catalog rolls the Trino **coordinator and
+   worker** — about a minute. The chart mounts the catalog ConfigMap read-only, so Trino
+   cannot load a catalog live, and the coordinator restart drops running queries: pick a
+   quiet moment. A second `make catalogs` with nothing new renders the same ConfigMap and
+   leaves both pods (and their age) alone. Removing a `Catalog` removes its Trino catalog;
+   its warehouse and data stay, as with `kubectl delete catalog`.
+
+The three modes are what the targets call (a cluster is needed; `make lint` runs only
+the template check):
+
+```sh
+bash scripts/render-catalogs.sh list        # Ready Catalogs except warehouse, one per line
+bash scripts/render-catalogs.sh trino-args  # the --set-file arguments make trino passes
+bash scripts/render-catalogs.sh bridge-arg  # the --set-json argument make catalogs passes
+```
+
+A Catalog that is not `Ready` gets nothing on either side, and a name the operator would
+reject is skipped with a warning. On a cluster without the Catalog CRD (no operator,
+`make install-core`) all three print nothing, so `make trino` keeps the single `warehouse`
+catalog. The umbrella chart path (`make chart-install`) is not wired to this yet: it still
+renders its own static `warehouse` catalog from `chart/values.yaml`.
+
 ---
 
 ## Spark — heavy compute on the same Iceberg tables
@@ -1372,6 +1432,7 @@ kubectl -n stardelt delete pods -l spark-role=executor
 | `delete-catalog-clients` | Delete those seven clients and Secrets; only `stardelt-managed=service` clients, needs `YES=1` |
 | `access-sync` | Create/refresh ConfigMap `access-sync-script` and apply CronJob `access-sync` — one Lakekeeper warehouse per `Catalog`, its `owner`/`grants` on that warehouse (platform#305, #306) |
 | `access-sync-now` | Run that CronJob once as a Job now, wait for it and print its log |
+| `catalogs` | Converge every Ready `Catalog` into a Trino catalog and an OPA-bridge mapping; runs `access-sync-now`, upgrades Lakekeeper, then Trino (restarts Trino only when the set changed) (platform#308) |
 | `trino` | Install/upgrade Trino; adds `helm-values/trino-identity.yaml` (Keycloak OAuth2 + service-account password) when `stardelt-identity` exists |
 | `sync-trino-groups` | Sync the live realm's `stardelt-admins` membership into ConfigMap `trino-group-file` (Trino query visibility); idempotent, runs inside `make trino` (#125) |
 | `install-operator` | Install the stardelt Operator from `../stardelt-operator/chart` (dev path) |
@@ -1411,6 +1472,7 @@ helm-values/          Helm values files, one per chart
   seaweedfs.yaml        SeaweedFS S3-compatible storage
   superset.yaml         Apache Superset BI
   trino.yaml            Trino MPP SQL engine
+  catalog.properties.tmpl  Catalog body for every extra `Catalog`, name templated (platform#308)
   slim/                 Small-node overrides (see `SLIM=1`)
 
 manifests/            Plain Kubernetes manifests (kubectl apply)
@@ -1438,6 +1500,8 @@ scripts/
   access-sync-job.py    CronJob access-sync: Catalog objects become Lakekeeper warehouses
                         and grants (groups become roles, members assignees)
   check-deps.sh         Verify required CLI tools
+  check-catalog-template.sh  Fail when catalog.properties.tmpl drifts from the `warehouse` block (platform#308)
+  render-catalogs.sh    Ready Catalogs → Trino `--set-file`s and the bridge's `--set-json` (platform#308)
   identity-bootstrap.sh Generate the IdP Secrets + render realm/identity ConfigMaps
   keycloak-sync-trino-client.sh  Sync the live realm's Trino token settings (import skips an existing realm)
   lint.sh               bash -n + ShellCheck the shell scripts (make lint)
