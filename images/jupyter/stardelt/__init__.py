@@ -45,7 +45,7 @@ from stardelt.connections import ConnectionUnavailable, connection
 
 __version__ = "0.1.0"
 
-__all__ = ["sql", "write_df", "spark", "connection", "ConnectionUnavailable"]
+__all__ = ["sql", "write_df", "spark", "spark_tips", "connection", "ConnectionUnavailable"]
 
 # write_df refuses more than this many rows: above it the per-batch INSERT
 # path is the wrong tool (slow, one HTTP round trip per batch) and the right
@@ -458,6 +458,43 @@ def _cached_spark_session(token):
     return session
 
 
+# The seven rows of the cheat sheet in README.md ("Keeping the shared driver
+# healthy"), one line each. `spark_tips()` prints them into a notebook; the
+# README table and the quickstart's markdown cell carry the same rows, so keep
+# the three in step when a row changes.
+SPARK_TIPS = (
+    "instead of df.toPandas()/df.collect() on a big table: df.limit(10_000).toPandas(), aggregate first, or df.writeTo(\"<catalog>.<schema>.<table>\").createOrReplace() and read it with SQL "
+    "(the whole result lands in the 1 GiB driver heap; above 512 MiB the call fails)",
+    "instead of spark.createDataFrame(big_pandas_or_list): write the data to a table once (writeTo), then spark.table(...) "
+    "(local data is shipped inside every task of every job)",
+    "instead of a Python loop that runs one job per item: one query with a join or groupBy, or df.repartition(n) plus mapInPandas "
+    "(every job adds a broadcast and a plan to the driver)",
+    "instead of df.join(small_df, ...) repeated in a loop: from pyspark.sql.functions import broadcast; df.join(broadcast(small_df), ...) once, outside the loop "
+    "(one broadcast instead of one per iteration)",
+    "instead of df.cache() never released: df.unpersist() when done; cache only what several actions reuse "
+    "(cached blocks occupy executor memory, 1 GiB each, and are not freed by themselves)",
+    "instead of pd.read_csv(chunksize=250_000) then spark.createDataFrame(chunk) + saveAsTable(append) per chunk: chunks of at most 20_000 rows (about 1 MiB per task), "
+    "finished chunk numbers in a small table so a restart can resume, and see platform#378 for the planned loader "
+    "(measured 2026-10-21: 250_000 rows = tasks of 11 MiB, 305 warnings in 3 h, driver OOMKilled)",
+    "instead of df.count() repeated to \"check\": run it once, keep the number "
+    "(each action is a job)",
+)
+
+
+def spark_tips() -> None:
+    """Print the patterns that keep the shared Spark driver healthy.
+
+    Every notebook talks to the same driver: 1 GiB heap in a 3 GiB pod since
+    platform#372, ``spark.driver.maxResultSize`` 512 MiB, at most 2 executors of
+    1 core / 1 GiB. Prints the seven rows of the README table ("Keeping the
+    shared driver healthy" in ``images/jupyter/stardelt/README.md``), one plain
+    line per row. Nothing runs and no session is opened, so it is safe as the
+    first cell of a notebook.
+    """
+    for line in SPARK_TIPS:
+        print(line)
+
+
 def spark(app_name="stardelt-notebook"):
     """Open a Spark Connect session for bulk work, as the signed-in person.
 
@@ -485,6 +522,9 @@ def spark(app_name="stardelt-notebook"):
     bypass a policy. Public S3 buckets are readable anonymously (``s3a://`` and
     ``s3://``); private buckets and the platform's own storage are not. The token is
     never printed or returned.
+
+    Keep the shared driver small: see ``stardelt.spark_tips()`` for the patterns
+    that do (the cheat sheet is also in ``images/jupyter/stardelt/README.md``).
     """
     from pyspark.sql import SparkSession
 

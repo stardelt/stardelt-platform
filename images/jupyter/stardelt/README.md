@@ -62,3 +62,24 @@ the two images must stay on one Python minor: if they drift apart, every one of 
 calls fails with `[PYTHON_VERSION_MISMATCH] Python in worker has different version ...
 than that in driver ...` while DataFrame and SQL keep working. Keep both on the same
 Python minor: Spark Connect UDFs fail otherwise (platform#369).
+
+## Keeping the shared driver healthy
+
+Every session `stardelt.spark()` opens runs against the same driver — 1 GiB heap in a
+3 GiB pod since platform#372, `spark.driver.maxResultSize` 512 MiB, and no Spark UI.
+Patterns that are fine on a laptop fill that driver for everyone, so:
+
+| Instead of | Do | Why |
+|---|---|---|
+| `df.toPandas()` / `df.collect()` on a big table | `df.limit(10_000).toPandas()`, aggregate first, or write the result with `df.writeTo("<catalog>.<schema>.<table>").createOrReplace()` and read it with SQL | the whole result lands in the 1 GiB driver heap; above 512 MiB the call fails |
+| `spark.createDataFrame(big_pandas_or_list)` | write the data to a table once (`writeTo`), then `spark.table(...)` | local data is shipped inside every task of every job |
+| a Python loop that runs one job per item | one query with a join or `groupBy`, or `df.repartition(n)` plus `mapInPandas` | every job adds a broadcast and a plan to the driver |
+| `df.join(small_df, ...)` repeated in a loop | `from pyspark.sql.functions import broadcast`; `df.join(broadcast(small_df), ...)` once, outside the loop | one broadcast instead of one per iteration |
+| `df.cache()` never released | `df.unpersist()` when done; cache only what several actions reuse | cached blocks occupy executor memory (1 GiB each) and are not freed by themselves |
+| `pd.read_csv(chunksize=250_000)` then `spark.createDataFrame(chunk)` + `saveAsTable(append)` per chunk | chunks of at most 20_000 rows (about 1 MiB per task), write finished chunk numbers to a small table so a restart can resume, and see platform#378 for the planned loader | measured 2026-10-21: 250_000 rows = tasks of 11 MiB, 305 warnings in 3 h, driver OOMKilled |
+| `df.count()` repeated to "check" | run it once, keep the number | each action is a job |
+
+Executors: at most 2 x 1 core x 1 GiB today; sizes are designed in platform#375. If a call
+fails with `maxResultSize`, write the result to a table instead of raising the limit.
+
+`stardelt.spark_tips()` prints the seven rows into a notebook, so they are one cell away.
