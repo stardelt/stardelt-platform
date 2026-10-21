@@ -11,31 +11,36 @@
 # coordinator — the label NetworkPolicy `lakekeeper-ingress` admits on 8282. It
 # writes nothing and deletes the pod on exit, including on failure.
 #
-# It prints four tables, in this order:
+# It prints five tables, in this order:
 #
 # 1. The contract: every captured (operation, resource kind) shape, asked for
 #    the three seed people and one `stardelt-admins` member. Rows are
 #    classified from the operation — `must-allow` (a person cannot use Trino
 #    without it: ExecuteQuery, SetSystemSessionProperty, ReadSystemInformation,
 #    ShowFunctions/FilterFunctions), `owner-only` (a question about someone
-#    else's query: false is by design), `admin-only` (ImpersonateUser: false
-#    today, a decision for platform#311) or `grants` (the catalog decides). A
+#    else's query: false is by design) or `grants` (the catalog decides). A
 #    `must-allow` row answered false is a DEFECT; an `owner-only` row answered
-#    true is a FAIL.
+#    true is a FAIL. `ImpersonateUser` is the exception: its asking identity is
+#    always `superset`, so it is asked in table 5.
 # 2. The operations Trino 480 did not send in this capture (FilterFunctions,
-#    CreateViewWithSelectFromColumns, ViewQueryOwnedBy, ImpersonateUser,
-#    ReadSystemInformation), asked with the shape the plugin builds for them.
+#    CreateViewWithSelectFromColumns, ViewQueryOwnedBy, ReadSystemInformation),
+#    asked with the shape the plugin builds for them.
 # 3. The reads that must keep working for an ordinary person: SELECT 1
 #    (ExecuteQuery), system.runtime.nodes, information_schema.
 # 4. The permission matrix: AccessCatalog/FilterCatalogs on finance, product,
 #    sandbox and warehouse, SelectFromColumns/InsertIntoTable/CreateSchema on
 #    the seed tables — one expectation per row and person, from the seed's
 #    grants (platform#309).
+# 5. Impersonation (platform#342): the captured `ImpersonateUser` body asked
+#    with a different asking identity per row. `superset` may act as a person
+#    (a lowercase Keycloak `sub`) and no one else may act as anyone — a person,
+#    a service account, `admin`, an uppercase UUID and a `nova`-like name are
+#    all denied. Exit 1 on any row that disagrees.
 #
 # Exit 1 when any answer is a non-JSON body, an HTTP error, an empty body or a
 # missing `result` (the bridge must always answer), when a table row
-# disagrees, or when a must-allow row is denied. `--data-only` asks table 4
-# only: it is the gate `make catalog-authz` and, after platform#311,
+# disagrees, or when a must-allow row is denied. `--data-only` asks tables 4 and
+# 5 only: they are the gate `make catalog-authz` and, after platform#311,
 # `make catalog-enforce` run before they trust the bridge.
 set -euo pipefail
 
@@ -196,18 +201,20 @@ ALLOW = "/v1/data/trino/allow"
 BATCH = "/v1/data/trino/batch"
 MUST_ALLOW = {"ExecuteQuery", "ReadSystemInformation", "SetSystemSessionProperty", "ShowFunctions", "FilterFunctions"}
 OWNER_ONLY = {"ViewQueryOwnedBy", "FilterViewQueryOwnedBy", "KillQueryOwnedBy"}
-ADMIN_ONLY = {"ImpersonateUser"}
+# ImpersonateUser is captured too, but its asking identity is the service
+# account `superset`, not a seed person — it is asked in table 5.
+IMPERSONATION = {"ImpersonateUser"}
 
 # -- table 1: every captured shape, once per principal ---------------------
 if not data_only:
     for index, request in enumerate(fixture["requests"]):
         operation = request["operation"]
+        if operation in IMPERSONATION:
+            continue
         if operation in MUST_ALLOW:
             klass = "must-allow"
         elif operation in OWNER_ONLY:
             klass = "owner-only"
-        elif operation in ADMIN_ONLY:
-            klass = "admin-only"
         else:
             klass = "grants"
         action = request["input"]["action"]
@@ -245,7 +252,7 @@ DATA_ROWS = [
     ("InsertIntoTable", "product", "seed", "nation", {"dev-finops": F, "dev-analytics": T, "dev-outsider": F, "admin": T}),
     ("SelectFromColumns", "sandbox", "seed", "nation", {"dev-finops": T, "dev-analytics": T, "dev-outsider": T, "admin": T}),
     ("InsertIntoTable", "sandbox", "seed", "nation", {"dev-finops": T, "dev-analytics": T, "dev-outsider": T, "admin": T}),
-    ("SelectFromColumns", "warehouse", "demo", "trips", {"dev-finops": T, "dev-analytics": T, "dev-outsider": T, "admin": T}),
+    ("SelectFromColumns", "warehouse", "covid", "covid_summary", {"dev-finops": T, "dev-analytics": T, "dev-outsider": T, "admin": T}),
 ]
 for operation, catalog, schema, table, expected in DATA_ROWS:
     add("mdata_%s_%s" % (operation, catalog), "matrix", operation, ALLOW,
@@ -296,15 +303,45 @@ if not data_only:
         ("probe_view_owned", "ViewQueryOwnedBy", ALLOW,
          {"operation": "ViewQueryOwnedBy", "resource": {"user": {"user": "<peer>"}}},
          "owner-only", None, {name: False for name in names}),
-        ("probe_impersonate", "ImpersonateUser", ALLOW,
-         {"operation": "ImpersonateUser", "resource": {"user": {"user": "<peer>"}}},
-         "admin-only", None, {name: False for name in names}),
         ("probe_read_system", "ReadSystemInformation", ALLOW,
          {"operation": "ReadSystemInformation"},
          "must-allow", None, {name: True for name in names}),
     ]
     for job, operation, path, action, klass, labels, expect in probes:
         add(job, "probe", operation, path, action, klass=klass, labels=labels, expect=expect)
+
+# -- table 5: impersonation (platform#342) --------------------------------
+# The captured body, asked with a different identity per row: ImpersonateUser
+# is not a question about the seed people, it is a question about who may act
+# as whom. Trino asks it while the session is created, so the captured context
+# has no `queryId`; nothing else changes.
+impersonation_capture = next(
+    request["input"] for request in fixture["requests"] if request["operation"] == "ImpersonateUser")
+person_a, person_b = subs[0], subs[1]
+IMPERSONATION_ROWS = [
+    ("superset acts as a person", "superset", person_a, True),
+    ("a name is not a person", "superset", "admin", False),
+    ("a service account is not a person", "superset", "service-account-pipeline-runner", False),
+    ("the person's sub is lowercase", "superset", person_a.upper(), False),
+    ("a person may not act as a person", person_a, person_b, False),
+    ("Nova forwards its own token", "nova", person_a, False),
+]
+for index, (label, asker, target, expected) in enumerate(IMPERSONATION_ROWS):
+    body_input = json.loads(json.dumps(impersonation_capture))
+    body_input["context"]["identity"]["user"] = asker
+    body_input["action"]["resource"]["user"]["user"] = target
+    job_id = "imp%02d" % index
+    meta[job_id] = {
+        "section": "impersonation",
+        "operation": "ImpersonateUser",
+        "label": label,
+        "asker": asker,
+        "target": target,
+        "class": "grants",
+        "labels": None,
+        "expect": expected,
+    }
+    jobs.append({"id": job_id, "path": ALLOW, "body": json.dumps({"input": body_input})})
 
 with open(out_dir + "/jobs.tsv", "w", encoding="utf-8") as jobs_file:
     for job in jobs:
@@ -404,6 +441,7 @@ sections = [
     ("probe", "2. Operations Trino 480 did not send in this capture (shape from the plugin)"),
     ("required", "3. Reads that must keep working"),
     ("matrix", "4. The permission matrix (seed grants, platform#309)"),
+    ("impersonation", "5. Impersonation — only Superset may act as a person (platform#342)"),
 ]
 
 exit_code = 0
@@ -414,10 +452,27 @@ if problems:
     exit_code = 1
 
 for section, title in sections:
-    if data_only and section != "matrix":
+    if data_only and section not in ("matrix", "impersonation"):
         continue
     print("\n" + title)
     keys = [key for key in meta if meta[key]["section"] == section]
+    if section == "impersonation":
+        width = max([len(meta[key]["asker"]) for key in keys] + [6])
+        print("%-*s  %-38s  %-6s  %s" % (width, "asking", "target", "answer", "verdict  case"))
+        for job_id in keys:
+            request_meta = meta[job_id]
+            answer = answers.get(job_id)
+            want = request_meta["expect"]
+            verdict = "ok" if answer is want else "FAIL"
+            note = ""
+            if answer is not want:
+                note = "(want %s)" % cell(want)
+                exit_code = 1
+            print("%-*s  %-38s  %-6s  %-7s %s %s" % (width, request_meta["asker"],
+                                                     request_meta["target"][:38],
+                                                     cell(answer), verdict,
+                                                     request_meta["label"], note))
+        continue
     width = max([len(meta[key]["operation"]) for key in keys] + [9])
     print("%-*s  %-40s%s  verdict" % (width, "operation", "resource",
                                       "".join("  %-24s" % name for name in names)))
@@ -454,12 +509,8 @@ for section, title in sections:
                 verdict = "FAIL"
                 note = "(allowed: %s)" % ",".join(leaked)
                 exit_code = 1
-        elif klass == "admin-only":
-            note = "(deny by design)"
         if klass == "must-allow" and verdict == "ok":
             note = "(required)"
-        if job_id == "probe_impersonate":
-            note = "(deny; Superset impersonation needs a decision in platform#311)"
         print("%-*s  %-40s%s  %-7s %s" % (width, request_meta["operation"],
                                           request_meta["label"][:40], cells, verdict, note))
 

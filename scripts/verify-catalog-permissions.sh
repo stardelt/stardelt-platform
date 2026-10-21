@@ -28,7 +28,7 @@
 #   InsertIntoTable product.seed.nation         false       true          false
 #   AccessCatalog sandbox                       true        true          true
 #   InsertIntoTable sandbox.seed.nation         true        true          true
-#   SelectFromColumns warehouse.demo.trips      true        true          true
+#   SelectFromColumns warehouse.covid.covid_summary   true        true          true
 #
 # Exit 1 on any mismatch, so `make verify-catalog-permissions` is a gate.
 set -euo pipefail
@@ -52,7 +52,7 @@ MATRIX=(
   "InsertIntoTable|product|seed|nation||false|true|false"
   "AccessCatalog|sandbox||||true|true|true"
   "InsertIntoTable|sandbox|seed|nation||true|true|true"
-  "SelectFromColumns|warehouse|demo|trips|n_name|true|true|true"
+  "SelectFromColumns|warehouse|covid|covid_summary|country|true|true|true"
 )
 
 CURL=(curl --fail-with-body --silent --show-error --max-time 30)

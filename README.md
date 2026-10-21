@@ -1302,26 +1302,43 @@ hand-written request shape, no guess about what 480 sends (`platform#333`).
 - **What the bridge must never see.** `FilterFunctions` and
   `CreateViewWithSelectFromColumns` exist in the plugin's interface, but 480 never sends
   them in this battery: `SHOW FUNCTIONS` asks `ShowFunctions`, and view creation asks
-  `CreateView` plus the underlying `SelectFromColumns`. `ImpersonateUser` only appears
+  `CreateView` plus the underlying `SelectFromColumns`. `ImpersonateUser` is asked only
   when the server authenticates a principal and then acts for a different user — which
-  is what Superset does after `platform#310`, so it is a #311 question, not a 480 one.
+  is what Superset does after `platform#310`; it is captured separately (`platform#342`,
+  see below) because the battery runs without authentication.
 - **The two facts the bridge relies on:** every data question carries
   `context.identity.user` (it becomes `oidc~<sub>`, the Lakekeeper user) and a catalog
   name under `resource.<kind>.catalogName` (or `resource.catalog.name`). A body that
   lacks either gets `false` **before** any call to Lakekeeper, which is why the
   Lakekeeper audit log shows no batch-check at all.
 
+**Who may impersonate whom** (`platform#342`). Exactly one principal may act as someone
+else, and only as a person: `superset`, the PASSWORD account Superset authenticates to
+Trino with, sending the signed-in person's Keycloak `sub` as `X-Trino-User`
+(`platform#310`). The bridge's `trino.stardelt.rego` allows that one case —
+`ImpersonateUser`, `context.identity.user == "superset"`, and
+`action.resource.user.user` matching the lowercase UUID shape of a `sub` — and denies
+everything else: any other asking principal (Nova and the notebooks forward the person's
+own token and never name another person) and any target that is not a `sub` (`admin`, a
+service account, an uppercase or otherwise non-UUID string). It is the same rule the file
+authorizer applies until the switch (`helm-values/trino-identity.yaml`,
+`impersonation`), so pointing Trino at the bridge does not widen or narrow who may act as
+whom. The replay's `impersonation` table asks all six cases, allowed and denied.
+
 **The fixture and the replay.** `scripts/tests/fixtures/trino-opa-requests.json` holds one
-request per distinct (path, operation, resource kind) — 21 shapes, 131 requests captured
-from `trinodb/trino:480` on 2026-10-21 — with the capture user replaced by `<sub>` (and the
-second user, for the query-ownership questions, by `<peer>`). Refresh it after a Trino
-upgrade:
+request per distinct (path, operation, resource kind) — 21 shapes from the 131-request
+battery against `trinodb/trino:480` on 2026-10-21, plus the `ImpersonateUser` shape from a
+second capture that day (same image, a throwaway coordinator that authenticates the name
+`superset` and asks to act as a person; it carries no `queryId` because Trino asks it while
+the session is created). The capture user is `<sub>` in every body, and `<peer>` is the
+second user in the query-ownership questions. Refresh the battery after a Trino upgrade:
 
 ```sh
 make bridge-capture    # throwaway Trino + a stub authorizer that allows and records;
                        # deletes its pod and ConfigMap, including on failure
-make bridge-replay     # the contract, the probes, the must-work reads, the matrix
-make bridge-replay --data-only   # only the matrix (the gate)
+make bridge-replay     # the contract, the probes, the must-work reads, the matrix,
+                       # the impersonation rows
+bash scripts/bridge-replay.sh --data-only   # only the matrix and impersonation (the gate)
 ```
 
 `make bridge-capture` runs the coordinator image with no authentication, the `tpch` catalog
@@ -1338,13 +1355,14 @@ authorizer.
 
 `make bridge-replay` asks every captured shape for the three seed people and one
 `stardelt-admins` member (their Keycloak `sub`), from a throwaway pod labelled like the
-coordinator so `lakekeeper-ingress` admits it to 8282. It prints four tables — the
+coordinator so `lakekeeper-ingress` admits it to 8282. It prints five tables — the
 contract, the operations 480 did not send, the reads that must keep working
-(`SELECT 1`, `system.runtime.nodes`, `information_schema`), and the permission matrix —
-and exits 1 on an HTTP error, a non-JSON body, an empty body, a missing `result`, a wrong
-matrix row, or a must-work read that is denied. `--data-only` keeps only the matrix: that
-is the regression row `make catalog-authz` runs before it trusts the bridge, and
-`make catalog-enforce` (`platform#311`) must run it too.
+(`SELECT 1`, `system.runtime.nodes`, `information_schema`), the permission matrix, and the
+impersonation rows — and exits 1 on an HTTP error, a non-JSON body, an empty body, a
+missing `result`, a wrong matrix or impersonation row, or a must-work read that is denied.
+`--data-only` keeps the matrix and the impersonation rows: that is the regression check
+`make catalog-authz` runs before it trusts the bridge, and `make catalog-enforce`
+(`platform#311`) must run it too.
 
 **The decision for unmapped catalogs.** The bridge gets `allowUnmanagedCatalogs: true`, so
 any catalog that is not in `catalogs.rego` is allowed without asking Lakekeeper. That is
@@ -1363,10 +1381,11 @@ everyone: those catalogs are not ours to govern.
 | `SetSystemSessionProperty` | denied for everyone | allowed | Trino asks it before *any* `SET SESSION`; the chart had no rule, so `SET SESSION query_max_run_time` failed for every person |
 | `FilterFunctions` on a managed catalog | denied (empty `SHOW FUNCTIONS`) | allowed with `browse` | a function list is metadata; it follows the same `get_config` question as the catalog |
 | `AccessCatalog`, `SelectFromColumns`, `InsertIntoTable`, `CreateSchema`, `FilterCatalogs` | correct | correct | the 21-shape table showed no defect here — the nine-row matrix and the replay agree |
-| `ImpersonateUser` | denied | denied | **open for #311**: the OPA bridge has no rule for it, so Superset's impersonation (`platform#310`) would stop working the moment Trino's authorizer becomes OPA. The file rule in `helm-values/trino-identity.yaml` cannot survive the switch. |
+| `ImpersonateUser` | denied for everyone | allowed for `superset` acting as a `sub`; denied otherwise | **platform#342**: Trino asks it for Superset's impersonation (`platform#310`), so the switch would have refused every Superset query. The bridge now applies the same rule as the file authorizer. |
 
-The two fixes are one small policy in `helm-values/lakekeeper.yaml`
-(`OPABridge.customPolicies.trino.stardelt.rego`), proved by `make bridge-replay`. The
+The three rules are one small policy in `helm-values/lakekeeper.yaml`
+(`OPABridge.customPolicies.trino.stardelt.rego`), proved by `make bridge-replay`, which
+also carries the `warehouse.covid.covid_summary` row in place of the removed demo schema. The
 symptom the reporter saw after `make catalogs` in `platform#308` — every catalog question
 `false`, no batch-check in Lakekeeper — does **not** reproduce: the chart's
 `checksum/opa-policies` annotation rolls the bridge pod whenever the generated
@@ -1421,7 +1440,7 @@ Trino coordinator so `lakekeeper-ingress` admits it):
 | `InsertIntoTable product.seed.nation` | false | true | false |
 | `AccessCatalog sandbox` | true | true | true |
 | `InsertIntoTable sandbox.seed.nation` | true | true | true |
-| `SelectFromColumns warehouse.demo.trips` | true | true | true |
+| `SelectFromColumns warehouse.covid.covid_summary` | true | true | true |
 
 `AccessCatalog` is `browse` (Lakekeeper `describe`) — on a catalog it is also the ability
 to address it, which is why it differs from a table's `select`. `warehouse` keeps today's

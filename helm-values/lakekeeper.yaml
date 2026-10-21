@@ -65,6 +65,12 @@ OPABridge:
   #     catalogs (system, tpch, tpcds) are already allowed through
   #     allowUnmanagedCatalogs.
   #
+  # And one rule is not about a catalog at all: Impersonation (platform#310,
+  # #342) — the `superset` service account may act as one person (a Keycloak
+  # `sub`), and nobody else may act as anyone. Its request shape is pinned by a
+  # capture: Trino asks it while the session is created, so it carries no
+  # `queryId`.
+  #
   # Every rule here is proved by `make bridge-replay`; the file is the "one
   # small policy" the ticket allows, not a second policy layer.
   customPolicies:
@@ -84,6 +90,20 @@ OPABridge:
       allow if {
       	input.action.operation in ["ShowFunctions", "FilterFunctions"]
       	require_catalog_access_simple(_function_catalog, "get_config")
+      }
+
+      # Superset's service account may act as a person, only as a person (a
+      # Keycloak `sub`, platform#310 and #342). Trino asks this when the
+      # authenticated principal is not the name the client asks to run as:
+      # `superset` (PASSWORD) sends the signed-in person's `sub` as
+      # `X-Trino-User`. Nothing wider — every other asking principal (Nova and
+      # the notebooks forward the person's own token) and every target that is
+      # not a lowercase UUID stays denied. This is the rule the file authorizer
+      # applies until the switch (#311).
+      allow if {
+      	input.action.operation == "ImpersonateUser"
+      	input.context.identity.user == "superset"
+      	regex.match(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`, input.action.resource.user.user)
       }
   resources:
     requests: { cpu: "20m", memory: "48Mi" }
