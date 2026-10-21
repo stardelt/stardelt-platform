@@ -294,34 +294,19 @@ def test_unsupported_dtypes(trino):
 # spark, connection -------------------------------------------------------------
 
 
-def test_spark_reads_remote_from_env(trino, monkeypatch):
-    seen = {}
-
-    class FakeBuilder:
-        def remote(self, url):
-            seen["remote"] = url
-            return self
-
-        def appName(self, name):
-            seen["app"] = name
-            return self
-
-        def getOrCreate(self):
-            return "session"
-
-    fake_sql = types.ModuleType("pyspark.sql")
-    fake_sql.SparkSession = types.SimpleNamespace(builder=FakeBuilder())
-    fake_pyspark = types.ModuleType("pyspark")
-    monkeypatch.setitem(sys.modules, "pyspark", fake_pyspark)
-    monkeypatch.setitem(sys.modules, "pyspark.sql", fake_sql)
+def test_spark_reads_remote_from_env(fake_spark, monkeypatch):
+    monkeypatch.setattr(stardelt, "sql", lambda _query: _catalogs("warehouse"))
+    monkeypatch.setattr(stardelt, "_token", lambda: "canary-token-317")
 
     monkeypatch.setenv("SPARK_REMOTE", "sc://other:15002")
-    assert stardelt.spark() == "session"
-    assert seen == {"remote": "sc://other:15002", "app": "stardelt-notebook"}
+    stardelt.spark()
+    assert fake_spark.sessions[-1].configs["spark.remote"] == "sc://other:15002"
+    assert fake_spark.sessions[-1].configs["spark.app.name"] == "stardelt-notebook"
 
+    stardelt._SPARK_SESSION = None
     monkeypatch.delenv("SPARK_REMOTE")
     stardelt.spark()
-    assert seen["remote"] == stardelt.SPARK_REMOTE_DEFAULT
+    assert fake_spark.sessions[-1].configs["spark.remote"] == stardelt.SPARK_REMOTE_DEFAULT
 
 
 def test_spark_docstring_states_credential_limitation():
@@ -411,3 +396,234 @@ def test_refused_token_request_names_the_client_not_the_secret(trino, pipeline_e
     message = str(exc.value)
     assert "sp-analytics" in message and "401" in message
     assert "canary-secret-1f3a" not in message
+
+
+# spark: the person's catalogs and the person's token -------------------------
+#
+# Spark is not installed in CI; a fake ``pyspark.sql.SparkSession`` records the
+# builder options. The real behaviour — a session that lists and reads the
+# catalogs Trino lists, and is refused by Lakekeeper otherwise — is proved in
+# the ticket's cluster gates, not here.
+
+
+class FakeSparkConf:
+    """Records ``conf.set`` on the fake session, as the helper uses it."""
+
+    def __init__(self, values):
+        self.values = values
+
+    def set(self, key, value):
+        self.values[key] = value
+
+    def get(self, key, default=None):
+        return self.values.get(key, default)
+
+
+class FakeSparkCatalog:
+    """Spark's catalog handle: loading a name is what makes SHOW CATALOGS list it."""
+
+    def __init__(self, module):
+        self.module = module
+        self.current = "spark_catalog"
+        self.loaded = []
+
+    def currentCatalog(self):
+        return self.current
+
+    def setCurrentCatalog(self, name):
+        if name in self.module.refused:
+            raise RuntimeError(f"catalog {name} refused")
+        self.current = name
+        self.loaded.append(name)
+
+
+class FakeSparkSession:
+    def __init__(self, module, options):
+        self.configs = dict(options)
+        self.conf = FakeSparkConf(self.configs)
+        self.catalog = FakeSparkCatalog(module)
+        self.stopped = False
+
+    def stop(self):
+        self.stopped = True
+
+
+class FakeSparkBuilder:
+    def __init__(self, module):
+        self.module = module
+        self.options = {}
+
+    def remote(self, url):
+        self.options["spark.remote"] = url
+        return self
+
+    def appName(self, name):
+        self.options["spark.app.name"] = name
+        return self
+
+    def create(self):
+        if self.module.fail_with is not None:
+            raise RuntimeError(self.module.fail_with)
+        session = FakeSparkSession(self.module, self.options)
+        self.module.sessions.append(session)
+        return session
+
+
+class FakeSparkModule:
+    """Stands in for ``pyspark.sql.SparkSession``: a new builder per access."""
+
+    def __init__(self):
+        self.sessions = []
+        self.fail_with = None
+        self.refused = set()
+
+    @property
+    def builder(self):
+        return FakeSparkBuilder(self)
+
+
+@pytest.fixture
+def fake_spark(monkeypatch):
+    module = FakeSparkModule()
+    pyspark = types.ModuleType("pyspark")
+    pyspark_sql = types.ModuleType("pyspark.sql")
+    pyspark_sql.SparkSession = module
+    pyspark.sql = pyspark_sql
+    monkeypatch.setitem(sys.modules, "pyspark", pyspark)
+    monkeypatch.setitem(sys.modules, "pyspark.sql", pyspark_sql)
+    monkeypatch.setattr(stardelt, "_SPARK_SESSION", None)
+    monkeypatch.setattr(stardelt, "_SPARK_TOKEN", None)
+    monkeypatch.setenv("SPARK_REMOTE", "sc://spark.example:15002")
+    monkeypatch.delenv("STARDELT_CATALOG_URI", raising=False)
+    monkeypatch.delenv("STARDELT_S3_ENDPOINT", raising=False)
+    return module
+
+
+def _catalogs(*names):
+    return pd.DataFrame({"Catalog": list(names)})
+
+
+@pytest.fixture
+def visible_catalogs(monkeypatch):
+    monkeypatch.setattr(stardelt, "sql", lambda _query: _catalogs("warehouse", "bronze"))
+    monkeypatch.setattr(stardelt, "_token", lambda: "canary-token-317")
+    return ["warehouse", "bronze"]
+
+
+def test_sets_catalog_conf_for_visible_names_only(fake_spark, visible_catalogs):
+    session = stardelt.spark("app")
+    assert session.configs["spark.remote"] == "sc://spark.example:15002"
+    assert session.configs["spark.app.name"] == "app"
+    for name in ("warehouse", "bronze"):
+        assert (
+            session.configs[f"spark.sql.catalog.{name}"]
+            == "org.apache.iceberg.spark.SparkCatalog"
+        )
+        assert session.configs[f"spark.sql.catalog.{name}.type"] == "rest"
+        assert session.configs[f"spark.sql.catalog.{name}.warehouse"] == name
+        assert session.configs[f"spark.sql.catalog.{name}.token"] == "canary-token-317"
+        assert (
+            session.configs[f"spark.sql.catalog.{name}.io-impl"]
+            == "org.apache.iceberg.aws.s3.S3FileIO"
+        )
+    assert session.configs["spark.sql.catalog.warehouse.uri"] == stardelt.CATALOG_URI_DEFAULT
+    assert (
+        session.configs["spark.sql.catalog.warehouse.s3.endpoint"]
+        == stardelt.S3_ENDPOINT_DEFAULT
+    )
+    assert session.configs["spark.sql.catalog.warehouse.s3.region"] == "us-east-1"
+    assert session.configs["spark.sql.catalog.warehouse.s3.path-style-access"] == "true"
+    assert "spark.sql.catalog.system" not in session.configs
+    assert set(session.catalog.loaded) == {"warehouse", "bronze"}
+    assert session.catalog.current == "warehouse"
+
+
+def test_hidden_and_invalid_names_skipped(fake_spark, monkeypatch):
+    monkeypatch.setattr(
+        stardelt,
+        "sql",
+        lambda _query: _catalogs(
+            "warehouse", "system", "information_schema", "memory", "tpch", "tpcds", "jmx",
+            "Upper", "a" * 41, "ok9",
+        ),
+    )
+    monkeypatch.setattr(stardelt, "_token", lambda: "canary-token-317")
+    session = stardelt.spark()
+    configured = {
+        key[len("spark.sql.catalog."):]
+        for key in session.configs
+        if key.startswith("spark.sql.catalog.") and key.count(".") == 3
+    }
+    assert configured == {"warehouse", "ok9"}
+    assert set(session.catalog.loaded) == {"warehouse", "ok9"}
+    assert session.catalog.current == "warehouse"
+
+
+def test_refused_catalog_is_not_loaded_but_others_are(fake_spark, monkeypatch):
+    fake_spark.refused = {"bronze"}
+    monkeypatch.setattr(stardelt, "_token", lambda: "canary-token-317")
+    monkeypatch.setattr(stardelt, "sql", lambda _query: _catalogs("warehouse", "bronze"))
+    session = stardelt.spark()
+    assert "warehouse" in session.catalog.loaded
+    assert "bronze" not in session.catalog.loaded
+    assert session.catalog.current == "warehouse"
+
+
+def test_token_in_conf_never_printed_or_in_errors(
+    fake_spark, visible_catalogs, capsys, monkeypatch
+):
+    token = "canary-token-in-error-8f2c"
+    fake_spark.fail_with = f"the client refused {token}"
+    monkeypatch.setattr(stardelt, "_token", lambda: token)
+    with pytest.raises(RuntimeError) as exc:
+        stardelt.spark()
+    captured = capsys.readouterr()
+    assert token not in str(exc.value)
+    assert token not in captured.out and token not in captured.err
+    assert "the client refused" in str(exc.value)
+
+
+def test_second_call_refreshes_token(fake_spark, monkeypatch):
+    tokens = iter(["token-one-317", "token-two-317"])
+    monkeypatch.setattr(stardelt, "_token", lambda: next(tokens))
+    monkeypatch.setattr(stardelt, "sql", lambda _query: _catalogs("warehouse"))
+    first = stardelt.spark()
+    assert first.configs["spark.sql.catalog.warehouse.token"] == "token-one-317"
+    second = stardelt.spark()
+    assert second.configs["spark.sql.catalog.warehouse.token"] == "token-two-317"
+    assert first.stopped
+    assert len(fake_spark.sessions) == 2
+
+
+def test_trino_down_falls_back_to_warehouse(fake_spark, monkeypatch, capsys):
+    def boom(_query):
+        raise RuntimeError("Trino is down")
+
+    monkeypatch.setattr(stardelt, "sql", boom)
+    monkeypatch.setattr(stardelt, "_token", lambda: "canary-token-317")
+    session = stardelt.spark()
+    configured = {
+        key[len("spark.sql.catalog."):]
+        for key in session.configs
+        if key.startswith("spark.sql.catalog.") and key.count(".") == 3
+    }
+    assert configured == {"warehouse"}
+    assert "only the warehouse catalog" in capsys.readouterr().err
+    assert "canary-token-317" not in capsys.readouterr().err
+
+
+def test_default_catalog_warehouse_when_present(fake_spark, monkeypatch):
+    monkeypatch.setattr(stardelt, "_token", lambda: "canary-token-317")
+    monkeypatch.setattr(stardelt, "sql", lambda _query: _catalogs("bronze"))
+    assert "spark.sql.defaultCatalog" not in stardelt.spark().configs
+    stardelt._SPARK_SESSION = None
+    monkeypatch.setattr(stardelt, "sql", lambda _query: _catalogs("warehouse", "bronze"))
+    assert stardelt.spark().configs["spark.sql.defaultCatalog"] == "warehouse"
+
+
+def test_env_overrides_for_uri_and_s3(fake_spark, visible_catalogs, monkeypatch):
+    monkeypatch.setenv("STARDELT_CATALOG_URI", "http://catalog.example:8181/catalog")
+    monkeypatch.setenv("STARDELT_S3_ENDPOINT", "http://s3.example:8333")
+    session = stardelt.spark()
+    assert session.configs["spark.sql.catalog.warehouse.uri"] == "http://catalog.example:8181/catalog"
+    assert session.configs["spark.sql.catalog.bronze.s3.endpoint"] == "http://s3.example:8333"

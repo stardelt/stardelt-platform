@@ -68,8 +68,10 @@ Nova writes to that bucket with `NOVA_S3_URL`, `NOVA_S3_ACCESS_KEY` and `NOVA_S3
 consumer already use — no new identity) and `NOVA_S3_NOTEBOOK_BUCKET=notebooks`. A notebook may
 call Nova with the token it already holds: the hub token carries audience `nova` through the
 `aud-nova` mapper on the `jupyterhub` and `stardelt-dev` clients (`make sync-nova-audience`, run by
-`make install-identity`). The publish, list and version routes themselves are in stardelt-nova#225;
-this repository creates the bucket and wires the identity.
+`make install-identity`). The same tokens carry audience `lakekeeper` through `aud-lakekeeper`
+(`make sync-catalog-audience`), which is what `stardelt.spark()` needs for the catalog. The publish,
+list and version routes themselves are in stardelt-nova#225; this repository creates the bucket and
+wires the identity.
 
 ---
 
@@ -327,7 +329,8 @@ and, with it, a way to query the warehouse **as themselves**.
 * **Notebook.** A `postStart` hook copies `/opt/stardelt/notebooks/*.ipynb` into the home
   directory the first time only (`cp -n`), so a user's edits survive restarts. The quickstart
   connects with `trino.auth.JWTAuthentication(os.environ["TRINO_TOKEN"])`, asserts
-  `SELECT current_user` equals the hub user, lists schemas and queries `warehouse.demo.trips`.
+  `SELECT current_user` equals the hub user, lists schemas and queries
+  `warehouse.covid.covid_summary`.
 * **Endpoint.** With an IdP the hub overrides `TRINO_URL` at spawn
   (`25-notebook-trino` in `hub.extraConfig`) to the coordinator's **in-cluster HTTPS**
   endpoint, `https://trino.stardelt.svc.cluster.local:8443`, and points the `trino` Python
@@ -340,9 +343,9 @@ and, with it, a way to query the warehouse **as themselves**.
   notebook holds the token in its environment for a whole session, where the realm's 5-minute
   default would mean 401s minutes after spawn. Restarting the server re-mints it
   (`refresh_pre_spawn`); after the 10 h SSO session the user signs in again.
-* **Spark.** The quickstart's Spark cell reads `warehouse.demo.trips` through Spark Connect, the
-  second engine over the same catalog. Spark is optional (`make install-spark`); the cell reports
-  what it found when the endpoint is absent. The singleuser NetworkPolicy grants egress to exactly
+* **Spark.** The quickstart's Spark cell reads `warehouse.covid.covid_summary` through Spark
+  Connect with the person's token and the catalogs Trino lists for them (platform#317). Spark is
+  optional (`make install-spark`); the cell reports what it found when the endpoint is absent. The singleuser NetworkPolicy grants egress to exactly
   two private destinations — the `spark-connect` pods on 15002 (see "Spark") and the Trino
   coordinator on 8443 (the in-cluster TLS endpoint above) — everything else private stays denied.
 * **Git.** The image ships the `git` binary plus `jupyterlab-git` (Git panel in JupyterLab) and
@@ -454,7 +457,7 @@ that calls the Iceberg REST catalog has its own confidential service client inst
 |---|---|
 | `svc-catalog-trino` | the Trino coordinator |
 | `svc-catalog-nova` | Nova |
-| `svc-catalog-spark` | the Spark Connect driver |
+| `svc-catalog-spark` | reserved for a future platform-side Spark path; the Spark Connect driver now uses the person's token (#317) |
 | `svc-catalog-airflow` | the Airflow task pods |
 | `svc-catalog-bootstrap` | the Lakekeeper bootstrap Job |
 | `svc-catalog-bridge` | the OPA bridge sidecar in the Lakekeeper pod (platform#303) |
@@ -477,18 +480,18 @@ anonymous request is `401` and the audience must be `lakekeeper` — but authori
 `allowall`, so a valid client may read and change every table's metadata. The seven-client split
 is what makes the next step possible: one caller can be narrowed or revoked at a time.
 
-*Catalog sign-in for Trino, Spark Connect and the bootstrap Job (platform#283, step 2).* Those
-three callers now obtain a token from the realm's token endpoint and send it as
+*Catalog sign-in for Trino and the bootstrap Job (platform#283, step 2).* Those
+callers obtain a token from the realm's token endpoint and send it as
 `Authorization: Bearer` on every catalog call; Lakekeeper validates it since platform#285.
 Trino's `warehouse` catalog gains `iceberg.rest-catalog.security=OAUTH2` plus the credential and
 token-endpoint properties in `helm-values/trino-identity.yaml` (not in the base values: Trino
 refuses to load a catalog with `security=OAUTH2` and no credential, and the base values are also
 the `install-core` path, which has no IdP). Coordinator and workers read `client-id` and
 `client-secret` from Secret `svc-catalog-trino` through their environment, so each JVM does its own
-exchange, and Reloader restarts them when that Secret rotates. The Spark Connect driver builds
-`spark.sql.catalog.warehouse.credential` and `.oauth2-server-uri` at startup from Secret
-`svc-catalog-spark` (`images/spark/spark-connect-entrypoint.sh`) — the credential never enters
-`spark-defaults.conf`. The bootstrap Job mounts Secret `svc-catalog-bootstrap` as files and sends
+exchange, and Reloader restarts them when that Secret rotates. The Spark Connect driver does not
+sign in as a service client any more: since platform#317 each session carries the person's token
+(`stardelt.spark()`), and `svc-catalog-spark` remains a realm client for a future platform-side
+path. The bootstrap Job mounts Secret `svc-catalog-bootstrap` as files and sends
 the token on every management call (`--data-urlencode client_secret@file`, `-H @file`), so neither
 the secret nor the token appears in argv or a log line. **The requested scope is
 `openid`**: the realm has neither a `lakekeeper` client scope nor Iceberg's default
@@ -1450,9 +1453,16 @@ an unseed if you want Trino to forget the removed catalogs before the next seed.
 ## Spark — heavy compute on the same Iceberg tables
 
 Spark is the heavy-compute plug of the master spec (§5 #14): a **Spark Connect**
-endpoint in the cluster, wired to the same `warehouse` catalog as Trino. A table
+endpoint in the cluster, reading the same Iceberg tables as Trino. A table
 written by one engine is a table of the other — no copy, no second catalog, no
 second credential store for table data.
+
+Since platform#317 the catalog is **per person**, not the shared service client:
+`stardelt.spark()` asks Trino which catalogs the signed-in person may see, then
+creates a session with one Iceberg REST catalog per name and that person's token.
+Lakekeeper decides, so Spark sees the same catalogs and the same grants as the
+person's Trino session — and a catalog they may not see is refused by the catalog,
+not by a list in Spark.
 
 ```sh
 make install-spark     # manifests/spark.yaml: Deployment + Service + ConfigMap + RBAC
@@ -1464,23 +1474,44 @@ Endpoint (ClusterIP only — there is deliberately no Ingress):
 sc://spark-connect.stardelt.svc.cluster.local:15002
 ```
 
-From a notebook or a scheduled job (PySpark Connect client,
-`pip install pyspark-client==4.1.3`), the catalog is the server-side default:
+From a notebook, use the helper the single-user image ships. It sets the catalogs
+and the token for you:
+
+```python
+import stardelt
+
+spark = stardelt.spark()          # every catalog Trino lists for you, with your token
+spark.sql("SELECT country, confirmed_cases FROM warehouse.covid.covid_summary").show()
+spark.sql("SHOW CATALOGS").show()
+```
+
+A scheduled job (PySpark Connect client, `pip install pyspark-client==4.1.3`) has no
+hub token, so it builds the same session itself and passes its own token:
 
 ```python
 from pyspark.sql import SparkSession
 
-spark = SparkSession.builder.remote(
+builder = SparkSession.builder.remote(
     "sc://spark-connect.stardelt.svc.cluster.local:15002"
-).getOrCreate()
-
-spark.sql("SELECT borough, count(*) AS n FROM warehouse.demo.trips GROUP BY borough ORDER BY n DESC").show()
-spark.sql("SELECT * FROM warehouse.demo.trips").count()
+).appName("nightly-load")
+builder = builder.config("spark.sql.catalog.warehouse", "org.apache.iceberg.spark.SparkCatalog")
+for key, value in {
+    "type": "rest",
+    "uri": "http://lakekeeper.stardelt.svc.cluster.local:8181/catalog",
+    "warehouse": "warehouse",
+    "token": token,               # the pod's own principal, audience lakekeeper
+    "io-impl": "org.apache.iceberg.aws.s3.S3FileIO",
+    "s3.endpoint": "http://seaweedfs-s3.stardelt.svc.cluster.local:8333",
+    "s3.region": "us-east-1",
+    "s3.path-style-access": "true",
+}.items():
+    builder = builder.config(f"spark.sql.catalog.warehouse.{key}", value)
+spark = builder.create()          # create(), not getOrCreate(): a fresh session per token
 ```
 
-The quickstart notebook in the single-user image runs exactly that — it reads
-`warehouse.demo.trips` through Spark and prints the row count, so one click in Nova's Notebooks
-page proves the second engine as well as the first.
+The quickstart notebook's Spark cell uses `stardelt.spark()` and prints the count
+of `warehouse.covid.covid_summary` (`demo` was removed on 2026-10-21), so one click
+in Nova's Notebooks page proves the second engine as well as the first.
 
 Notebook pods reach the endpoint because the JupyterHub chart's singleuser NetworkPolicy carries
 one egress rule for it (`helm-values/jupyterhub.yaml`): `podSelector:
@@ -1518,35 +1549,59 @@ driver only when the ConfigMap actually changed.
 
 ### Catalog wiring
 
-The `spark-defaults.conf` keys mirror `helm-values/trino.yaml`, property for property:
+`spark-defaults.conf` carries **no catalog block** (platform#317). Spark 4.1 reads
+`spark.sql.catalog.*` when it creates the session state, so the helper sends one
+`spark.sql.catalog.<name>` group per visible catalog as session configuration:
 
-| Spark | Trino | Value |
-|---|---|---|
-| `spark.sql.catalog.warehouse.type` | `iceberg.catalog.type` | `rest` |
-| `spark.sql.catalog.warehouse.uri` | `iceberg.rest-catalog.uri` | `http://lakekeeper.stardelt.svc.cluster.local:8181/catalog` |
-| `spark.sql.catalog.warehouse.warehouse` | `iceberg.rest-catalog.warehouse` | `warehouse` |
-| `spark.sql.catalog.warehouse.s3.endpoint` | `s3.endpoint` | `http://seaweedfs-s3.stardelt.svc.cluster.local:8333` |
-| `spark.sql.catalog.warehouse.s3.path-style-access` | `s3.path-style-access` | `true` |
+| Spark property (per catalog) | Value |
+|---|---|
+| `spark.sql.catalog.<name>` | `org.apache.iceberg.spark.SparkCatalog` |
+| `spark.sql.catalog.<name>.type` | `rest` |
+| `spark.sql.catalog.<name>.uri` | `http://lakekeeper.stardelt.svc.cluster.local:8181/catalog` (`STARDELT_CATALOG_URI`) |
+| `spark.sql.catalog.<name>.warehouse` | the catalog name |
+| `spark.sql.catalog.<name>.token` | the signed-in person's token (`_token()`) |
+| `spark.sql.catalog.<name>.io-impl` | `org.apache.iceberg.aws.s3.S3FileIO` |
+| `spark.sql.catalog.<name>.s3.endpoint` | `http://seaweedfs-s3.stardelt.svc.cluster.local:8333` (`STARDELT_S3_ENDPOINT`) |
+| `spark.sql.catalog.<name>.s3.region` | `us-east-1` |
+| `spark.sql.catalog.<name>.s3.path-style-access` | `true` |
+
+`spark.sql.defaultCatalog` is `warehouse` when that catalog is among the visible
+ones. The helper creates a fresh Connect session (`create()`, not `getOrCreate()`:
+the latter returns the process-wide session and would leak one person's catalogs
+and token into the next call), sets these properties before the first catalog
+call, then loads each catalog once (`setCurrentCatalog`) so `SHOW CATALOGS` lists
+the session's catalogs. A catalog the catalog itself refuses is left out with a
+one-line warning; if every catalog is refused (typically a token without
+`aud=lakekeeper`), `spark()` raises instead of returning an empty session. A
+renewed token gets a new session; the previous one is stopped — setting `.token`
+again on a live session does not re-key an initialized catalog (gate G5).
 
 Lakekeeper runs without vended credentials, so both engines sign their own S3
 requests. Spark gets the credentials from Secret `stardelt-s3-creds` through
 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` on the driver and through
 `spark.kubernetes.executor.secretKeyRef.*` on every executor; nothing is written
-into a config file.
+into a config file. Storage credentials stay platform-side (platform#272); the
+person's token governs the catalog, not the data files.
 
 ### Catalog authorization
 
-Four facts about the enforcement path (platform#285, platform#304):
+The enforcement path (platform#285, platform#304, platform#317):
 
 1. **Authentication is the token.** Lakekeeper validates the bearer against the realm
    (`LAKEKEEPER__OPENID_PROVIDER_URI`, audience `lakekeeper`); without one, every
-   request is 401.
+   request is 401. The hub's and the developer client's tokens get the audience from
+   `make sync-catalog-audience` (an `aud-lakekeeper` mapper on `jupyterhub` and
+   `stardelt-dev`, declared in `chart/files/keycloak-realm.json`). A hub user picks it
+   up on the next spawn or sign-in.
 2. **Authorization is OpenFGA.** Every catalog request is decided against tuples in
-   OpenFGA (via the OPA bridge sidecar); a valid token without a grant is 403.
-   Grants are keyed by `oidc~<sub>`; authenticating does not create a user row.
-3. **Trino is inside the trust boundary.** Its coordinator signs in as
-   `svc-catalog-trino` (`data_admin`); the bridge answers its decisions, and the
-   NetworkPolicy admits TCP 8282 only from the coordinator.
+   OpenFGA (via the OPA bridge sidecar); a valid token without a grant is 403 — for a
+   catalog the person may not even browse, Lakekeeper answers 404 instead of revealing
+   that it exists. Grants are keyed by `oidc~<sub>`; authenticating does not create a
+   user row.
+3. **The person is the driver's authority.** The Spark driver does the catalog calls;
+   executors only read data files. There is no service client on the Spark path, so a
+   session cannot see more than its person. `svc-catalog-spark` stays a realm client
+   for a future platform-side path, unused by this one.
 4. **The bridge's client is a god credential.** `svc-catalog-bridge` holds
    `project_admin` on the project, so it can change every grant. Treat its Secret like
    the realm admin Secret; it is read by the sidecar, never mounted into other pods.
@@ -1604,17 +1659,23 @@ do not widen the policy with a namespace selector.
 
 ### Verifying the spine
 
-`scripts/verify-spark-iceberg.py` is the repeatable proof: it compares `count(*)`
-and a `GROUP BY` on `warehouse.demo.trips` between Spark and Trino, then runs a
-two-way round trip — Trino writes a table Spark reads, Spark writes a table Trino
-reads — in a scratch namespace it drops again. Run it from any pod that can reach
-both services:
+`scripts/verify-spark-iceberg.py` is the repeatable proof: it configures
+`warehouse` itself (there is no static catalog), with `TRINO_TOKEN` as the
+catalog token, compares `count(*)` and a `GROUP BY` on
+`warehouse.covid.covid_summary` between Spark and Trino, then runs a two-way
+round trip — Trino writes a table Spark reads, Spark writes a table Trino reads —
+in a scratch namespace it drops again. Run it from any pod that can reach both
+services with a token that carries `aud=lakekeeper` and `aud=trino`:
 
 ```sh
 kubectl -n stardelt run spark-verify --image=python:3.11-slim --restart=Never --command -- sleep infinity
 kubectl -n stardelt exec spark-verify -- pip install pyspark-client==4.1.3
 kubectl -n stardelt cp scripts/verify-spark-iceberg.py spark-verify:/tmp/verify.py
-kubectl -n stardelt exec spark-verify -- python3 /tmp/verify.py
+# Put the person's token in the pod without printing it, then:
+kubectl -n stardelt exec spark-verify -- sh -c \
+  'TRINO_URL=https://trino.stardelt.svc.cluster.local:8443 \
+   REQUESTS_CA_BUNDLE=/etc/stardelt/trino-ca/ca.crt TRINO_TOKEN="$TOKEN" \
+   python3 /tmp/verify.py'
 kubectl -n stardelt delete pod spark-verify
 ```
 
@@ -1631,9 +1692,17 @@ The CRD path is the follow-up, not a reason to make this node heavier today.
 
 Spark Connect has no built-in authentication (upstream points at authenticating
 proxies). The endpoint is therefore ClusterIP-only: anyone who can create pods in
-`stardelt` can query through it, exactly like the current Lakekeeper `allowall`
-catalog. Wiring Connect behind the platform IdP is a follow-up with the CRD work,
-not something to expose on an Ingress before then.
+`stardelt` can open a session and present any token they hold. The catalog still
+decides what that token may read, and a session without a valid `aud=lakekeeper`
+token gets 401 — but the endpoint itself is not an identity boundary. Wiring
+Connect behind the platform IdP is a follow-up with the CRD work, not something
+to expose on an Ingress before then.
+
+Two more limits, deliberately not hidden: row and column masks are Trino-only
+(design `multitenant-catalogs.md` §5.8), so a Spark read is governed by table
+grants, not by a mask; and the driver/executors sign S3 with the platform key,
+so a person with write access to a table can write files the key reaches even
+where Trino would refuse. Use Spark where Trino cannot, not to bypass a policy.
 
 If the driver is killed hard, its executor pods can outlive it. They are labelled
 and safe to delete:
@@ -1658,14 +1727,15 @@ kubectl -n stardelt delete pods -l spark-role=executor
 | `verify-backups` | Full WAL check: `spec.backup` + the newest object in `s3://backups/lakekeeper-pg/wals/` is younger than `MAX_AGE_SECONDS` (900) + it matches `pg_stat_archiver.last_archived_wal`. `SKIP_OBJECTS=1` skips the S3 half |
 | `verify-backups-identity` | Same full WAL check for `keycloak-pg` (`s3://backups/keycloak-pg/wals/`) |
 | `install-notebooks` | JupyterHub (notebooks) |
-| `install-spark` | Spark Connect endpoint (`manifests/spark.yaml`), wired to the same Lakekeeper catalog as Trino; restarts the driver only when its ConfigMap changed |
+| `install-spark` | Spark Connect endpoint (`manifests/spark.yaml`); catalogs are per person in the session (platform#317), no static catalog in the ConfigMap. Restarts the driver only when its ConfigMap changed |
 | `openfga` | OpenFGA permission store + its CNPG Postgres (`helm-values/openfga.yaml`, `manifests/openfga-pg.yaml`); not wired to Lakekeeper until the cutover (#302) |
-| `install-identity` | Platform IdP: Keycloak + CNPG Postgres + realm `stardelt`, then the realm-admin sync + guard, the user-management roles/brute-force sync, the client-secret sync + guard, the live-realm Trino client and the Trino OAuth2 overlay (`BASE_DOMAIN=…`, see [Identity](#identity-optional-platform-idp)) |
+| `install-identity` | Platform IdP: Keycloak + CNPG Postgres + realm `stardelt`, then the realm-admin sync + guard, the user-management roles/brute-force sync, the client-secret sync + guard, the live-realm Trino client, the Nova and catalog audiences, and the Trino OAuth2 overlay (`BASE_DOMAIN=…`, see [Identity](#identity-optional-platform-idp)) |
 | `sync-realm-admin` | Point realm `stardelt`'s `admin` at Secret `stardelt-realm-admin` through the master-realm API; idempotent, runs as part of `install-identity`/`chart-install` (#81) |
 | `verify-realm-admin` | Prove the realm-admin Secret still signs in — a real password grant as that user through `svc/keycloak`; fails with the fix in the message |
 | `sync-realm-user-management` | Grant `stardelt-admins` the four `realm-management` user-management roles and enforce brute-force protection on the live realm; idempotent, runs with both install paths |
 | `sync-oidc-clients` | Point the realm's confidential clients (`nova`, `superset`, `airflow`, `jupyterhub`; delegates `trino`) at Secret `stardelt-oidc-clients`; probe-first, idempotent, never prints a value (#85) |
 | `verify-oidc-clients` | Prove every client secret still authenticates at the token endpoint (`invalid_grant` vs `unauthorized_client`) and matches what the realm stores; names the drifting clients and the fix |
+| `sync-catalog-audience` | Add/repair the `aud-lakekeeper` mapper on `jupyterhub` and `stardelt-dev` (the control client `superset` must not carry it), prove it with Keycloak's evaluate call; idempotent, runs with `install-identity` (#317) |
 | `sync-catalog-clients` | Create/converge the seven catalog-caller service clients (`svc-catalog-*`) and their Secrets, audience `lakekeeper`, no group; idempotent (#282, #303; Lakekeeper validates them since #285) |
 | `delete-catalog-clients` | Delete those seven clients and Secrets; only `stardelt-managed=service` clients, needs `YES=1` |
 | `access-sync` | Create/refresh ConfigMap `access-sync-script` and apply CronJob `access-sync` — one Lakekeeper warehouse per `Catalog`, its `owner`/`grants` on that warehouse (platform#305, #306) |

@@ -1,31 +1,36 @@
 #!/usr/bin/env python3
-"""Prove that Spark Connect and Trino read/write the same Iceberg tables.
+"""Prove that Spark Connect and Trino read/write the same Iceberg table.
 
 Run from a pod that can reach both services, with the Spark Connect client
-installed (it does not need a Spark installation):
+installed (it does not need a Spark installation) and the person's token in
+`TRINO_TOKEN` (or `SPARK_CATALOG_TOKEN` for the catalog only):
 
     pip install pyspark-client==4.1.3
     SPARK_REMOTE=sc://spark-connect.stardelt.svc.cluster.local:15002 \
-    TRINO_URL=http://trino.stardelt.svc.cluster.local:8080 \
+    TRINO_URL=https://trino.stardelt.svc.cluster.local:8443 \
+    REQUESTS_CA_BUNDLE=/etc/stardelt/trino-ca/ca.crt \
+    TRINO_TOKEN="$(...)" \
       python3 scripts/verify-spark-iceberg.py
+
+The static `warehouse` catalog is gone from the Spark driver (platform#317):
+the session is built here with the same `spark.sql.catalog.warehouse*` block
+`stardelt.spark()` uses, including `.token`. Lakekeeper decides what the token
+may read; the token must carry `aud=lakekeeper` (hub and dev tokens get it from
+`make sync-catalog-audience`). No token is printed.
 
 What it checks:
 
-  1. `warehouse.demo.trips`: `count(*)` and `GROUP BY borough` from Spark and
-     from Trino agree row for row.
+  1. `VERIFY_TABLE` (default `warehouse.covid.covid_summary`, the demo tables
+     were removed on 2026-10-21): `count(*)` and `GROUP BY` from Spark and from
+     Trino agree row for row.
   2. A table written by Trino is readable from Spark.
   3. A table written by Spark is readable from Trino.
   4. The scratch namespace `spark_verify` is dropped again.
 
-`demo` is only read. The two round-trip tables live in `warehouse.spark_verify`
-and are dropped at the end (also when a check fails). Exit status is non-zero if
-anything disagrees — this is meant to be run, not read.
-
-Trino is queried without credentials because the dev cluster currently serves
-`/v1/statement` anonymously in-cluster; pass TRINO_USER/TRINO_PASSWORD to use
-HTTP Basic instead. Basic over plain HTTP is refused by Trino's password
-authenticator unless the ingress terminates TLS, which is why the default is
-the in-cluster anonymous path and not an invented token flow.
+Trino is queried with the same `TRINO_TOKEN` as a bearer; `TRINO_USER` /
+`TRINO_PASSWORD` (HTTP Basic) and anonymous access remain available for the
+older in-cluster shapes. Exit status is non-zero if anything disagrees — this is
+meant to be run, not read.
 """
 
 from __future__ import annotations
@@ -33,6 +38,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import ssl
 import sys
 import urllib.request
 
@@ -40,9 +46,22 @@ SPARK_REMOTE = os.environ.get("SPARK_REMOTE", "sc://spark-connect.stardelt.svc.c
 TRINO_URL = os.environ.get("TRINO_URL", "http://trino.stardelt.svc.cluster.local:8080").rstrip("/")
 TRINO_USER = os.environ.get("TRINO_USER", "spark-verify")
 TRINO_PASSWORD = os.environ.get("TRINO_PASSWORD", "")
+TRINO_TOKEN = os.environ.get("TRINO_TOKEN", "").strip()
+CATALOG_TOKEN = os.environ.get("SPARK_CATALOG_TOKEN", "").strip() or TRINO_TOKEN
+TRINO_CA = os.environ.get("TRINO_CA", os.environ.get("REQUESTS_CA_BUNDLE", "")).strip()
+CATALOG_URI = os.environ.get(
+    "STARDELT_CATALOG_URI", "http://lakekeeper.stardelt.svc.cluster.local:8181/catalog"
+)
+S3_ENDPOINT = os.environ.get(
+    "STARDELT_S3_ENDPOINT", "http://seaweedfs-s3.stardelt.svc.cluster.local:8333"
+)
+TABLE = os.environ.get("VERIFY_TABLE", "warehouse.covid.covid_summary")
+GROUP_COLUMN = os.environ.get("VERIFY_GROUP_COLUMN", "country")
 SCRATCH = "warehouse.spark_verify"
 
 failures: list[str] = []
+
+_SSL = ssl.create_default_context(cafile=TRINO_CA or None) if TRINO_URL.startswith("https") else None
 
 
 def check(label: str, ok: bool, detail: str = "") -> None:
@@ -51,28 +70,39 @@ def check(label: str, ok: bool, detail: str = "") -> None:
         failures.append(label)
 
 
+def _open(request: urllib.request.Request):
+    return urllib.request.urlopen(request, timeout=120, context=_SSL)
+
+
 def trino(sql: str) -> list[list[object]]:
     """Run one statement and return its rows (following nextUri)."""
-    headers = {"X-Trino-User": TRINO_USER, "Content-Type": "text/plain"}
-    if TRINO_PASSWORD:
-        token = base64.b64encode(f"{TRINO_USER}:{TRINO_PASSWORD}".encode()).decode()
-        headers["Authorization"] = f"Basic {token}"
+    # With a bearer, Trino takes the session user from the token and refuses a
+    # declared user that differs ("cannot impersonate"); only the anonymous and
+    # Basic paths name one.
+    headers = {"Content-Type": "text/plain"}
+    if TRINO_TOKEN:
+        headers["Authorization"] = f"Bearer {TRINO_TOKEN}"
+    else:
+        headers["X-Trino-User"] = TRINO_USER
+        if TRINO_PASSWORD:
+            token = base64.b64encode(f"{TRINO_USER}:{TRINO_PASSWORD}".encode()).decode()
+            headers["Authorization"] = f"Basic {token}"
 
     request = urllib.request.Request(
         f"{TRINO_URL}/v1/statement", data=sql.encode(), method="POST", headers=headers
     )
-    with urllib.request.urlopen(request, timeout=120) as response:
+    with _open(request) as response:
         body = json.load(response)
 
     rows: list[list[object]] = list(body.get("data") or [])
     while body.get("nextUri"):
         if body.get("error"):
-            raise RuntimeError(json.dumps(body["error"])[:500])
-        with urllib.request.urlopen(body["nextUri"], timeout=120) as response:
+            raise RuntimeError(json.dumps(body["error"], default=str)[:500])
+        with _open(body["nextUri"]) as response:
             body = json.load(response)
         rows.extend(body.get("data") or [])
     if body.get("error"):
-        raise RuntimeError(json.dumps(body["error"])[:500])
+        raise RuntimeError(json.dumps(body["error"], default=str)[:500])
     return rows
 
 
@@ -85,30 +115,56 @@ def spark_exec(spark, sql: str) -> None:
     spark.sql(sql).collect()
 
 
-def main() -> int:
+def spark_session():
+    """A Connect session with `warehouse` configured like `stardelt.spark()` does."""
+    if not CATALOG_TOKEN:
+        raise SystemExit(
+            "verify-spark-iceberg: set TRINO_TOKEN (the signed-in person) or "
+            "SPARK_CATALOG_TOKEN — the driver has no static catalog since platform#317."
+        )
     from pyspark.sql import SparkSession  # imported late so `--help` stays cheap
 
-    spark = SparkSession.builder.remote(SPARK_REMOTE).appName("verify-spark-iceberg").getOrCreate()
+    builder = SparkSession.builder.remote(SPARK_REMOTE).appName("verify-spark-iceberg")
+    builder = builder.config(
+        "spark.sql.catalog.warehouse", "org.apache.iceberg.spark.SparkCatalog"
+    )
+    for key, value in (
+        ("type", "rest"),
+        ("uri", CATALOG_URI),
+        ("warehouse", "warehouse"),
+        ("token", CATALOG_TOKEN),
+        ("io-impl", "org.apache.iceberg.aws.s3.S3FileIO"),
+        ("s3.endpoint", S3_ENDPOINT),
+        ("s3.region", "us-east-1"),
+        ("s3.path-style-access", "true"),
+    ):
+        builder = builder.config(f"spark.sql.catalog.warehouse.{key}", value)
+    return builder.create()
+
+
+def main() -> int:
+    spark = spark_session()
     print(f"› Spark Connect: {SPARK_REMOTE}")
     print(f"› Trino:         {TRINO_URL}")
+    print(f"› Table:         {TABLE}")
     print(f"› Spark version: {spark.version}")
 
     try:
-        print("\n1. warehouse.demo.trips — Spark vs Trino")
-        spark_count = spark_rows(spark, "SELECT count(*) AS n FROM warehouse.demo.trips")[0][0]
-        trino_count = trino("SELECT count(*) FROM warehouse.demo.trips")[0][0]
+        print(f"\n1. {TABLE} — Spark vs Trino")
+        spark_count = spark_rows(spark, f"SELECT count(*) AS n FROM {TABLE}")[0][0]
+        trino_count = trino(f"SELECT count(*) FROM {TABLE}")[0][0]
         print(f"  count(*) spark={spark_count} trino={trino_count}")
         check("count(*) agrees", int(spark_count) == int(trino_count))
 
-        borough_sql = (
-            "SELECT borough, count(*) AS n FROM warehouse.demo.trips "
-            "GROUP BY borough ORDER BY borough"
+        groupby_sql = (
+            f"SELECT {GROUP_COLUMN}, count(*) AS n FROM {TABLE} "
+            f"GROUP BY {GROUP_COLUMN} ORDER BY {GROUP_COLUMN}"
         )
-        spark_boroughs = spark_rows(spark, borough_sql)
-        trino_boroughs = [tuple(row) for row in trino(borough_sql)]
-        print(f"  spark: {spark_boroughs}")
-        print(f"  trino: {trino_boroughs}")
-        check("GROUP BY borough agrees", spark_boroughs == trino_boroughs)
+        spark_groups = spark_rows(spark, groupby_sql)
+        trino_groups = [tuple(row) for row in trino(groupby_sql)]
+        print(f"  spark: {spark_groups}")
+        print(f"  trino: {trino_groups}")
+        check(f"GROUP BY {GROUP_COLUMN} agrees", spark_groups == trino_groups)
 
         print(f"\n2. a table written by Trino, read from Spark ({SCRATCH}.from_trino)")
         try:
