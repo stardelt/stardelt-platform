@@ -73,6 +73,20 @@ OPABridge:
   #
   # Every rule here is proved by `make bridge-replay`; the file is the "one
   # small policy" the ticket allows, not a second policy layer.
+  #
+  # `stardelt.front.rego` (platform#359) is the front entry point Trino calls:
+  # `opa.policy.uri` => `/v1/data/stardelt/allow`, `opa.policy.batched-uri` =>
+  # `/v1/data/stardelt/batch` (helm-values/trino-identity.yaml). It exists because
+  # every question that reaches Lakekeeper costs ~0.15 s per distinct catalog, so
+  # `SHOW CATALOGS` cost 1 to 2 s cold and every query paid ~350 ms (PR #364,
+  # ticket #359). It answers the catalog-level questions (visibility and
+  # addressability) from the table access-sync publishes every 2 minutes, and
+  # gives the hot object-level operations an ALLOW fast path. Everything else —
+  # DDL, drops, renames, queries, session properties, impersonation — is the
+  # chart's own rule, unchanged; a table that is stale or a catalog with drift is
+  # not answered locally at all. The table can only ACCELERATE: every answer must
+  # equal this chart's (`make bridge-replay --differential`, and the CI harness in
+  # scripts/tests/test_bridge_policies.py).
   customPolicies:
     trino.stardelt.rego: |
       package trino
@@ -104,6 +118,235 @@ OPABridge:
       	input.action.operation == "ImpersonateUser"
       	input.context.identity.user == "superset"
       	regex.match(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`, input.action.resource.user.user)
+      }
+    stardelt.front.rego: |
+      package stardelt
+
+      import data.trino
+
+      # The front entry point (platform#359, architect decision 2026-10-21, D37).
+      #
+      # Trino is configured with `opa.policy.uri` = `/v1/data/stardelt/allow` and
+      # `opa.policy.batched-uri` = `/v1/data/stardelt/batch`
+      # (helm-values/trino-identity.yaml). Both answer from one table CronJob
+      # `access-sync` publishes after every tick (scripts/access-sync-job.py,
+      # `data.stardelt.access`):
+      #
+      #   {"generatedAt": <epoch seconds>,
+      #    "catalogs": {"<name>": {"drift": false,
+      #                            "all":    [<stardelt-admins subs>],
+      #                            "browse": [...], "select": [...],
+      #                            "write":  [...], "create": [...]}}}
+      #
+      # A list holds the exact string Trino puts in `input.context.identity.user`:
+      # the Keycloak `sub`, or a bare `STATIC_ASSIGNEES` principal (`superset`).
+      # Lakekeeper's verb implications are already applied there (modify implies
+      # select implies describe; create implies describe), so this file is a
+      # membership test and not a second copy of the model. `all` is every platform
+      # administrator, who holds `project_admin` in Lakekeeper — every verb.
+      #
+      # Why it exists: every question that reaches Lakekeeper costs ~0.15 s per
+      # distinct catalog (the engine's own measurement, PR #364), so `SHOW CATALOGS`
+      # cost 1 to 2 s cold. The table access-sync already computes every 2 minutes is
+      # the same information, so the catalog-level questions are answered here.
+      #
+      # THE TABLE IS AN ACCELERATOR, NEVER THE AUTHORITY:
+      #
+      #   * the catalog-level questions — visibility and addressability — are answered
+      #     from it in BOTH directions (that is the point: one answer, no round trip),
+      #     but only while it is fresh and the catalog carries no foreign grant;
+      #   * the object-level operations below get an ALLOW fast path only. A denial is
+      #     always Lakekeeper's: it also knows object ownership and any grant below
+      #     the catalog that access-sync does not manage;
+      #   * a stale table, a catalog the table does not list, or a catalog with drift
+      #     is not answered here at all — the chart's own rules answer it, exactly as
+      #     they did before this file existed.
+      #
+      # Nothing else changes, and every answer must equal the chart's: `make
+      # bridge-replay --differential` asks both paths on the live cluster and
+      # scripts/tests/test_bridge_policies.py proves the same in CI.
+
+      # Six minutes hard (the sync publishes every 2, so a normal table is at most
+      # ~2.5 minutes old). Past that the accelerator is ignored.
+      max_age_seconds := 360
+
+      # `generatedAt` comes from the sync pod's clock, the comparison from this one.
+      # One minute of skew is tolerated; a table stamped further in the future is not
+      # believed at all, so a wrong clock cannot pin an answer forever.
+      max_skew_seconds := 60
+
+      # The identity the decision is about. Trino always sends one; if a body does not
+      # carry one the local rules stay undefined and the chart's rules answer.
+      _user := input.context.identity.user
+
+      # The parts of the body the local rules look at, defaulted: `ExecuteQuery`
+      # and `ReadSystemInformation` carry no `resource` at all, and a rule body
+      # that passes `input.action.resource` to a function is *undefined* (not
+      # false) when the field is missing — which would poison the `not` in the
+      # fallback and deny a question the chart allows (the replay caught exactly
+      # that: every `ExecuteQuery` answered false).
+      _resource := object.get(object.get(input, "action", {}), "resource", {})
+
+      _filter_resources := object.get(object.get(input, "action", {}), "filterResources", [])
+
+      fresh if {
+      	generated_at := data.stardelt.access.generatedAt
+      	is_number(generated_at)
+      	age := time.now_ns() - (generated_at * 1000000000)
+      	age < max_age_seconds * 1000000000
+      	age > (0 - max_skew_seconds) * 1000000000
+      }
+
+      # The table can answer for this catalog: it is fresh, it lists the catalog, and
+      # every grant on the warehouse belongs to a group the sync manages.
+      local_known(catalog) if {
+      	fresh
+      	entry := data.stardelt.access.catalogs[catalog]
+      	entry.drift == false
+      }
+
+      # The four verbs the table holds. `browse` is Lakekeeper's `describe`.
+      _verbs := {"browse", "select", "write", "create"}
+
+      local_ok(user, catalog, verb) if {
+      	verb in _verbs
+      	local_known(catalog)
+      	user in data.stardelt.access.catalogs[catalog][verb]
+      }
+
+      local_ok(user, catalog, verb) if {
+      	verb in _verbs
+      	local_known(catalog)
+      	user in data.stardelt.access.catalogs[catalog].all
+      }
+
+      # The questions about a catalog itself.
+      _catalog_ops := {"AccessCatalog", "FilterCatalogs"}
+
+      # The object-level operations this file may ALLOW, and the verb the Lakekeeper
+      # action behind them needs (`get_metadata`/`list_namespaces`/`get_config` are
+      # `describe`, `read_data` is `select`, `write_data` is `modify`,
+      # `create_namespace`/`create_table`/`create_view` are `create`). Nothing that
+      # drops, renames or alters is here: those keep the chart's rules.
+      _object_verbs := {
+      	"SelectFromColumns": "select",
+      	"InsertIntoTable": "write",
+      	"CreateSchema": "create",
+      	"CreateTable": "create",
+      	"CreateView": "create",
+      	"ShowSchemas": "browse",
+      	"FilterSchemas": "browse",
+      	"ShowTables": "browse",
+      	"FilterTables": "browse",
+      	"ShowColumns": "browse",
+      	"FilterColumns": "browse",
+      }
+
+      resource_catalog(resource) := resource.catalog.name
+
+      resource_catalog(resource) := resource.table.catalogName
+
+      resource_catalog(resource) := resource.schema.catalogName
+
+      # The table decides this question in both directions. Only the catalog-level
+      # questions are ever decided here.
+      table_decides(operation, resource) if {
+      	operation in _catalog_ops
+      	local_known(resource_catalog(resource))
+      }
+
+      # The table says yes. At object level that is a fast path and nothing more: when
+      # it does not say yes, the chart's rules are asked.
+      table_allows(operation, resource) if {
+      	operation in _catalog_ops
+      	local_ok(_user, resource_catalog(resource), "browse")
+      }
+
+      table_allows(operation, resource) if {
+      	verb := _object_verbs[operation]
+      	local_ok(_user, resource_catalog(resource), verb)
+      }
+
+      # --- the single-question entry point --------------------------------------
+
+      default allow := false
+
+      allow if {
+      	table_allows(input.action.operation, _resource)
+      }
+
+      allow if {
+      	not table_decides(input.action.operation, _resource)
+      	trino.allow
+      }
+
+      # --- the batched entry point ----------------------------------------------
+
+      # FilterColumns with one table and its `columns` array answers column POSITIONS
+      # (the chart's own rule builds one resource per column), so it cannot be mapped
+      # back position for position: either the table is allowed and every column is,
+      # or the body goes upstream whole.
+      _columns_body if {
+      	input.action.operation == "FilterColumns"
+      	count(_filter_resources) == 1
+      	count(_filter_resources[0].table.columns) > 0
+      }
+
+      # The resources the table does not answer — the chart's rules get exactly these,
+      # with their body shape unchanged, and their answers are mapped back below.
+      _rest_indices contains index if {
+      	not _columns_body
+      	some index, resource in _filter_resources
+      	not table_allows(input.action.operation, resource)
+      	not table_decides(input.action.operation, resource)
+      }
+
+      _rest_order := [index | some index in sort(_rest_indices)]
+
+      _rest_resources := [resource |
+      	some index, resource in _filter_resources
+      	index in _rest_indices
+      ]
+
+      _upstream := {index |
+      	some position in trino.batch with input.action.filterResources as _rest_resources
+      	index := _rest_order[position]
+      }
+
+      batch contains index if {
+      	some index in _upstream
+      }
+
+      batch contains index if {
+      	not _columns_body
+      	some index, resource in _filter_resources
+      	table_allows(input.action.operation, resource)
+      }
+
+      batch contains index if {
+      	_columns_body
+      	table_allows(input.action.operation, _filter_resources[0])
+      	some index in numbers.range(0, count(_filter_resources[0].table.columns) - 1)
+      }
+
+      # `FilterColumns` with columns: when the table is allowed the list above
+      # answers every column. When it is not, the body goes to the chart's rule
+      # whole (its answer is column positions, which cannot be mapped back
+      # position for position). The replacement is always a list — empty when the
+      # table answered or when the body is another shape — because Rego may
+      # evaluate an expression before the guard that would skip it, and an empty
+      # body keeps that evaluation free of Lakekeeper calls.
+      default _columns_upstream_resources := []
+
+      _columns_upstream_resources := _filter_resources if {
+      	_columns_body
+      	not table_allows(input.action.operation, _filter_resources[0])
+      }
+
+      batch contains index if {
+      	_columns_body
+      	some index in trino.batch
+      		with input.action.filterResources as _columns_upstream_resources
       }
   resources:
     requests: { cpu: "20m", memory: "48Mi" }

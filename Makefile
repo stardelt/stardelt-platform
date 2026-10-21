@@ -630,15 +630,32 @@ verify-catalog-permissions: _context ## Prove the live Catalog grants against th
 # is the evidence, refreshed after a Trino upgrade. `replay` asks the live
 # bridge the captured questions for the four seed principals and prints one
 # table — no cluster change, one throwaway pod admitted by `lakekeeper-ingress`.
+# `latency` is the timing companion (platform#359): `FilterCatalogs` with every
+# catalog, five cold runs, min/median/max, one `AccessCatalog` and one
+# `SelectFromColumns`, and the same answers from the chart's own rules — the gate
+# that `SHOW CATALOGS` stays under 0.2 s (`make catalog-authz` runs it).
+# `differential` is the correctness gate of the decision table: the front entry
+# points against the chart's own rules, every catalog, every table that exists,
+# every principal. `test-bridge-policies` proves the same policy in CI against a
+# stub Lakekeeper that counts calls.
 # `catalog-authz` and `catalog-enforce` (#311) run `replay --data-only` as a
 # gate: the questions a query depends on must be answered correctly.
 # ---------------------------------------------------------------------------
-.PHONY: bridge-capture bridge-replay
+.PHONY: bridge-capture bridge-replay bridge-differential bridge-latency test-bridge-policies
 bridge-capture: _context ## Capture the OPA requests Trino sends (rewrites scripts/tests/fixtures/trino-opa-requests.json)
 	@NAMESPACE=$(NAMESPACE) bash scripts/bridge-capture.sh
 
 bridge-replay: _context ## Replay the captured OPA requests against the live bridge (exit 1 on an error, empty answer or wrong data row)
 	@NAMESPACE=$(NAMESPACE) bash scripts/bridge-replay.sh
+
+bridge-differential: _context ## Prove the front entry points equal the chart's own rules (every catalog, every table, every principal; exit 1 on a difference)
+	@NAMESPACE=$(NAMESPACE) bash scripts/bridge-replay.sh --differential
+
+bridge-latency: _context ## Measure FilterCatalogs and one single question on the live bridge (exit 1 above 0.2 s / 0.05 s median or on any changed answer)
+	@NAMESPACE=$(NAMESPACE) bash scripts/bridge-latency.sh
+
+test-bridge-policies: ## Prove the decision-table policy against a stub Lakekeeper (needs helm with the lakekeeper repo + the opa binary)
+	@bash scripts/test-bridge-policies.sh
 
 # The public client developer tools on a laptop sign in with (platform#157): the device grant and
 # PKCE to a loopback address. `make sync-dev-client DEV_CLIENT_ENABLED=false` switches it off.
