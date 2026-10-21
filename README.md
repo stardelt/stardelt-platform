@@ -1356,7 +1356,8 @@ catalog is missing from it (a `Catalog` that became Ready since the last tick), 
 catalog carries `drift` — a grant on its warehouse held by a subject the sync does not
 manage, which it cannot enumerate and therefore must not answer for. A failed push is logged
 as `opa data: not published (<status>)` and never fails the sync tick: the bridge then falls
-back to Lakekeeper and only the latency changes.
+back to Lakekeeper and only the latency changes. A tick that removes a grant deletes the
+table first; the bridge asks Lakekeeper until the next publish, a few seconds.
 
 **The trust note.** The table is derived from the same `Catalog` objects the sync writes to
 Lakekeeper; Lakekeeper stays the authority. The table is valid for at most six minutes

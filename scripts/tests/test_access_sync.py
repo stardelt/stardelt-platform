@@ -246,14 +246,18 @@ class FakeOpa:
     """The OPA data API the catalog decision table is published to (platform#359).
 
     Records every `PUT` body so the tests can assert the document the bridge will
-    read, and answers `status` (204 by default, so a failed push is a case a test
-    can ask for).
+    read, answers `status` (204 by default, so a failed push is a case a test can
+    ask for), and counts the `DELETE`s that drop the table before a removal
+    (platform#384) with the paths they hit, answering `delete_status` (204).
     """
 
     def __init__(self):
         self.bodies = []
         self.status = 204
         self.paths = []
+        self.deleted = 0
+        self.delete_paths = []
+        self.delete_status = 204
         state = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -268,6 +272,15 @@ class FakeOpa:
                 state.paths.append(self.path)
                 raw = b""
                 self.send_response(state.status)
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+            def do_DELETE(self):
+                state.deleted += 1
+                state.delete_paths.append(self.path)
+                raw = b""
+                self.send_response(state.delete_status)
                 self.send_header("Content-Length", str(len(raw)))
                 self.end_headers()
                 self.wfile.write(raw)
@@ -420,6 +433,7 @@ class JobTestCase(unittest.TestCase):
             access_sync.list_catalogs,
             access_sync.k8s_request,
             access_sync.ROLE_PAGE,
+            access_sync._TABLE_DROPPED,
         )
         access_sync.LAKEKEEPER_URL = self.fake.url
         access_sync.lakekeeper_token = lambda: TEST_TOKEN
@@ -427,6 +441,7 @@ class JobTestCase(unittest.TestCase):
         access_sync.STATIC_ASSIGNEES = "{}"
         access_sync.OPA_DATA_URL = self.opa.url
         access_sync.s3_credentials = lambda: dict(S3)
+        access_sync._TABLE_DROPPED = False
         self.addCleanup(self._restore)
 
     def _restore(self):
@@ -442,6 +457,7 @@ class JobTestCase(unittest.TestCase):
             access_sync.list_catalogs,
             access_sync.k8s_request,
             access_sync.ROLE_PAGE,
+            access_sync._TABLE_DROPPED,
         ) = self._saved
 
     def use_keycloak(self, groups):
@@ -1291,6 +1307,146 @@ class MainTest(JobTestCase):
         logged = out.getvalue() + err.getvalue()
         self.assertIn("opa data: published 1 catalogs", logged)
         for principal in ("sub-1", "sub-2", "sub-admin", TOKEN_SUB):
+            self.assertNotIn(principal, logged)
+
+
+class InvalidateAccessTableTest(JobTestCase):
+    """A removal drops the table before it happens (platform#384).
+
+    The table is believed for up to six minutes, so a revoked grant that stayed in it
+    would keep answering ALLOW (object level) and "visible" (catalog level) until the
+    next publish. Every removal therefore DELETEs the document first — once per tick —
+    and a DELETE that fails must not stop the removal.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.keycloak = self.use_keycloak(
+            {
+                "stardelt-admins": [("sub-admin", "admin")],
+                "stardelt-users": [("sub-1", "alice"), ("sub-2", "bob")],
+            }
+        )
+        self.kubernetes = self.use_catalogs(json.loads(json.dumps(CATALOG)))
+
+    def warehouse(self):
+        return self.fake.warehouses["warehouse"]
+
+    def remove_a_grant(self):
+        """Hold a `modify` the spec does not declare: the next tick removes it."""
+        users_role = self.fake.roles["stardelt-users"]["id"]
+        self.fake.warehouse_assignments[self.warehouse()].append(
+            {"type": "modify", "role": users_role}
+        )
+        return users_role
+
+    def test_removal_of_an_assignee_drops_the_table_once(self):
+        self.assertEqual(access_sync.main(), 0)
+        self.assertEqual(self.opa.deleted, 0, "a converged tick removes nothing")
+        self.keycloak.groups["stardelt-users"]["members"] = [("sub-2", "bob")]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(access_sync.main(), 0)
+        self.assertEqual(self.opa.deleted, 1)
+        self.assertEqual(self.opa.delete_paths, ["/v1/data/stardelt/access"])
+        self.assertIn("opa data: dropped before a removal", out.getvalue())
+        self.assertEqual(len(self.opa.bodies), 2, "the table is still published at the end")
+        self.assertEqual(self.opa.bodies[-1]["catalogs"]["warehouse"]["select"], ["sub-2"])
+        self.assertEqual(self.fake.assignees(self.fake.roles["stardelt-users"]["id"]), {"oidc~sub-2"})
+
+    def test_removal_of_a_grant_drops_the_table_once(self):
+        self.assertEqual(access_sync.main(), 0)
+        users_role = self.remove_a_grant()
+        self.assertEqual(access_sync.main(), 0)
+        self.assertEqual(self.opa.deleted, 1)
+        self.assertNotIn(
+            {"type": "modify", "role": users_role},
+            self.fake.warehouse_assignments[self.warehouse()],
+        )
+        self.assertEqual(len(self.opa.bodies), 2, "the table is still published at the end")
+
+    def test_tick_without_removals_never_deletes(self):
+        self.assertEqual(access_sync.main(), 0)
+        self.assertEqual(self.opa.deleted, 0)
+        self.assertEqual(self.opa.delete_paths, [])
+        self.assertEqual(len(self.opa.bodies), 1, "the table is still published")
+
+    def test_two_removals_in_one_tick_delete_once(self):
+        self.assertEqual(access_sync.main(), 0)
+        self.remove_a_grant()
+        self.keycloak.groups["stardelt-users"]["members"] = [("sub-2", "bob")]
+        self.assertEqual(access_sync.main(), 0)
+        self.assertEqual(self.opa.deleted, 1, "one drop covers the whole tick")
+        users_role = self.fake.roles["stardelt-users"]["id"]
+        self.assertEqual(self.fake.assignees(users_role), {"oidc~sub-2"})
+        self.assertNotIn(
+            {"type": "modify", "role": users_role},
+            self.fake.warehouse_assignments[self.warehouse()],
+            "the second removal still happened",
+        )
+
+    def test_delete_happens_before_the_lakekeeper_removal_request(self):
+        self.assertEqual(access_sync.main(), 0)
+        self.keycloak.groups["stardelt-users"]["members"] = [("sub-2", "bob")]
+        original = access_sync.lk
+        seen = []
+
+        def recording_lk(method, path, body=None):
+            if method == "POST" and (body or {}).get("deletes"):
+                # The flag and the DELETE's answer at the moment the removal leaves.
+                seen.append((access_sync._TABLE_DROPPED, self.opa.deleted))
+            return original(method, path, body)
+
+        access_sync.lk = recording_lk
+        self.addCleanup(setattr, access_sync, "lk", original)
+        self.assertEqual(access_sync.main(), 0)
+        self.assertEqual(len(seen), 1, "one removal reached Lakekeeper")
+        self.assertEqual(seen[0], (True, 1), "the DELETE was answered before the POST")
+
+    def test_failed_delete_does_not_stop_the_removal(self):
+        self.assertEqual(access_sync.main(), 0)
+        self.opa.delete_status = 500
+        self.keycloak.groups["stardelt-users"]["members"] = [("sub-2", "bob")]
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            self.assertEqual(access_sync.main(), 0, "a revoke still happens")
+        self.assertEqual(self.opa.deleted, 1)
+        self.assertIn("opa data: not dropped (500)", err.getvalue())
+        self.assertEqual(self.fake.assignees(self.fake.roles["stardelt-users"]["id"]), {"oidc~sub-2"})
+
+    def test_delete_404_is_not_a_failure(self):
+        """Nothing to drop is the normal state: 404 means done, not an error."""
+        self.assertEqual(access_sync.main(), 0)
+        self.opa.delete_status = 404
+        self.keycloak.groups["stardelt-users"]["members"] = [("sub-2", "bob")]
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            self.assertEqual(access_sync.main(), 0)
+        self.assertEqual(self.opa.deleted, 1)
+        self.assertIn("opa data: dropped before a removal", out.getvalue())
+        self.assertNotIn("not dropped", err.getvalue())
+
+    def test_next_tick_drops_again(self):
+        self.assertEqual(access_sync.main(), 0)
+        self.keycloak.groups["stardelt-users"]["members"] = [("sub-2", "bob")]
+        self.assertEqual(access_sync.main(), 0)
+        self.assertEqual(self.opa.deleted, 1)
+        self.keycloak.groups["stardelt-users"]["members"] = [("sub-2", "bob"), ("sub-3", "carol")]
+        self.remove_a_grant()
+        self.assertEqual(access_sync.main(), 0)
+        self.assertEqual(self.opa.deleted, 2, "main() reset the flag for the new tick")
+
+    def test_no_subject_in_the_log_lines(self):
+        self.assertEqual(access_sync.main(), 0)
+        self.keycloak.groups["stardelt-users"]["members"] = [("sub-2", "bob")]
+        self.remove_a_grant()
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            self.assertEqual(access_sync.main(), 0)
+        logged = out.getvalue() + err.getvalue()
+        self.assertIn("opa data: dropped before a removal", logged)
+        self.assertIn("opa data: published 1 catalogs", logged)
+        for principal in ("sub-1", "sub-2", "sub-3", "sub-admin", TOKEN_SUB):
             self.assertNotIn(principal, logged)
 
 
