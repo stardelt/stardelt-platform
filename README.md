@@ -2017,6 +2017,14 @@ dump tool must not be a newer major version than the server it reads. The umbrel
 chart does not render these two CronJobs; like the other plain manifests they are
 applied to namespace `stardelt`.
 
+`make verify-backups-all` is the single pass/fail entry point over the whole
+list: it enumerates every PVC in the namespace, maps it to its mechanism and
+prints `PVC | mechanism | last backup age | verdict`. A PVC fails when it has no
+mechanism and no written-down exception, when a mapped mechanism is missing, or
+when its newest backup is older than 36 h. It is a manual target — nothing
+schedules it; run it after the nightly window, or a fresh install fails until
+each mechanism has completed its first run.
+
 ### Not covered (and why)
 
 - **OpenBao and the seal key.** `data-openbao-0` holds the secret store and
@@ -2031,6 +2039,12 @@ applied to namespace `stardelt`.
 - **JupyterHub's home database.** `hub-db-dir` is a sqlite file (users, servers,
   tokens): a *session* store. Losing it means people sign in again, not that
   notebooks are gone (notebooks are objects in the `notebooks` bucket).
+- **SeaweedFS filer and master metadata.** `data-filer-seaweedfs-filer-0` holds
+  the S3 namespace index and `data-stardelt-seaweedfs-master-0` the volume
+  assignment. The object bytes live in the volume store — the `lakehouse` bucket
+  is what `lakehouse-backup` copies — so these two are metadata, not data, and
+  are not covered by design today (platform#3). `make verify-backups-all` lists
+  them as ACCEPTED.
 - **Published notebooks.** The `notebooks` bucket has S3 versioning, which
   survives overwrites and deletes inside the bucket, not the bucket itself.
 - **Caches.** `superset-redis` holds no PVC; it rebuilds itself.

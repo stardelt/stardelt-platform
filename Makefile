@@ -57,7 +57,7 @@ BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 
 .PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator openfga trino catalogs upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-up dev-down dev-dns dev-dns-down
 .PHONY: chart-deps chart-template chart-install
-.PHONY: verify-backups verify-backups-identity verify-backups-nova verify-backups-openfga verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
+.PHONY: verify-backups verify-backups-identity verify-backups-nova verify-backups-openfga verify-backups-all verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
 .PHONY: backups verify-pgdump
 .PHONY: sync-oidc-clients verify-oidc-clients verify-trino-tls verify-trino-auth sync-trino-group-sync-client sync-pipeline-runner-client sync-dev-client sync-catalog-audience openbao test-openbao-policies seaweedfs-admin
 .PHONY: external-secrets eso-stores
@@ -146,6 +146,17 @@ backups: _context ## Apply the pg_dump CronJobs for Superset and Airflow (verify
 
 verify-pgdump: _context ## Run the pg_dump CronJob(s) once, restore the dump into a scratch database, compare table counts. PG_DUMP=superset|airflow|all
 	@NAMESPACE=$(NAMESPACE) PG_DUMP=$(PG_DUMP) bash scripts/verify-pgdump.sh
+
+# ---------------------------------------------------------------------------
+# Coverage guard (platform#367): every PVC has a mechanism and a recent backup,
+# or an accepted exception written down in the script. verify-pgdump and
+# verify-backups* prove the mechanisms; this one answers "is anything missing?"
+# It is a manual target (no schedule yet): run it after the nightly window.
+# ---------------------------------------------------------------------------
+MAX_AGE_HOURS ?= 36
+
+verify-backups-all: _context ## Every PVC has a backup mechanism and a recent backup, or an accepted, ticketed exception (manual)
+	@NAMESPACE=$(NAMESPACE) MAX_AGE_HOURS=$(MAX_AGE_HOURS) bash scripts/verify-backups-all.sh
 
 # ---------------------------------------------------------------------------
 # Helm repo setup
