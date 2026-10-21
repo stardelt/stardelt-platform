@@ -313,6 +313,28 @@ def test_spark_docstring_states_credential_limitation():
     assert "shared storage credential" in stardelt.spark.__doc__
 
 
+def test_spark_tips_prints_every_row(capsys):
+    stardelt.spark_tips()
+    lines = capsys.readouterr().out.strip().splitlines()
+    assert len(lines) == 7
+    # One line per README row ("Keeping the shared driver healthy"), in order.
+    for marker in (
+        "toPandas()",
+        "createDataFrame(big_pandas_or_list)",
+        "mapInPandas",
+        "broadcast(small_df)",
+        "unpersist()",
+        "20_000 rows",
+        "df.count()",
+    ):
+        assert any(marker in line for line in lines), marker
+    assert all(line.startswith("instead of ") for line in lines)
+
+
+def test_spark_docstring_mentions_tips():
+    assert "stardelt.spark_tips()" in stardelt.spark.__doc__
+
+
 # Token source and renewal --------------------------------------------------------
 
 
