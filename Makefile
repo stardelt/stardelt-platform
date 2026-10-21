@@ -62,7 +62,8 @@ BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 
 .PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator openfga trino catalogs upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-up dev-down dev-dns dev-dns-down
 .PHONY: chart-deps chart-template chart-install
-.PHONY: verify-backups verify-backups-identity verify-backups-nova verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
+.PHONY: verify-backups verify-backups-identity verify-backups-nova verify-backups-openfga verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
+.PHONY: backups verify-pgdump
 .PHONY: sync-oidc-clients verify-oidc-clients verify-trino-tls verify-trino-auth sync-trino-groups sync-trino-group-sync-client sync-pipeline-runner-client sync-dev-client sync-catalog-audience openbao test-openbao-policies seaweedfs-admin
 .PHONY: external-secrets eso-stores
 
@@ -131,6 +132,25 @@ verify-backups-nova: _context ## Verify WAL archiving for nova-pg (same checks a
 verify-backups-identity: _context ## Verify WAL archiving for keycloak-pg (same checks as verify-backups, identity database)
 	@NAMESPACE=$(NAMESPACE) CLUSTER=keycloak-pg SKIP_OBJECTS="$(SKIP_OBJECTS)" MAX_AGE_SECONDS="$(MAX_AGE_SECONDS)" \
 	  bash scripts/verify-backups.sh
+
+verify-backups-openfga: _context ## Verify WAL archiving for openfga-pg (same checks as verify-backups, the permission store)
+	@NAMESPACE=$(NAMESPACE) CLUSTER=openfga-pg SKIP_OBJECTS="$(SKIP_OBJECTS)" MAX_AGE_SECONDS="$(MAX_AGE_SECONDS)" \
+	  bash scripts/verify-backups.sh
+
+# ---------------------------------------------------------------------------
+# pg_dump backups (platform#366): Superset and Airflow keep their state in
+# Bitnami StatefulSets, which CloudNative-PG's spec.backup cannot cover. A
+# CronJob dumps them into s3://backups/pgdump/<app>/ (14 days); verify-pgdump
+# runs one, restores the object into a scratch database and compares the table
+# count with the live one — the #59 principle, applied to a logical dump.
+# ---------------------------------------------------------------------------
+PG_DUMP ?= all
+
+backups: _context ## Apply the pg_dump CronJobs for Superset and Airflow (verify-pgdump proves them)
+	@kubectl apply -f manifests/pg-dump-backup.yaml
+
+verify-pgdump: _context ## Run the pg_dump CronJob(s) once, restore the dump into a scratch database, compare table counts. PG_DUMP=superset|airflow|all
+	@NAMESPACE=$(NAMESPACE) PG_DUMP=$(PG_DUMP) bash scripts/verify-pgdump.sh
 
 # ---------------------------------------------------------------------------
 # Helm repo setup
@@ -243,6 +263,9 @@ install: deps _context _helm-repos ## Install all stardelt components (idempoten
 	  $(HELM_FLAGS) \
 	  -f helm-values/superset.yaml \
 	  --set-file "extraConfigs.superset-analyst-role\.py=scripts/superset-analyst-role.py"
+
+	@echo "› [9/11] Postgres dumps: Superset and Airflow databases (daily, 14 days)"
+	@kubectl apply -f manifests/pg-dump-backup.yaml
 
 	@echo "› [10/11] Nova (state store first: the Deployment reads its Secret)"
 	@kubectl apply -f manifests/nova-pg.yaml
@@ -911,6 +934,7 @@ uninstall: _context ## Uninstall all stardelt components (reverse order)
 	@echo "› removing manifests"
 	@kubectl delete -f manifests/trino-group-sync.yaml          --ignore-not-found
 	@kubectl -n $(NAMESPACE) delete configmap trino-group-sync-script --ignore-not-found
+	@kubectl delete -f manifests/pg-dump-backup.yaml            --ignore-not-found
 	@kubectl delete -f manifests/access-sync.yaml              --ignore-not-found
 	@kubectl -n $(NAMESPACE) delete configmap access-sync-script --ignore-not-found
 	@kubectl delete -f manifests/spark.yaml                   --ignore-not-found

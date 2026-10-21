@@ -1078,8 +1078,8 @@ Lakekeeper), because authorization is keyed on the IdP's subjects; a bare
 - **Backups.** Continuous WAL archiving into `s3://backups/openfga-pg/` plus the
   daily base backup `openfga-pg-daily` (`immediate: true`, so a fresh install
   has one right away). Guards: `make verify-backup-config PG_CLUSTER=openfga-pg`
-  (config only, runs in `make install`) and
-  `make verify-backups PG_CLUSTER=openfga-pg` (bucket vs. database).
+  (config only, runs in `make install`) and `make verify-backups-openfga`
+  (bucket vs. database).
 - **No authentication of its own.** The chart ships OpenFGA unsecured; the
   NetworkPolicy `openfga-ingress` (`manifests/openfga-network-policy.yaml`) is
   its protection — only the Lakekeeper catalog pod and its migration Job may
@@ -1972,6 +1972,109 @@ kubectl -n stardelt delete pods -l spark-role=executor
 
 ---
 
+## Backups
+
+Every piece of state the platform keeps, how it is copied and where it comes back
+from. A backup nobody restored is a hope, so each row names the check that proves
+it: `make verify-pgdump` restores the newest dump into a throwaway database and
+compares the table count with the live one; `make verify-backups*` compares the
+WAL bucket with the database's own archiver (#59). Neither compares rows — the
+restore is where a human looks at the data.
+
+| State | Lives in | Mechanism | Retention | Proof |
+|---|---|---|---|---|
+| Catalog metadata (warehouses, tables, grants) | `lakekeeper-pg` (CloudNative-PG) | Continuous WAL archiving → `s3://backups/lakekeeper-pg/` plus the daily base backup `lakekeeper-pg-daily` (02:30) | 14 days (`retentionPolicy: 14d`) | `make verify-backups` |
+| Nova state (saved queries, settings) | `nova-pg` (CloudNative-PG) | Same: WAL + `nova-pg-daily` | 14 days | `make verify-backups-nova` |
+| Identity (users, realms, clients) | `keycloak-pg` (CloudNative-PG) | Same: WAL + a daily base backup | 14 days | `make verify-backups-identity` |
+| Permissions (OpenFGA tuples) | `openfga-pg` (CloudNative-PG) | Same: WAL + `openfga-pg-daily` | 14 days | `make verify-backups-openfga` |
+| Superset (dashboards, charts, datasets, saved queries) | `superset-postgresql` (Bitnami StatefulSet) | `pg_dump --format=custom` CronJob `superset-pg-dump`, 02:30 → `s3://backups/pgdump/superset/` | 14 dumps | `make verify-pgdump PG_DUMP=superset` |
+| Airflow (run history, users) | `airflow-postgresql` (Bitnami StatefulSet) | `pg_dump` CronJob `airflow-pg-dump`, 02:45 → `s3://backups/pgdump/airflow/` | 14 dumps | `make verify-pgdump PG_DUMP=airflow` |
+| Lakehouse data | SeaweedFS bucket `lakehouse` | `lakehouse-backup` CronJob: `aws s3 sync` into bucket `lakehouse-backup`, no `--delete`, so an object removed from the source stays recoverable | archive keeps what the source loses | — |
+
+`make backups` applies the two dump CronJobs; `make install` does it after
+Superset/Airflow and `make uninstall` removes them. The objects are written by
+`amazon/aws-cli` (digest-pinned) into the same `backups` bucket as the
+CloudNative-PG prefixes, under `pgdump/`, and each run prunes its own prefix
+beyond 14 days. The dump container runs the database's *own* postgres image: the
+dump tool must not be a newer major version than the server it reads. The umbrella
+chart does not render these two CronJobs; like the other plain manifests they are
+applied to namespace `stardelt`.
+
+### Not covered (and why)
+
+- **OpenBao and the seal key.** `data-openbao-0` holds the secret store and
+  Secret `openbao-seal-key` unseals it; losing either makes the data unreadable.
+  Copying the store is not a `pg_dump`, and the key needs a sealed transfer —
+  that belongs to the backup design in platform#3 and is deliberately not
+  improvised here.
+- **Cluster state.** CRDs, Helm releases, RBAC, ConfigMaps and Secrets are in
+  none of the mechanisms above — they are the output of `make install` plus this
+  repository, so `main` recreates them. The rows above are what a rebuild cannot
+  recreate.
+- **JupyterHub's home database.** `hub-db-dir` is a sqlite file (users, servers,
+  tokens): a *session* store. Losing it means people sign in again, not that
+  notebooks are gone (notebooks are objects in the `notebooks` bucket).
+- **Published notebooks.** The `notebooks` bucket has S3 versioning, which
+  survives overwrites and deletes inside the bucket, not the bucket itself.
+- **Caches.** `superset-redis` holds no PVC; it rebuilds itself.
+
+And the limit that applies to all of it: the backups live in the same SeaweedFS
+cluster as the data they protect. Losing the SeaweedFS volumes loses the backups
+with them — an off-cluster copy is the open half of platform#3.
+
+### Restoring
+
+**CloudNative-PG clusters** (catalog, Nova, Keycloak, OpenFGA):
+`manifests/cnpg-restore-proof.yaml` is a working recovery Cluster in namespace
+`stardelt-restore` that recovers `lakekeeper-pg` from the latest archived WAL. For
+another cluster rename it and set `serverName` to the folder in the bucket (which
+does not follow the restored Cluster's name):
+
+```sh
+kubectl create namespace stardelt-restore
+kubectl -n stardelt get secret stardelt-s3-creds -o json \
+  | jq 'del(.metadata.namespace,.metadata.uid,.metadata.resourceVersion,
+            .metadata.creationTimestamp,.metadata.managedFields)' \
+  | kubectl -n stardelt-restore apply -f -
+kubectl -n stardelt-restore apply -f manifests/cnpg-restore-proof.yaml
+```
+
+**Superset and Airflow** (logical dumps): run the CronJob once, read the key it
+printed, and restore that object. The job prints `name`, `size` and `key` — never
+a credential:
+
+```sh
+kubectl -n stardelt create job --from=cronjob/superset-pg-dump superset-pg-dump-now
+kubectl -n stardelt logs job/superset-pg-dump-now -c upload | tail -1
+make verify-pgdump PG_DUMP=superset        # runs it and restores the newest object
+```
+
+To restore it for real, run a pod with the `postgres` image, the
+`stardelt-s3-creds` Secret and the app's password Secret (the verify script builds
+exactly that pod), fetch the key and restore into a *new* database first —
+`--clean` against the live one drops what is there:
+
+```sh
+pg_restore --list dumpfile                      # what is in the archive
+pg_restore --no-owner -h superset-postgresql -U superset -d superset_restore dumpfile
+```
+
+`make verify-pgdump` is the executable form of this procedure: it restores the
+newest object into a throwaway `restoretest` database with `--exit-on-error` and
+compares the table count with the live database, so the path is exercised rather
+than assumed. Like the WAL guards it runs on demand; a scheduled wrapper is
+follow-up work, as for #59.
+
+**Lakehouse objects:** run an `amazon/aws-cli` pod with the `stardelt-s3-creds`
+Secret (the shape is in `manifests/object-store-backup.yaml`) and sync the other
+direction:
+
+```sh
+aws --endpoint-url "$AWS_ENDPOINT_URL" s3 sync s3://lakehouse-backup s3://lakehouse
+```
+
+---
+
 ## Makefile targets
 
 | Target | Description |
@@ -1985,6 +2088,9 @@ kubectl -n stardelt delete pods -l spark-role=executor
 | `verify-backups-nova` | Same full WAL check for `nova-pg` (`s3://backups/nova-pg/wals/`) |
 | `verify-backups` | Full WAL check: `spec.backup` + the newest object in `s3://backups/lakekeeper-pg/wals/` is younger than `MAX_AGE_SECONDS` (900) + it matches `pg_stat_archiver.last_archived_wal`. `SKIP_OBJECTS=1` skips the S3 half |
 | `verify-backups-identity` | Same full WAL check for `keycloak-pg` (`s3://backups/keycloak-pg/wals/`) |
+| `verify-backups-openfga` | Same full WAL check for `openfga-pg` (`s3://backups/openfga-pg/wals/`) |
+| `backups` | Apply the two `pg_dump` CronJobs (`superset-pg-dump`, `airflow-pg-dump`) from `manifests/pg-dump-backup.yaml` |
+| `verify-pgdump` | Run those CronJob(s) once (`PG_DUMP=superset\|airflow\|all`), restore the newest dump into a scratch database with `pg_restore --exit-on-error`, and compare the table count with the live database |
 | `install-notebooks` | JupyterHub (notebooks) |
 | `install-spark` | Spark Connect endpoint (`manifests/spark.yaml`); catalogs are per person in the session (platform#317), no static catalog in the ConfigMap. Restarts the driver only when its ConfigMap changed |
 | `openfga` | OpenFGA permission store + its CNPG Postgres (`helm-values/openfga.yaml`, `manifests/openfga-pg.yaml`); not wired to Lakekeeper until the cutover (#302) |
@@ -2053,6 +2159,7 @@ helm-values/          Helm values files, one per chart
 manifests/            Plain Kubernetes manifests (kubectl apply)
   cnpg-postgres.yaml    CloudNative-PG Cluster for Lakekeeper metadata
   cnpg-backup-schedule.yaml  Daily base backups for lakekeeper-pg and openfga-pg
+  pg-dump-backup.yaml   CronJobs: pg_dump of the Superset and Airflow databases (platform#366)
   openfga-pg.yaml       CloudNative-PG Cluster for the OpenFGA permission store
   openfga-network-policy.yaml  OpenFGA ingress: the Lakekeeper catalog and migration pods only
   keycloak.yaml         Platform IdP: Keycloak + its CNPG Cluster (make install-identity)
@@ -2092,6 +2199,7 @@ scripts/
   sync-oidc-clients.sh  Re-apply Secret stardelt-oidc-clients to the live realm's clients (import skips an existing realm; trino delegated)
   sync-trino-groups.sh  Write the live realm's stardelt-admins membership into ConfigMap trino-group-file (Trino query visibility, #125)
   verify-backups.sh     Backup guards: post-apply spec.backup assert + bucket-vs-database WAL check
+  verify-pgdump.sh      Run a pg_dump CronJob, restore the newest dump into a scratch DB, compare table counts (platform#366)
   verify-notebook-identity.py  Headless hub login + run the quickstart in the pod (positive and 401 negative)
   verify-oidc-clients.sh Assert every client secret in Secret stardelt-oidc-clients authenticates at the token endpoint
   verify-realm-admin.sh Assert the realm-admin Secret still signs in to realm `stardelt`

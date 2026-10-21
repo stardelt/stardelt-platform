@@ -1,0 +1,293 @@
+# pg_dump backups for the two Bitnami PostgreSQL StatefulSets the charts own.
+#
+# Superset (dashboards, charts, datasets, saved queries) and Airflow (run
+# history, users) keep their state in `superset-postgresql` and
+# `airflow-postgresql`: plain StatefulSets with a 10 Gi PVC, no WAL archiving and
+# no base backup (stardelt-platform#366). CloudNative-PG's `spec.backup` cannot
+# be attached to a Bitnami StatefulSet, so this is a logical dump on a schedule
+# instead: the unit of recovery is one day, and a restore loses the writes after
+# the last dump. That is the stated limit of this mechanism, not an oversight.
+#
+#   kubectl apply -f manifests/pg-dump-backup.yaml      # or: make backups
+#   kubectl -n stardelt create job --from=cronjob/superset-pg-dump superset-pg-dump-now
+#   make verify-pgdump PG_DUMP=all                     # runs each, restores, compares
+#
+# Shape: an init container running the database's *own* postgres image takes the
+# dump into an emptyDir (`pg_dump --format=custom --no-owner`, so a newer server
+# binary never reads an older data directory); the upload container
+# (`amazon/aws-cli`) copies it to `s3://backups/pgdump/<name>/<UTC date>.dump`
+# and prunes that prefix beyond RETENTION_DAYS. The same object is what
+# `make verify-pgdump` restores into a throwaway database, so a green check means
+# the dump on the shelf is readable, not merely that a job exited 0.
+#
+# Both containers are non-root, carry no service-account token and have no
+# writable root filesystem. The database password is mounted as a file and read
+# into PGPASSWORD at run time — never argv, never an env literal, never printed.
+# Objects only ever land under `pgdump/`, next to the CloudNative-PG prefixes in
+# the same `backups` bucket; no `--delete`, no bucket-wide operation.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: superset-pg-dump
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+spec:
+  # 02:30 daily, the same window as the catalog's base backup. Superset is the
+  # smaller dump; Airflow follows 15 minutes later (below) so the two do not
+  # compete for the node.
+  schedule: "30 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata:
+      labels: { app.kubernetes.io/part-of: stardelt }
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 900
+      template:
+        metadata:
+          labels: { app.kubernetes.io/part-of: stardelt }
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1001
+            runAsGroup: 1001
+            fsGroup: 1001
+            seccompProfile: { type: RuntimeDefault }
+          initContainers:
+            - name: pg-dump
+              # Same image as the StatefulSet (scripts derive nothing from the
+              # tag here): pg_dump must not be newer than the server it reads.
+              image: docker.io/bitnamilegacy/postgresql:14.17.0-debian-12-r3
+              command: ["/bin/bash", "-ec"]
+              args:
+                - |
+                  dump="/dump/${APP}.dump"
+                  PGPASSWORD="$(cat "$PGPASSWORD_FILE")"
+                  export PGPASSWORD
+                  pg_dump --format=custom --no-owner --file="$dump" \
+                    --host="$PGHOST" --port="$PGPORT" --username="$PGUSER" --dbname="$PGDATABASE"
+                  unset PGPASSWORD
+                  size="$(stat -c %s "$dump")"
+                  [ "$size" -gt 0 ] || { echo "✗ ${APP}: pg_dump wrote an empty file" >&2; exit 1; }
+                  echo "› dumped ${APP} (${PGDATABASE} on ${PGHOST}): ${size} bytes"
+              env:
+                - { name: APP,              value: superset }
+                - { name: PGHOST,           value: superset-postgresql }
+                - { name: PGPORT,           value: "5432" }
+                - { name: PGDATABASE,       value: superset }
+                - { name: PGUSER,           value: superset }
+                - { name: PGPASSWORD_FILE,  value: /run/pg-secret/password }
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: ["ALL"] }
+              resources:
+                requests: { cpu: "100m", memory: "128Mi" }
+                limits:   { cpu: "500m", memory: "512Mi" }
+              volumeMounts:
+                - { name: dump,      mountPath: /dump }
+                - { name: tmp,       mountPath: /tmp }
+                - { name: pg-secret, mountPath: /run/pg-secret, readOnly: true }
+          containers:
+            - name: upload
+              # Digest-pinned: this container holds the S3 key and is the only
+              # place a tag bump could change what touches the bucket.
+              image: amazon/aws-cli:2.17.0@sha256:643507c10ada7964ca6157b3d799f030b90577643da9955d319a77399ed80d73
+              command: ["/bin/sh", "-ec"]
+              args:
+                - |
+                  dump="/dump/${APP}.dump"
+                  [ -s "$dump" ] || { echo "✗ ${APP}: no dump at $dump" >&2; exit 1; }
+                  size="$(stat -c %s "$dump")"
+                  s3() { aws --endpoint-url "$AWS_ENDPOINT_URL" "$@"; }
+                  key="pgdump/${APP}/$(date -u +%F).dump"
+                  s3 s3 cp "$dump" "s3://${BACKUP_BUCKET}/${key}" --no-progress --only-show-errors
+                  # Prove the object that landed is the object read: the size the
+                  # store reports, not the size the printer hopes for.
+                  remote="$(s3 s3api head-object --bucket "$BACKUP_BUCKET" --key "$key" \
+                    --query ContentLength --output text)"
+                  [ "$remote" = "$size" ] || {
+                    echo "✗ ${APP}: uploaded $key is ${remote} bytes, dump is ${size}" >&2
+                    exit 1
+                  }
+                  echo "› name=${APP} size=${size} key=s3://${BACKUP_BUCKET}/${key}"
+                  # Retention: drop this app's objects older than RETENTION_DAYS.
+                  # Only the `pgdump/<app>/` prefix is touched; the CNPG prefixes
+                  # next to it are not ours to prune.
+                  cutoff="$(date -u -d "${RETENTION_DAYS} days ago" +%s)"
+                  s3 s3api list-objects-v2 --bucket "$BACKUP_BUCKET" --prefix "pgdump/${APP}/" \
+                    --query 'Contents[].[Key,LastModified]' --output text |
+                  while read -r old modified; do
+                    # An empty listing prints the literal `None` with --output text.
+                    case "$old" in '' | None) continue ;; esac
+                    [ "$(date -u -d "$modified" +%s)" -lt "$cutoff" ] || continue
+                    s3 s3 rm "s3://${BACKUP_BUCKET}/${old}" --only-show-errors
+                    echo "› pruned s3://${BACKUP_BUCKET}/${old} (older than ${RETENTION_DAYS} days)"
+                  done
+              env:
+                - { name: APP,             value: superset }
+                - { name: BACKUP_BUCKET,   value: backups }
+                - { name: RETENTION_DAYS,  value: "14" }
+                - name: AWS_ENDPOINT_URL
+                  valueFrom: { secretKeyRef: { name: stardelt-s3-creds, key: endpoint } }
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom: { secretKeyRef: { name: stardelt-s3-creds, key: access-key } }
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom: { secretKeyRef: { name: stardelt-s3-creds, key: secret-key } }
+                - name: AWS_DEFAULT_REGION
+                  valueFrom: { secretKeyRef: { name: stardelt-s3-creds, key: region } }
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: ["ALL"] }
+              resources:
+                requests: { cpu: "100m", memory: "128Mi" }
+                limits:   { cpu: "500m", memory: "512Mi" }
+              volumeMounts:
+                - { name: dump, mountPath: /dump }
+                # aws-cli writes its CLI history to $HOME; /tmp is the only
+                # writable path in this container.
+                - { name: tmp,  mountPath: /tmp }
+          volumes:
+            - name: dump
+              emptyDir: {}
+            - name: tmp
+              emptyDir: {}
+            # One key, one file: the password never appears as an env literal,
+            # so `kubectl describe pod` and the pod spec show a path, not a value.
+            - name: pg-secret
+              secret:
+                secretName: superset-postgresql
+                items:
+                  - { key: password, path: password }
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: airflow-pg-dump
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+spec:
+  # 02:45 daily, 15 minutes after Superset's dump.
+  schedule: "45 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata:
+      labels: { app.kubernetes.io/part-of: stardelt }
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 900
+      template:
+        metadata:
+          labels: { app.kubernetes.io/part-of: stardelt }
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1001
+            runAsGroup: 1001
+            fsGroup: 1001
+            seccompProfile: { type: RuntimeDefault }
+          initContainers:
+            - name: pg-dump
+              # Same image as `airflow-postgresql` (PostgreSQL 16).
+              image: docker.io/bitnamilegacy/postgresql:16.1.0-debian-11-r15
+              command: ["/bin/bash", "-ec"]
+              args:
+                - |
+                  dump="/dump/${APP}.dump"
+                  PGPASSWORD="$(cat "$PGPASSWORD_FILE")"
+                  export PGPASSWORD
+                  pg_dump --format=custom --no-owner --file="$dump" \
+                    --host="$PGHOST" --port="$PGPORT" --username="$PGUSER" --dbname="$PGDATABASE"
+                  unset PGPASSWORD
+                  size="$(stat -c %s "$dump")"
+                  [ "$size" -gt 0 ] || { echo "✗ ${APP}: pg_dump wrote an empty file" >&2; exit 1; }
+                  echo "› dumped ${APP} (${PGDATABASE} on ${PGHOST}): ${size} bytes"
+              env:
+                # Airflow's chart leaves POSTGRES_USER/POSTGRES_DATABASE at their
+                # defaults: role `postgres`, database `postgres`.
+                - { name: APP,              value: airflow }
+                - { name: PGHOST,           value: airflow-postgresql }
+                - { name: PGPORT,           value: "5432" }
+                - { name: PGDATABASE,       value: postgres }
+                - { name: PGUSER,           value: postgres }
+                - { name: PGPASSWORD_FILE,  value: /run/pg-secret/password }
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: ["ALL"] }
+              resources:
+                requests: { cpu: "100m", memory: "128Mi" }
+                limits:   { cpu: "500m", memory: "512Mi" }
+              volumeMounts:
+                - { name: dump,      mountPath: /dump }
+                - { name: tmp,       mountPath: /tmp }
+                - { name: pg-secret, mountPath: /run/pg-secret, readOnly: true }
+          containers:
+            - name: upload
+              image: amazon/aws-cli:2.17.0@sha256:643507c10ada7964ca6157b3d799f030b90577643da9955d319a77399ed80d73
+              command: ["/bin/sh", "-ec"]
+              args:
+                - |
+                  dump="/dump/${APP}.dump"
+                  [ -s "$dump" ] || { echo "✗ ${APP}: no dump at $dump" >&2; exit 1; }
+                  size="$(stat -c %s "$dump")"
+                  s3() { aws --endpoint-url "$AWS_ENDPOINT_URL" "$@"; }
+                  key="pgdump/${APP}/$(date -u +%F).dump"
+                  s3 s3 cp "$dump" "s3://${BACKUP_BUCKET}/${key}" --no-progress --only-show-errors
+                  remote="$(s3 s3api head-object --bucket "$BACKUP_BUCKET" --key "$key" \
+                    --query ContentLength --output text)"
+                  [ "$remote" = "$size" ] || {
+                    echo "✗ ${APP}: uploaded $key is ${remote} bytes, dump is ${size}" >&2
+                    exit 1
+                  }
+                  echo "› name=${APP} size=${size} key=s3://${BACKUP_BUCKET}/${key}"
+                  cutoff="$(date -u -d "${RETENTION_DAYS} days ago" +%s)"
+                  s3 s3api list-objects-v2 --bucket "$BACKUP_BUCKET" --prefix "pgdump/${APP}/" \
+                    --query 'Contents[].[Key,LastModified]' --output text |
+                  while read -r old modified; do
+                    case "$old" in '' | None) continue ;; esac
+                    [ "$(date -u -d "$modified" +%s)" -lt "$cutoff" ] || continue
+                    s3 s3 rm "s3://${BACKUP_BUCKET}/${old}" --only-show-errors
+                    echo "› pruned s3://${BACKUP_BUCKET}/${old} (older than ${RETENTION_DAYS} days)"
+                  done
+              env:
+                - { name: APP,            value: airflow }
+                - { name: BACKUP_BUCKET,  value: backups }
+                - { name: RETENTION_DAYS, value: "14" }
+                - name: AWS_ENDPOINT_URL
+                  valueFrom: { secretKeyRef: { name: stardelt-s3-creds, key: endpoint } }
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom: { secretKeyRef: { name: stardelt-s3-creds, key: access-key } }
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom: { secretKeyRef: { name: stardelt-s3-creds, key: secret-key } }
+                - name: AWS_DEFAULT_REGION
+                  valueFrom: { secretKeyRef: { name: stardelt-s3-creds, key: region } }
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: ["ALL"] }
+              resources:
+                requests: { cpu: "100m", memory: "128Mi" }
+                limits:   { cpu: "500m", memory: "512Mi" }
+              volumeMounts:
+                - { name: dump, mountPath: /dump }
+                - { name: tmp,  mountPath: /tmp }
+          volumes:
+            - name: dump
+              emptyDir: {}
+            - name: tmp
+              emptyDir: {}
+            - name: pg-secret
+              secret:
+                secretName: airflow-postgresql
+                items:
+                  - { key: postgres-password, path: password }
