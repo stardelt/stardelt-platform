@@ -658,7 +658,13 @@ verify-catalog-permissions: _context ## Prove the permission matrix against the 
 #
 # Then the verification table in the ticket, by hand: the matrix per seed
 # person, Superset, a notebook, Nova, Airflow, and the latency of one scan.
-# `make catalog-enforce-rollback` is the way back.
+# `make catalog-enforce-rollback` is the way back. It rewrites the group file
+# and re-applies Trino, so the two disagree between those steps; a failure in
+# between leaves the group file naming the wrong strings (every group lookup
+# silently matches nobody) until the target is run again. `deps` is therefore a
+# prerequisite and the CronJob is switched back first, so a tool check or the
+# five-minute writer cannot strand the rollback half-done (seen live on
+# 2026-10-21).
 #
 # Two knobs define the state, and they must agree — a group file of `sub`
 # strings while the engine compares usernames drops every group silently:
@@ -668,7 +674,7 @@ verify-catalog-permissions: _context ## Prove the permission matrix against the 
 #                                  passes helm-values/trino-identity-file-only.yaml
 # ---------------------------------------------------------------------------
 .PHONY: catalog-enforce catalog-enforce-rollback
-catalog-enforce: _context ## Switch Trino to the permission bridge and the sub principal (gated; see the header)
+catalog-enforce: deps _context ## Switch Trino to the permission bridge and the sub principal (gated; see the header)
 	@$(MAKE) --no-print-directory access-sync-now
 	@$(MAKE) --no-print-directory verify-catalog-permissions
 	@NAMESPACE=$(NAMESPACE) bash scripts/bridge-replay.sh --data-only
@@ -682,22 +688,30 @@ catalog-enforce: _context ## Switch Trino to the permission bridge and the sub p
 	  $$(NAMESPACE=$(NAMESPACE) bash scripts/render-catalogs.sh admin-arg)
 	@kubectl -n $(NAMESPACE) rollout status deploy/lakekeeper --timeout=5m
 	@$(MAKE) --no-print-directory trino GROUP_PRINCIPAL=sub
+	@kubectl -n $(NAMESPACE) rollout status deploy/trino-coordinator --timeout=5m
 	@echo ""
 	@echo "stardelt: Trino now authorizes through the permission bridge (user = Keycloak sub)."
 	@echo "  Verify by hand (ticket #311): show catalogs / read / write / create per person,"
 	@echo "  Superset, a notebook, Nova, Airflow, and the latency of one scan."
 	@echo "  Roll back with: make catalog-enforce-rollback"
 
-catalog-enforce-rollback: _context ## Put Trino back on the file rules and the username principal (recovery; see the README)
+catalog-enforce-rollback: deps _context ## Put Trino back on the file rules and the username principal (recovery; see the README)
+	@# Order matters, and every step before the Trino apply is a window in which the
+	@# group file and the engine compare different strings (see the header). The
+	@# recovery was exercised live on 2026-10-21 and the first version got this
+	@# wrong: it rewrote the group file, then `make trino` stopped in its `deps`
+	@# check, and the two disagreed until the target ran again. `deps` is a
+	@# prerequisite now, and the CronJob goes first so the five-minute writer can
+	@# never re-apply `sub` in the middle of the rollback.
+	@# Stop the CronJob first: `make trino` had applied it with GROUP_PRINCIPAL=sub,
+	@# and it rewrites the group file to ids within five minutes.
+	@kubectl -n $(NAMESPACE) set env cronjob/trino-group-sync GROUP_PRINCIPAL=username >/dev/null
 	@echo "› Group file back to usernames"
 	@NAMESPACE=$(NAMESPACE) GROUP_PRINCIPAL=username bash scripts/sync-trino-groups.sh
 	@echo "› Trino: helm-values/trino-identity-file-only.yaml (file access control only, preferred_username)"
 	@$(MAKE) --no-print-directory trino GROUP_PRINCIPAL=username \
 	  TRINO_IDENTITY_OVERLAY="-f helm-values/trino-identity-file-only.yaml"
-	@# `make trino` applied the CronJob with GROUP_PRINCIPAL=sub; put it back, or it
-	@# rewrites the group file to ids within five minutes and every admin loses the
-	@# query visibility the file grants.
-	@kubectl -n $(NAMESPACE) set env cronjob/trino-group-sync GROUP_PRINCIPAL=username >/dev/null
+	@kubectl -n $(NAMESPACE) rollout status deploy/trino-coordinator --timeout=5m
 	@echo ""
 	@echo "stardelt: Trino is back on the file rules alone — every signed-in person"
 	@echo "  addresses every catalog again, and the Catalog grants enforce nothing."

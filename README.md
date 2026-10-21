@@ -1462,11 +1462,21 @@ before every catalog, schema, table and column operation (`make catalog-enforce`
 **Recovery.** `make catalog-enforce-rollback` puts Trino back on the file rules alone and
 the username principal, in one command, and says so when it is done: every signed-in
 person addresses every catalog again and the `Catalog` grants enforce nothing. The reason
-to roll back is a cell of the verification table failing — never "the bridge is slow":
-with the bridge as an authorizer, an unreachable bridge denies every statement, including
-`SELECT 1` (fail-closed, by design). `make verify-catalog-permissions` and
+to roll back is a cell of the verification table failing — including the latency cell, which
+is what a per-catalog authorizer round trip shows up in first. An unreachable bridge is
+*not* such a reason: fail-closed is the design, so fix the bridge rather than the switch
+(`SELECT 1` is denied while it is down). `make verify-catalog-permissions` and
 `make bridge-replay --data-only` answer the same questions the engine asks, without
 touching Trino, so they are the safe way to look before switching again.
+
+The rollback changes two things that must agree (the group file's strings and the principal
+Trino compares them with), so it has a window in which they do not. The target therefore
+runs `deps` first (a missing tool must not stop it half-way), switches the group-sync
+CronJob back before it touches the file (the five-minute writer must not re-apply `sub` in
+the middle), and waits for the coordinator rollout before it prints that it is done. A
+failure inside that window is recovered by running the same target again; it is idempotent.
+This was learned the hard way on 2026-10-21: the first shape rewrote the group file, then
+stopped in `make trino`'s `deps` check, and admins lost query visibility until the re-run.
 
 **One known limit.** The bridge's administrator list (`OPABridge.adminUsers`) is rendered
 from the `stardelt-admins` line of ConfigMap `trino-group-file` when a Lakekeeper release
@@ -1849,7 +1859,7 @@ kubectl -n stardelt delete pods -l spark-role=executor
 | `bridge-capture` | Capture the authorization requests the Trino coordinator's image sends to an OPA authorizer, from a throwaway pod with a stub, into `scripts/tests/fixtures/trino-opa-requests.json`; refresh after a Trino upgrade (platform#333) |
 | `bridge-replay` | Replay the captured requests against the live bridge for the three seed people and an admin: contract, probes, must-work reads and the matrix; exit 1 on an error, empty answer or wrong row. `--data-only` is the matrix gate (platform#333) |
 | `catalog-enforce` | **The switch** (platform#311): Trino asks the bridge and the engine user becomes the Keycloak `sub`. Gated in order — `access-sync-now`, `verify-catalog-permissions`, `bridge-replay --data-only`, the group file by `sub`, Lakekeeper with `OPABridge.adminUsers`, `make trino` — and stops at the first failure. See [Who may read what](#who-may-read-what) |
-| `catalog-enforce-rollback` | The recovery path: group file back to usernames, Trino back on the file access control alone (`helm-values/trino-identity-file-only.yaml`), the group-sync CronJob back to `GROUP_PRINCIPAL=username`. One command, for a failed cell of the switch's verification |
+| `catalog-enforce-rollback` | The recovery path: the group-sync CronJob back to `GROUP_PRINCIPAL=username` first (so the five-minute writer cannot re-apply `sub` mid-rollback), then the group file by usernames, then Trino on the file access control alone (`helm-values/trino-identity-file-only.yaml`), waiting for the rollout. `deps` is a prerequisite, so a missing tool cannot stop it after it has started changing state. One command, for a failed cell of the switch's verification |
 | `trino` | Install/upgrade Trino; adds `helm-values/trino-identity.yaml` (Keycloak OAuth2 + service-account password) when `stardelt-identity` exists |
 | `sync-trino-groups` | Sync the live realm's `stardelt-admins` membership into ConfigMap `trino-group-file` (Trino query visibility); `GROUP_PRINCIPAL=sub` (default) or `username` decides whether it holds Keycloak user ids or usernames, and must match Trino's `principal-field`; idempotent, runs inside `make trino` (#125, #311) |
 | `install-operator` | Install the stardelt Operator from `../stardelt-operator/chart` (dev path) |
