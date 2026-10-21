@@ -613,6 +613,23 @@ unseed-dev-access: _context ## Remove the dev seed users, groups, seed catalogs 
 verify-catalog-permissions: _context ## Prove the permission matrix against the OPA bridge (exit 1 on any mismatch)
 	@NAMESPACE=$(NAMESPACE) bash scripts/verify-catalog-permissions.sh
 
+# ---------------------------------------------------------------------------
+# The bridge contract (platform#333): what Trino sends the OPA authorizer, and
+# what the bridge answers. `capture` runs the coordinator image as a throwaway
+# pod with a stub authorizer that says yes and records every body; the fixture
+# is the evidence, refreshed after a Trino upgrade. `replay` asks the live
+# bridge the captured questions for the four seed principals and prints one
+# table — no cluster change, one throwaway pod admitted by `lakekeeper-ingress`.
+# `catalog-authz` and `catalog-enforce` (#311) run `replay --data-only` as a
+# gate: the questions a query depends on must be answered correctly.
+# ---------------------------------------------------------------------------
+.PHONY: bridge-capture bridge-replay
+bridge-capture: _context ## Capture the OPA requests Trino sends (rewrites scripts/tests/fixtures/trino-opa-requests.json)
+	@NAMESPACE=$(NAMESPACE) bash scripts/bridge-capture.sh
+
+bridge-replay: _context ## Replay the captured OPA requests against the live bridge (exit 1 on an error, empty answer or wrong data row)
+	@NAMESPACE=$(NAMESPACE) bash scripts/bridge-replay.sh
+
 # The public client developer tools on a laptop sign in with (platform#157): the device grant and
 # PKCE to a loopback address. `make sync-dev-client DEV_CLIENT_ENABLED=false` switches it off.
 sync-dev-client: _context ## Converge the live realm's stardelt-dev client (device grant, PKCE, loopback redirects; idempotent)

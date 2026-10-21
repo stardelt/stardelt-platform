@@ -49,6 +49,42 @@ OPABridge:
     - trinoCatalog: warehouse
       lakekeeperWarehouse: warehouse
   allowUnmanagedCatalogs: true
+  # stardelt's additions to the chart's rules (platform#333, "The bridge
+  # contract" in the README). The chart's policies answer catalog, schema and
+  # table questions from Lakekeeper's grants; three operations Trino 480 asks
+  # have no rule at all, and the bridge's default deny then breaks ordinary use:
+  #
+  #   * SetSystemSessionProperty — Trino asks before *any* `SET SESSION` (the
+  #     CLI, JDBC, Superset). Without a rule every session property is refused,
+  #     including `SET SESSION query_max_run_time`, which is not data.
+  #   * ShowFunctions/FilterFunctions on a *managed* catalog — `SHOW FUNCTIONS
+  #     FROM finance.seed` comes back empty because the function filter is
+  #     denied. A function list is metadata: it follows the same question as the
+  #     catalog itself (Lakekeeper's `get_config`, the `browse` verb), so a
+  #     person who may see a catalog may see its functions. The unmapped
+  #     catalogs (system, tpch, tpcds) are already allowed through
+  #     allowUnmanagedCatalogs.
+  #
+  # Every rule here is proved by `make bridge-replay`; the file is the "one
+  # small policy" the ticket allows, not a second policy layer.
+  customPolicies:
+    trino.stardelt.rego: |
+      package trino
+
+      # Trino asks this before applying any system session property.
+      allow if {
+      	input.action.operation == "SetSystemSessionProperty"
+      }
+
+      # A function question names its catalog on the schema (ShowFunctions) or
+      # on the function (FilterFunctions).
+      _function_catalog := input.action.resource.schema.catalogName
+      _function_catalog := input.action.resource.function.catalogName
+
+      allow if {
+      	input.action.operation in ["ShowFunctions", "FilterFunctions"]
+      	require_catalog_access_simple(_function_catalog, "get_config")
+      }
   resources:
     requests: { cpu: "20m", memory: "48Mi" }
     limits: { memory: "256Mi" }
