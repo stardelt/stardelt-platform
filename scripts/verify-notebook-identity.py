@@ -197,7 +197,7 @@ print(f"    pod: {pod}")
 # token the pod uses — no second source of truth for who this person is.
 if PRINCIPAL not in ("sub", "username"):
     sys.exit(f"verify-notebook-identity: GROUP_PRINCIPAL must be 'sub' or 'username', not {PRINCIPAL!r}")
-expected = token_claim("id") if PRINCIPAL == "sub" else token_claim("preferred_username")
+expected = token_claim("sub") if PRINCIPAL == "sub" else token_claim("preferred_username")
 if not expected:
     sys.exit(f"verify-notebook-identity: the token in pod {pod} carries no {PRINCIPAL!r} claim")
 
