@@ -1207,6 +1207,77 @@ reject is skipped with a warning. On a cluster without the Catalog CRD (no opera
 catalog. The umbrella chart path (`make chart-install`) is not wired to this yet: it still
 renders its own static `warehouse` catalog from `chart/values.yaml`.
 
+### Dev seed: four catalogs, three people, one matrix
+
+A small permission set you can check by hand, for development and for demoing the model
+(platform#309). `make seed-dev-access YES=1` creates:
+
+| object | what it is |
+|---|---|
+| group `finops` | owns `finance`, reads and writes it |
+| group `analytics` | owns `product`, may read `finance` |
+| users `dev-finops`, `dev-analytics`, `dev-outsider` | one person per row; all also in the default group `stardelt-users` |
+| the existing user `analyst` | added to `analytics` (a person, not a seed user) |
+| Catalogs `warehouse`, `finance`, `product`, `sandbox` | from `dev/seed/catalogs.yaml` |
+| schema `seed`, table `nation` (25 rows) | created in `finance`, `product` and `sandbox` through the Trino service account |
+
+`dev-outsider` gets no domain group: it is the row of `false`. All three seed users are
+marked in Keycloak with the attribute `stardelt-managed=seed`; that attribute is what
+`make unseed-dev-access` deletes, so a user or group this seed did not create is never
+touched. Keycloak 24+ drops undeclared user attributes on a fresh realm, so the seed also
+sets `unmanagedAttributePolicy=ADMIN_EDIT` on the realm's user profile — administrators
+may write the marker, users see no extra attribute.
+
+**Passwords are generated at run time, 24 random characters, and are stored only in
+Secret `dev-seed-users`** (one key per user name). Nothing prints them, and they are never
+committed:
+
+```sh
+kubectl -n stardelt get secret dev-seed-users -o jsonpath='{.data.dev-finops}' | base64 -d
+```
+
+The matrix the grants encode, and the one `make verify-catalog-permissions` proves by
+asking the OPA bridge the same question Trino asks it (`POST
+http://lakekeeper-opa:8282/v1/data/trino/allow`, from a throwaway pod labelled like the
+Trino coordinator so `lakekeeper-ingress` admits it):
+
+| operation | `dev-finops` | `dev-analytics` | `dev-outsider` |
+|---|:--:|:--:|:--:|
+| `AccessCatalog finance` | true | true | false |
+| `SelectFromColumns finance.seed.nation` | true | true | false |
+| `InsertIntoTable finance.seed.nation` | true | false | false |
+| `AccessCatalog product` | true | true | false |
+| `SelectFromColumns product.seed.nation` | false | true | false |
+| `InsertIntoTable product.seed.nation` | false | true | false |
+| `AccessCatalog sandbox` | true | true | true |
+| `InsertIntoTable sandbox.seed.nation` | true | true | true |
+| `SelectFromColumns warehouse.demo.trips` | true | true | true |
+
+`AccessCatalog` is `browse` (Lakekeeper `describe`) — on a catalog it is also the ability
+to address it, which is why it differs from a table's `select`. `warehouse` keeps today's
+behaviour for `stardelt-users` (browse, select, write, create); narrowing it is a later,
+announced change (internal note `design/multitenant-catalogs.md` §9 Q6). `sandbox` is the
+one new catalog every signed-in person may use.
+
+```sh
+make seed-dev-access YES=1        # idempotent: a second run reports everything as present
+make verify-catalog-permissions   # table of PASS/FAIL, exit 1 on any mismatch
+make unseed-dev-access YES=1      # delete the seed users, groups, catalogs and Secret
+```
+
+Both mutating targets need `YES=1` and refuse when ConfigMap `stardelt-identity` says
+`environment: production`: this is a development aid, not an install step. The seed runs
+`make access-sync-now` and `make catalogs`, so the first run restarts Trino once (the
+catalog set changed) and takes about a minute.
+
+`unseed` deletes only what the seed created: the users and groups carrying
+`stardelt-managed=seed`, the Catalogs `finance`, `product` and `sandbox`, and Secret
+`dev-seed-users` (its passwords belong to users that no longer exist). It never deletes
+the `warehouse` Catalog, a Lakekeeper warehouse, a schema or a table — deleting a Catalog
+deletes no data. The `seed` schema stays, the seed warehouses stay (reported as orphan
+warehouses by the next sync tick), and `analyst` stays a person. Run `make catalogs` after
+an unseed if you want Trino to forget the removed catalogs before the next seed.
+
 ---
 
 ## Spark — heavy compute on the same Iceberg tables
@@ -1433,6 +1504,9 @@ kubectl -n stardelt delete pods -l spark-role=executor
 | `access-sync` | Create/refresh ConfigMap `access-sync-script` and apply CronJob `access-sync` — one Lakekeeper warehouse per `Catalog`, its `owner`/`grants` on that warehouse (platform#305, #306) |
 | `access-sync-now` | Run that CronJob once as a Job now, wait for it and print its log |
 | `catalogs` | Converge every Ready `Catalog` into a Trino catalog and an OPA-bridge mapping; runs `access-sync-now`, upgrades Lakekeeper, then Trino (restarts Trino only when the set changed) (platform#308) |
+| `seed-dev-access` | Create the dev seed: groups `finops`/`analytics`, users `dev-*`, Catalogs `warehouse`/`finance`/`product`/`sandbox` and the `seed.nation` tables; needs `YES=1`, refuses on `environment: production` (platform#309) |
+| `unseed-dev-access` | Delete the seed users, groups and Catalogs and Secret `dev-seed-users`; needs `YES=1`, never touches `warehouse` or data (platform#309) |
+| `verify-catalog-permissions` | Prove the nine-row permission matrix against the OPA bridge, one PASS/FAIL per cell; exit 1 on any mismatch (platform#309) |
 | `trino` | Install/upgrade Trino; adds `helm-values/trino-identity.yaml` (Keycloak OAuth2 + service-account password) when `stardelt-identity` exists |
 | `sync-trino-groups` | Sync the live realm's `stardelt-admins` membership into ConfigMap `trino-group-file` (Trino query visibility); idempotent, runs inside `make trino` (#125) |
 | `install-operator` | Install the stardelt Operator from `../stardelt-operator/chart` (dev path) |
@@ -1504,6 +1578,9 @@ scripts/
   render-catalogs.sh    Ready Catalogs → Trino `--set-file`s and the bridge's `--set-json` (platform#308)
   identity-bootstrap.sh Generate the IdP Secrets + render realm/identity ConfigMaps
   keycloak-sync-trino-client.sh  Sync the live realm's Trino token settings (import skips an existing realm)
+  lib/keycloak-admin.sh Shared Keycloak admin-API access (port-forward, forwarded headers, master token)
+  seed-dev-access.sh    Dev seed: groups, people, four Catalogs, the seed tables (platform#309)
+  verify-catalog-permissions.sh  Prove the permission matrix against the OPA bridge (platform#309)
   lint.sh               bash -n + ShellCheck the shell scripts (make lint)
   port-forwards.sh      Background port-forwards to all services
   protect-branches.sh   Apply `main` branch protection in all five stardelt repos

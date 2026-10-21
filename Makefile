@@ -588,6 +588,31 @@ catalogs: _context ## Converge Catalogs into Trino catalogs + bridge mappings (r
 	@kubectl -n $(NAMESPACE) rollout status deploy/lakekeeper --timeout=5m
 	@$(MAKE) --no-print-directory trino
 
+# ---------------------------------------------------------------------------
+# Dev seed (platform#309, authz 7/8) — a small, repeatable permission set a
+# person can check by hand: two domain groups (`finops`, `analytics`), three
+# seed people (plus the existing `analyst`), and four catalogs (warehouse,
+# finance, product, sandbox) whose grants are the matrix
+# `make verify-catalog-permissions` proves against the OPA bridge.
+#
+# The seed is a development aid, never an install step: it refuses when
+# ConfigMap `stardelt-identity` says environment=production, and both targets
+# need YES=1. Passwords are generated at run time and stored only in Secret
+# `dev-seed-users` (one key per user name) — never printed, never committed.
+# A second seed run changes nothing; `unseed` deletes only what carries the
+# Keycloak attribute `stardelt-managed=seed`, the three seed Catalogs and that
+# Secret — never `warehouse`, a Lakekeeper warehouse, or data.
+# ---------------------------------------------------------------------------
+.PHONY: seed-dev-access unseed-dev-access verify-catalog-permissions
+seed-dev-access: _context ## Create the dev seed groups, people, four catalogs and the seed tables (needs YES=1)
+	@NAMESPACE=$(NAMESPACE) YES=$(YES) bash scripts/seed-dev-access.sh
+
+unseed-dev-access: _context ## Remove the dev seed users, groups, seed catalogs and their Secret (needs YES=1)
+	@NAMESPACE=$(NAMESPACE) YES=$(YES) bash scripts/seed-dev-access.sh --unseed
+
+verify-catalog-permissions: _context ## Prove the permission matrix against the OPA bridge (exit 1 on any mismatch)
+	@NAMESPACE=$(NAMESPACE) bash scripts/verify-catalog-permissions.sh
+
 # The public client developer tools on a laptop sign in with (platform#157): the device grant and
 # PKCE to a loopback address. `make sync-dev-client DEV_CLIENT_ENABLED=false` switches it off.
 sync-dev-client: _context ## Converge the live realm's stardelt-dev client (device grant, PKCE, loopback redirects; idempotent)
