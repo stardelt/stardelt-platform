@@ -37,3 +37,28 @@ private bucket fails with an access error, and the platform's own storage
 table, where the catalog's grants apply. The jars and the switch live in the Spark
 image and `manifests/spark.yaml`; the platform README ("Reading public S3 with
 Spark") has the details.
+
+## Python on executors
+
+UDFs run. `udf`, `pandas_udf`, `mapInPandas`, `applyInPandas`, `foreach` and
+`foreachPartition` execute the Python you write on the Spark workers:
+
+```python
+from pyspark.sql import functions as F
+
+spark = stardelt.spark()
+spark.range(5).select(F.udf(lambda x: x + 1, "long")("id").alias("v")).show()
+```
+
+The worker interpreter is CPython **3.11** — the same minor as this notebook — with
+exactly `pandas==2.2.3`, `pyarrow==18.1.0` and `numpy==2.0.2`, this image's versions.
+Nothing else is installed there: a library you `import` inside a UDF, or install in
+the notebook with `!pip install`, is **not** available on the executors. Do that work
+in the notebook process instead (or ask for the library to be added to the Spark
+image, `images/spark/Dockerfile`).
+
+Python code crosses the wire as a pickle and PySpark compares the *minor* version, so
+the two images must stay on one Python minor: if they drift apart, every one of those
+calls fails with `[PYTHON_VERSION_MISMATCH] Python in worker has different version ...
+than that in driver ...` while DataFrame and SQL keep working. Keep both on the same
+Python minor: Spark Connect UDFs fail otherwise (platform#369).

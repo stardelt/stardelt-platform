@@ -25,7 +25,13 @@ What it checks:
      Trino agree row for row.
   2. A table written by Trino is readable from Spark.
   3. A table written by Spark is readable from Trino.
-  4. The scratch namespace `spark_verify` is dropped again.
+  4. Python on the executors: `udf`, `pandas_udf`, `mapInPandas`,
+     `applyInPandas`, `foreach` and `foreachPartition` return the expected rows,
+     and the worker interpreter is the client's Python minor. A mismatch is the
+     `[PYTHON_VERSION_MISMATCH]` failure that makes every one of them fail
+     (platform#369), so the guard prints both versions and fails with
+     "keep both on the same Python minor: Spark Connect UDFs fail otherwise".
+  5. The scratch namespace `spark_verify` is dropped again.
 
 Trino is queried with the same `TRINO_TOKEN` as a bearer; `TRINO_USER` /
 `TRINO_PASSWORD` (HTTP Basic) and anonymous access remain available for the
@@ -38,6 +44,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import platform
 import ssl
 import sys
 import urllib.request
@@ -142,6 +149,143 @@ def spark_session():
     return builder.create()
 
 
+# Python on the executors (platform#369). Every function below runs *in the
+# worker* on an executor, never in this process, and pandas is not imported at
+# module level on purpose: the closure has to pickle without pandas on the
+# client (the documented verification pod installs `pyspark-client` only), and
+# the worker has pandas from the Spark image.
+def _python_version():
+    import platform as _platform
+
+    return _platform.python_version()
+
+
+def _plus_one(value):
+    return value + 1
+
+
+def _one_more_per_batch(batches):
+    for pdf in batches:
+        yield pdf.assign(id=pdf["id"] + 1)
+
+
+def _double_id_per_group(pdf):
+    return pdf.assign(id=pdf["id"] * 2)
+
+
+def _noop(_row) -> None:
+    return None
+
+
+def _noop_partition(rows) -> None:
+    for _row in rows:
+        pass
+
+
+def check_python_on_executors(spark) -> None:
+    """Prove the Python path works: UDFs, pandas UDFs, mapInPandas, foreach.
+
+    A `[PYTHON_VERSION_MISMATCH]` between this client and the worker is the
+    failure this guards: `udf`, `pandas_udf`, `mapInPandas`, `applyInPandas`,
+    `foreach` and `foreachPartition` all die with it, while DataFrame/SQL keeps
+    working (platform#369). Each check records its own failure, so the script
+    exits non-zero instead of stopping at the first.
+    """
+    from pyspark.sql import functions as F
+
+    client = platform.python_version()
+    print(f"  client python {client}")
+    try:
+        worker = (
+            spark.range(1).select(F.udf(_python_version, "string")().alias("version"))
+        ).first()["version"]
+    except Exception as exc:  # the mismatch arrives as a worker error
+        print(f"  worker python: refused — {type(exc).__name__}: {str(exc)[:300]}")
+        check(
+            "worker Python matches the client",
+            False,
+            "keep both on the same Python minor: Spark Connect UDFs fail otherwise",
+        )
+    else:
+        print(f"  worker python {worker}")
+        same_minor = ".".join(client.split(".")[:2]) == ".".join(worker.split(".")[:2])
+        check(
+            "worker Python matches the client",
+            same_minor,
+            ""
+            if same_minor
+            else (
+                f"keep both on the same Python minor: Spark Connect UDFs fail "
+                f"otherwise ({worker} in the worker, {client} in the driver)"
+            ),
+        )
+
+    def udf_rows() -> None:
+        got = sorted(
+            row.v
+            for row in spark.range(5)
+            .select(F.udf(_plus_one, "long")("id").alias("v"))
+            .collect()
+        )
+        print(f"  udf(lambda x: x + 1) over range(5): {got}")
+        check("udf runs on the executors", got == [1, 2, 3, 4, 5])
+
+    def pandas_udf_rows() -> None:
+        plus_one = F.pandas_udf(lambda series: series + 1, "long")
+        frame = spark.range(5).select(plus_one("id").alias("v"))
+        got = sorted(row.v for row in frame.collect())
+        print(f"  pandas_udf: {got}")
+        check("pandas_udf runs on the executors", got == [1, 2, 3, 4, 5])
+
+    def map_in_pandas_rows() -> None:
+        frame = spark.range(5).mapInPandas(_one_more_per_batch, "id long")
+        got = sorted(row.id for row in frame.collect())
+        print(f"  mapInPandas: {got}")
+        check("mapInPandas runs on the executors", got == [1, 2, 3, 4, 5])
+
+    def apply_in_pandas_rows() -> None:
+        frame = (
+            spark.range(10)
+            .withColumn("g", F.col("id") % 2)
+            .groupBy("g")
+            .applyInPandas(_double_id_per_group, "g long, id long")
+        )
+        got = sorted((row.g, row.id) for row in frame.collect())
+        print(f"  applyInPandas: {got}")
+        expected = [(0, 0), (0, 4), (0, 8), (0, 12), (0, 16), (1, 2), (1, 6), (1, 10), (1, 14), (1, 18)]
+        check("applyInPandas runs on the executors", got == expected)
+
+    def foreach_rows() -> None:
+        spark.range(5).foreach(_noop)
+        spark.range(5).foreachPartition(_noop_partition)
+        print("  foreach and foreachPartition: completed")
+        check("foreach and foreachPartition run on the executors", True)
+
+    def partition_count() -> None:
+        count = (
+            spark.range(1000)
+            .repartition(8)
+            .select(F.spark_partition_id())
+            .distinct()
+            .count()
+        )
+        print(f"  spark.range(1000).repartition(8) → {count} partitions")
+        check("repartition(8) runs on eight partitions", count == 8)
+
+    for label, run in (
+        ("udf runs on the executors", udf_rows),
+        ("pandas_udf runs on the executors", pandas_udf_rows),
+        ("mapInPandas runs on the executors", map_in_pandas_rows),
+        ("applyInPandas runs on the executors", apply_in_pandas_rows),
+        ("foreach and foreachPartition run on the executors", foreach_rows),
+        ("repartition(8) runs on eight partitions", partition_count),
+    ):
+        try:
+            run()
+        except Exception as exc:  # record it, keep checking, exit 1 at the end
+            check(label, False, f"{type(exc).__name__}: {str(exc)[:300]}")
+
+
 def main() -> int:
     spark = spark_session()
     print(f"› Spark Connect: {SPARK_REMOTE}")
@@ -194,8 +338,11 @@ def main() -> int:
                 "Trino reads Spark's table",
                 from_spark == [(10, "from-spark"), (20, "from-spark")],
             )
+
+            print("\n4. Python on the executors (UDFs, pandas UDFs, mapInPandas, foreach)")
+            check_python_on_executors(spark)
         finally:
-            print(f"\n4. cleaning up {SCRATCH}")
+            print(f"\n5. cleaning up {SCRATCH}")
             for statement in (
                 f"DROP TABLE IF EXISTS {SCRATCH}.from_trino",
                 f"DROP TABLE IF EXISTS {SCRATCH}.from_spark",
@@ -211,7 +358,7 @@ def main() -> int:
     if failures:
         print(f"\nverify-spark-iceberg: FAILED ({', '.join(failures)})")
         return 1
-    print("\nverify-spark-iceberg: OK — two-way Iceberg round trip and Trino parity")
+    print("\nverify-spark-iceberg: OK — two-way Iceberg round trip, Trino parity, Python on the executors")
     return 0
 
 
