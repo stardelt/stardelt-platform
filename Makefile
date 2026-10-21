@@ -39,17 +39,12 @@ JUPYTER_IMAGE  := ghcr.io/stardelt/jupyter-singleuser:dev
 TRINO_EXTRA := $(if $(filter 1,$(SLIM)),-f helm-values/slim/trino.yaml,)
 # Query-log feed (stardelt-nova#116): Trino's event listener posts to Nova's internal port.
 TRINO_QUERYLOG := -f helm-values/trino-query-log.yaml
-# Which claim names the Trino principal (platform#311) and therefore what the
-# group file holds. `sub` is the switched state (`make catalog-enforce`);
-# `username` is the pre-switch state (`make catalog-enforce-rollback` passes it,
-# together with the overlay below). One knob for both so they cannot disagree:
-# a group file of ids while the engine compares usernames silently drops every
-# group, and an administrator quietly loses the query visibility it grants.
-GROUP_PRINCIPAL ?= sub
 # An extra `-f` for the identity branch of `make trino`, applied last. Empty in
 # the normal case; `make catalog-enforce-rollback` passes
-# helm-values/trino-identity-file-only.yaml, which keeps `preferred_username`
-# and the file access control alone.
+# helm-values/trino-identity-file-only.yaml, which keeps the file access control
+# alone (the bridge off). The engine's principal stays the Keycloak `sub` in both
+# states: the group file is written by access-sync by `sub` since platform#312, and
+# there is no second writer to flip it.
 TRINO_IDENTITY_OVERLAY ?=
 
 # Extra `-f`/`--set` arguments for the umbrella chart, e.g.
@@ -64,7 +59,7 @@ BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 .PHONY: chart-deps chart-template chart-install
 .PHONY: verify-backups verify-backups-identity verify-backups-nova verify-backups-openfga verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
 .PHONY: backups verify-pgdump
-.PHONY: sync-oidc-clients verify-oidc-clients verify-trino-tls verify-trino-auth sync-trino-groups sync-trino-group-sync-client sync-pipeline-runner-client sync-dev-client sync-catalog-audience openbao test-openbao-policies seaweedfs-admin
+.PHONY: sync-oidc-clients verify-oidc-clients verify-trino-tls verify-trino-auth sync-trino-group-sync-client sync-pipeline-runner-client sync-dev-client sync-catalog-audience openbao test-openbao-policies seaweedfs-admin
 .PHONY: external-secrets eso-stores
 
 help: ## Show this help
@@ -417,12 +412,9 @@ trino: deps _context ## Install/upgrade Trino, with OAuth2+TLS when a platform I
 	    echo "    ('make install-identity'), or Nova keeps its plain-HTTP default and cannot" >&2; \
 	    echo "    reach the TLS listener." >&2; \
 	  fi; \
-	  echo "› Trino group file: sync stardelt-admins into ConfigMap trino-group-file (platform#125)"; \
-	  NAMESPACE=$(NAMESPACE) GROUP_PRINCIPAL=$(GROUP_PRINCIPAL) bash scripts/sync-trino-groups.sh; \
-	  echo "› Trino group sync: refresh the job script and apply the 5-minute CronJob (platform#167)"; \
-	  kubectl -n $(NAMESPACE) create configmap trino-group-sync-script --from-file=job.py=scripts/trino-group-sync-job.py \
-	    --dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
-	  kubectl apply -f manifests/trino-group-sync.yaml; \
+	  echo "› Trino warehouses and group file: ensure ConfigMaps trino-warehouses (resource-groups.json) and trino-group-file (groups.txt), then one access-sync (platform#312)"; \
+	  $(MAKE) --no-print-directory trino-warehouse-configmaps || exit 1; \
+	  $(MAKE) --no-print-directory access-sync-now || exit 1; \
 	  helm upgrade --install trino trino/trino \
 	    --version $(TRINO_VERSION) \
 	    $(HELM_FLAGS) \
@@ -480,24 +472,12 @@ sync-oidc-clients: _context ## Point the realm's confidential clients at Secret 
 verify-oidc-clients: _context ## Prove every confidential client's secret still authenticates (token endpoint, in-cluster)
 	@NAMESPACE=$(NAMESPACE) bash scripts/verify-oidc-clients.sh
 
-# platform#125: query visibility is owner-only, admins exempted (file-based
-# system access control + file group provider in helm-values/trino-identity.yaml).
-# sync-trino-groups writes the live realm's `stardelt-admins` membership into
-# ConfigMap trino-group-file before the upgrade; file.refresh-period picks a
-# remounted file up with no restart, so only a values change needs the
-# coordinator restart below (which drops running queries — pick a quiet moment).
-# Between applies, CronJob trino-group-sync (platform#167) keeps that ConfigMap
-# converged every 5 minutes — membership changes land without any apply.
-sync-trino-groups: _context ## Sync the live realm's stardelt-admins membership into ConfigMap trino-group-file (idempotent)
-	@NAMESPACE=$(NAMESPACE) bash scripts/sync-trino-groups.sh
-
-# platform#167: the group file above went stale between applies — a removed
-# admin kept their all-queries view with no bound. The CronJob in
-# manifests/trino-group-sync.yaml re-runs the sync every 5 minutes as the
-# dedicated `trino-group-sync` service-account client (exactly view-users on
-# realm-management, converged here; the import only declares it for fresh
-# realms). install-identity runs this before `trino` so the client exists when
-# the CronJob starts ticking.
+# platform#167: the group file used to go stale between applies — a removed
+# admin kept their all-queries view with no bound. Since platform#312 the file
+# (and the warehouses' resource groups) is converged by CronJob `access-sync`
+# every 2 minutes, which reads the realm as this dedicated service-account
+# client. The client exists before the CronJob starts ticking: install-identity
+# runs this target, and the realm import only declares it for fresh realms.
 sync-trino-group-sync-client: _context ## Converge the live realm's trino-group-sync client (secret + read-only grant, idempotent)
 	@NAMESPACE=$(NAMESPACE) bash scripts/keycloak-sync-trino-group-sync-client.sh
 
@@ -570,8 +550,10 @@ delete-catalog-clients: _context ## Delete the seven svc-catalog-* service clien
 	@NAMESPACE=$(NAMESPACE) KIND=service NAME=catalog-operator YES=$(YES) bash scripts/keycloak-sync-principal.sh --delete
 
 # ---------------------------------------------------------------------------
-# Access sync (platform#305, authz 4/8; platform#306, 5/8) — `Catalog` objects
-# become Lakekeeper warehouses, their `owner`/`grants` become grants on them.
+# Access sync (platform#305, authz 4/8; platform#306, 5/8; platform#312,
+# warehouses) — `Catalog` objects become Lakekeeper warehouses, their
+# `owner`/`grants` become grants on them, and `SqlWarehouse` objects become the
+# coordinator's resource groups and the Trino group file.
 #
 # CronJob `access-sync` (every 2 minutes) converges every Catalog into one
 # Lakekeeper warehouse, turns each declared Keycloak group into a Lakekeeper role
@@ -580,19 +562,40 @@ delete-catalog-clients: _context ## Delete the seven svc-catalog-* service clien
 # `GrantsReady` / `Drift` conditions back; scripts/access-sync-job.py holds the
 # rules, the design and the "what is not built" list (per-catalog buckets). The
 # script reaches the Pod on ConfigMap `access-sync-script`, refreshed here from the
-# file on every apply so there is one source of truth — the pattern of CronJob
-# trino-group-sync (platform#167).
+# file on every apply so there is one source of truth.
+#
+# The same tick renders every `SqlWarehouse` into ConfigMap `trino-warehouses`
+# (key `resource-groups.json`, loaded once by the coordinator — a change needs a
+# restart, ticket 2/3) and writes the `stardelt-admins` line plus one `wh-<name>`
+# line per warehouse into `trino-group-file` (key `groups.txt`, re-read within
+# 30 s). Both ConfigMaps are created empty here and never by the job: its Role has
+# no `create`, and applying an empty object over one access-sync owns would wipe
+# the content.
 #
 # Needs the identity install: the job signs in to the catalog as
 # `svc-catalog-operator` (project_admin) and reads groups from the realm as
 # `trino-group-sync`, so a bare `install-core` — anonymous catalog, no IdP — gets
 # no CronJob.
 # ---------------------------------------------------------------------------
-.PHONY: access-sync access-sync-now
+.PHONY: access-sync access-sync-now trino-warehouse-configmaps
 access-sync: _context ## Create/refresh the script ConfigMap and apply CronJob access-sync
+	@$(MAKE) --no-print-directory trino-warehouse-configmaps
 	@kubectl -n $(NAMESPACE) create configmap access-sync-script --from-file=job.py=scripts/access-sync-job.py \
 	  --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 	@kubectl apply -f manifests/access-sync.yaml
+
+trino-warehouse-configmaps: _context ## Create ConfigMaps trino-warehouses/trino-group-file when missing (access-sync fills them)
+	@# Only when missing: `kubectl apply` of the empty object over a ConfigMap the
+	@# sync has already written would blank the file (and, for trino-warehouses,
+	@# trigger a coordinator restart on the next `make trino`).
+	@for cm in trino-warehouses trino-group-file; do \
+	  key=resource-groups.json; [ "$$cm" = trino-group-file ] && key=groups.txt; \
+	  kubectl -n $(NAMESPACE) get configmap "$$cm" >/dev/null 2>&1 || { \
+	    echo "› ConfigMap $$cm does not exist — creating it empty (access-sync fills it)"; \
+	    kubectl -n $(NAMESPACE) create configmap "$$cm" --from-literal="$$key=" \
+	      --dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
+	  }; \
+	done
 
 access-sync-now: _context ## Run one access-sync Job now, wait for it and print its log
 	@name=access-sync-now-$$(date +%s); \
@@ -685,41 +688,33 @@ verify-catalog-permissions: _context ## Prove the live Catalog grants against th
 # failure:
 #
 #   1. `make access-sync-now` — every Catalog's grants are on its warehouse,
-#      and the role assignees are `oidc~<sub>` (the ids Trino will present);
+#      the role assignees are `oidc~<sub>` (the ids Trino will present), and the
+#      group file and resource groups are converged (platform#312);
 #   2. `make verify-catalog-permissions` — the nine-question matrix answered by
 #      the bridge itself (the questions the engine will ask);
 #   3. `bash scripts/bridge-replay.sh --data-only` — the same answers against
 #      the *captured* Trino requests (platform#333), so a request shape the
 #      bridge mishandles fails here and not on a person's screen;
-#   4. `bash scripts/sync-trino-groups.sh` — the group file by `sub`, so
-#      `stardelt-admins` still matches what Trino compares against;
-#   5. the Lakekeeper release with `OPABridge.adminUsers` (the same group), so
-#      an administrator is not vetoed by the bridge;
-#   6. `make trino` — the new values, both access-control files, the principal.
+#   4. the Lakekeeper release with `OPABridge.adminUsers` (the same group, read
+#      from the group file step 1 wrote), so an administrator is not vetoed by
+#      the bridge;
+#   5. `make trino` — the new values, both access-control files, the principal.
 #
 # Then the verification table in the ticket, by hand: the matrix per seed
 # person, Superset, a notebook, Nova, Airflow, and the latency of one scan.
-# `make catalog-enforce-rollback` is the way back. It rewrites the group file
-# and re-applies Trino, so the two disagree between those steps; a failure in
-# between leaves the group file naming the wrong strings (every group lookup
-# silently matches nobody) until the target is run again. `deps` is therefore a
-# prerequisite and the CronJob is switched back first, so a tool check or the
-# five-minute writer cannot strand the rollback half-done (seen live on
-# 2026-10-21).
+# `make catalog-enforce-rollback` is the way back. `deps` is a prerequisite, so a
+# missing tool cannot stop the rollback after it has started changing state.
 #
-# Two knobs define the state, and they must agree — a group file of `sub`
-# strings while the engine compares usernames drops every group silently:
-#   GROUP_PRINCIPAL=sub (default)  what the group file holds and what the
-#                                  CronJob trino-group-sync keeps writing
-#   TRINO_IDENTITY_OVERLAY=        an extra `-f` for `make trino`; the rollback
-#                                  passes helm-values/trino-identity-file-only.yaml
+# The engine's principal is the Keycloak `sub` in both states, and the group file
+# is written by access-sync by `sub` (platform#312): the rollback takes the bridge
+# out of the authorization path, it does not change who the engine thinks a person
+# is. `TRINO_IDENTITY_OVERLAY` is the only knob that differs between the two.
 # ---------------------------------------------------------------------------
 .PHONY: catalog-enforce catalog-enforce-rollback
 catalog-enforce: deps _context ## Switch Trino to the permission bridge and the sub principal (gated; see the header)
 	@$(MAKE) --no-print-directory access-sync-now
 	@$(MAKE) --no-print-directory verify-catalog-permissions
 	@NAMESPACE=$(NAMESPACE) bash scripts/bridge-replay.sh --data-only
-	@NAMESPACE=$(NAMESPACE) GROUP_PRINCIPAL=sub bash scripts/sync-trino-groups.sh
 	@echo "› Lakekeeper: the bridge's administrators, from the group file"
 	@helm upgrade --install lakekeeper lakekeeper/lakekeeper \
 	  --version $(LAKEKEEPER_VERSION) \
@@ -728,7 +723,7 @@ catalog-enforce: deps _context ## Switch Trino to the permission bridge and the 
 	  $$(NAMESPACE=$(NAMESPACE) bash scripts/render-catalogs.sh bridge-arg) \
 	  $$(NAMESPACE=$(NAMESPACE) bash scripts/render-catalogs.sh admin-arg)
 	@kubectl -n $(NAMESPACE) rollout status deploy/lakekeeper --timeout=5m
-	@$(MAKE) --no-print-directory trino GROUP_PRINCIPAL=sub
+	@$(MAKE) --no-print-directory trino
 	@kubectl -n $(NAMESPACE) rollout status deploy/trino-coordinator --timeout=5m
 	@echo ""
 	@echo "stardelt: Trino now authorizes through the permission bridge (user = Keycloak sub)."
@@ -736,21 +731,15 @@ catalog-enforce: deps _context ## Switch Trino to the permission bridge and the 
 	@echo "  Superset, a notebook, Nova, Airflow, and the latency of one scan."
 	@echo "  Roll back with: make catalog-enforce-rollback"
 
-catalog-enforce-rollback: deps _context ## Put Trino back on the file rules and the username principal (recovery; see the README)
-	@# Order matters, and every step before the Trino apply is a window in which the
-	@# group file and the engine compare different strings (see the header). The
-	@# recovery was exercised live on 2026-10-21 and the first version got this
-	@# wrong: it rewrote the group file, then `make trino` stopped in its `deps`
-	@# check, and the two disagreed until the target ran again. `deps` is a
-	@# prerequisite now, and the CronJob goes first so the five-minute writer can
-	@# never re-apply `sub` in the middle of the rollback.
-	@# Stop the CronJob first: `make trino` had applied it with GROUP_PRINCIPAL=sub,
-	@# and it rewrites the group file to ids within five minutes.
-	@kubectl -n $(NAMESPACE) set env cronjob/trino-group-sync GROUP_PRINCIPAL=username >/dev/null
-	@echo "› Group file back to usernames"
-	@NAMESPACE=$(NAMESPACE) GROUP_PRINCIPAL=username bash scripts/sync-trino-groups.sh
-	@echo "› Trino: helm-values/trino-identity-file-only.yaml (file access control only, preferred_username)"
-	@$(MAKE) --no-print-directory trino GROUP_PRINCIPAL=username \
+catalog-enforce-rollback: deps _context ## Put Trino back on the file rules alone (recovery; see the README)
+	@# The recovery for a failed cell of the switch's verification: take the OPA
+	@# bridge out of the access-control chain and leave everything else as it is.
+	@# The principal stays the Keycloak `sub` and the group file is the one
+	@# access-sync writes (platform#312), so there is no window in which the file
+	@# and the engine compare different strings. `deps` is a prerequisite, so a
+	@# missing tool cannot stop it after it has started changing state.
+	@echo "› Trino: helm-values/trino-identity-file-only.yaml (file access control only)"
+	@$(MAKE) --no-print-directory trino \
 	  TRINO_IDENTITY_OVERLAY="-f helm-values/trino-identity-file-only.yaml"
 	@kubectl -n $(NAMESPACE) rollout status deploy/trino-coordinator --timeout=5m
 	@echo ""
@@ -873,7 +862,7 @@ install-identity: deps _context ## Install the platform IdP (Keycloak) at id.$(B
 	@echo "› [8/11] Sync the live realm's Trino client (import skips an existing realm)"
 	@NAMESPACE=$(NAMESPACE) TRINO_PUBLIC_URL=https://trino.$(BASE_DOMAIN) \
 	  bash scripts/keycloak-sync-trino-client.sh
-	@echo "› [9/11] Sync the live realm's group-sync client (read-only service account, platform#167)"
+	@echo "› [9/11] Sync the live realm's group-sync client (read-only Keycloak reader, platform#167/#312)"
 	@$(MAKE) --no-print-directory sync-trino-group-sync-client
 	@echo "› [9/11] Sync the live realm's pipeline-runner client (scheduled pipelines, platform#118)"
 	@$(MAKE) --no-print-directory sync-pipeline-runner-client
@@ -932,11 +921,10 @@ upgrade: install ## Upgrade all components (same as install)
 # ---------------------------------------------------------------------------
 uninstall: _context ## Uninstall all stardelt components (reverse order)
 	@echo "› removing manifests"
-	@kubectl delete -f manifests/trino-group-sync.yaml          --ignore-not-found
-	@kubectl -n $(NAMESPACE) delete configmap trino-group-sync-script --ignore-not-found
 	@kubectl delete -f manifests/pg-dump-backup.yaml            --ignore-not-found
 	@kubectl delete -f manifests/access-sync.yaml              --ignore-not-found
 	@kubectl -n $(NAMESPACE) delete configmap access-sync-script --ignore-not-found
+	@kubectl -n $(NAMESPACE) delete configmap trino-warehouses trino-group-file --ignore-not-found
 	@kubectl delete -f manifests/spark.yaml                   --ignore-not-found
 	@kubectl delete -f manifests/trino-tls.yaml               --ignore-not-found
 	@kubectl delete -f manifests/nova-deployment.yaml        --ignore-not-found

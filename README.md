@@ -389,7 +389,7 @@ plain development default when it does not.
 | `internal-communication.shared-secret=${ENV:…}` | required as soon as an authenticator is enabled |
 | `accessControl` (file `rules.json`: `queries` and `tables`) | query visibility is owner-only: each user sees and kills only their own queries, members of `stardelt-admins` see and kill all (viewing/killing one's own needs no rule — it is built-in). The `tables` rules deny everyone but `stardelt-admins` the cluster-wide `system.runtime.tasks`, `.transactions` and `.optimizer_rule_stats` (`tasks` lists other users' queries) and grant every other table as before; `system.runtime.queries` (own queries only) and `.nodes` stay open (platform#181) |
 | `coordinatorExtraConfig: access-control.config-files` + `coordinator.additionalConfigFiles` (`access-control-opa.properties`) | the second access control, platform#311: Trino also asks the catalog's OPA bridge (`lakekeeper-opa:8282`) before every catalog/schema/table/column operation, so the `Catalog` grants decide who reads what — see "Who may read what" below. Both systems have to allow a statement; the bridge therefore only ever removes access. Fail-closed: an unreachable bridge denies every statement |
-| `coordinator.additionalConfigFiles` (`group-provider.properties`) + `trino-groups` volume | the file group provider reads `stardelt-admins` membership from ConfigMap `trino-group-file` (written by `scripts/sync-trino-groups.sh`, never committed); `file.refresh-period=30s` picks remounts up with no restart. The strings are Keycloak user ids, matching `principal-field=sub` |
+| `coordinator.additionalConfigFiles` (`group-provider.properties`) + `trino-groups` volume | the file group provider reads ConfigMap `trino-group-file` (written by CronJob `access-sync`, never committed): the `stardelt-admins` line the query rules read, and one `wh-<name>` line per `SqlWarehouse`, which is what the resource-group selectors match; `file.refresh-period=30s` picks remounts up with no restart. The strings are Keycloak user ids, matching `principal-field=sub` |
 
 **What the public host serves (platform#181).** The `trino.<baseDomain>` Ingress
 (`dev/playground/ingress.yaml`, and `chart/templates/ingress.yaml` when `trino` is listed in
@@ -413,17 +413,35 @@ carries an `aud-trino` mapper, so the token Nova forwards — the user's, not a 
 is accepted at Trino and names the person in the query audit trail (`NOVA_FORWARD_IDENTITY=1`,
 set in both the manifest and the chart). A token without `aud: trino` is rejected with `401`.
 
-*Continuous group sync (platform#167).* `make trino` writes the group file once, but membership
-changes between applies used to wait for the next one — a removed admin kept their all-queries
-view with no bound. CronJob `trino-group-sync` (`manifests/trino-group-sync.yaml`, every
-5 minutes) re-runs the sync from `scripts/trino-group-sync-job.py` and rewrites ConfigMap
-`trino-group-file` when members changed, so both directions land within 10 minutes with no
-apply and no restart. It authenticates as the dedicated `trino-group-sync` service-account
-client with exactly `view-users` on `realm-management` (converged by
+*Continuous group and warehouse sync (platform#167, platform#312).* Membership changes used to
+wait for the next apply — a removed admin kept their all-queries view with no bound. CronJob
+`access-sync` (`manifests/access-sync.yaml`, every 2 minutes) now converges ConfigMap
+`trino-group-file` (the `stardelt-admins` line, re-read within 30 s, no restart) and the
+resource groups of ConfigMap `trino-warehouses` (loaded once — a changed file needs a
+coordinator restart, ticket 2/3), so a membership change lands without an apply. It
+authenticates as the dedicated `trino-group-sync` service-account client with exactly
+`view-users` on `realm-management` (converged by
 `scripts/keycloak-sync-trino-group-sync-client.sh`, run by `make install-identity`; the realm
 import declares the client for fresh installs) — read-only group membership, nothing broader —
-and its RBAC may only read that client secret and converge that one ConfigMap. Its logs state
-counts, never principals.
+and its RBAC may only read that client secret, patch status and converge those two ConfigMaps.
+Its logs state counts, never principals.
+
+*Warehouses (platform#312).* A `SqlWarehouse` object is a named compute class inside the one
+Trino: `access-sync` renders every valid object into a resource group of ConfigMap
+`trino-warehouses` (key `resource-groups.json`) and one `wh-<name>` line of
+`trino-group-file`, and writes `status.phase`/`renderedGroup`/`engine` back. The class
+defaults are `xs` 2 running / 10 queued / 10 % memory, `small` 10/100/20 %, `medium`
+5/50/40 %, `large` 6/70/70 %, scheduling `fair`; `spec.concurrency` overrides any of them.
+The classes partition the one coordinator and worker (2 GiB heaps each) — a `large` class on
+a one-node cluster means few concurrent queries with a bigger share of memory, not more
+hardware. Selection is by identity, never by a header: the admin group lands in its own
+`admin` root group, then the first `userGroup` selector a person matches (largest class
+first), then the catch-all into the one `default: true` warehouse — or into the
+zero-concurrency `no-warehouse` when zero or two are marked default, which answers
+`Too many queued queries for "no-warehouse"`. Every selector carries an identity constraint;
+a tag-only selector would be spoofable and the renderer refuses to write one. `make trino`
+mounts and restarts for the file (ticket 2/3); until then the objects are rendered and
+visible, and no query is routed by them.
 
 *Service principal for scheduled pipelines (platform#118).* Scheduled `Pipeline` tasks run SQL on
 the query engine as the confidential service-account client `pipeline-runner`, not as a person:
@@ -687,12 +705,11 @@ Secret `trino-password-db` (key `password.db`, generated by `scripts/identity-bo
 No password for a person is stored anywhere. The `superset` account falls in the
 `execute`-only access-control rule, which is exactly what it needs; its path is unchanged.
 
-Query visibility is enforced by Trino itself, not by hiding the UI: `make trino` syncs the
-live realm's `stardelt-admins` membership into ConfigMap `trino-group-file` before the
-upgrade (`make sync-trino-groups` runs the same step alone — idempotent, never prints a
-value). Removing a user from `stardelt-admins` plus `make trino` removes their all-queries
-view. Membership changes take effect on the next sync, not instantly — continuous sync is
-a follow-up, not this mechanism.
+Query visibility is enforced by Trino itself, not by hiding the UI: CronJob `access-sync`
+keeps the live realm's `stardelt-admins` membership in ConfigMap `trino-group-file` (every 2
+minutes, never printing a value), and `make trino` runs one sync before the upgrade.
+Removing a user from `stardelt-admins` removes their all-queries view on the next tick —
+within 2 minutes plus the file's 30 s refresh, no apply and no restart.
 
 ```sh
 # what the installer runs (idempotent)
@@ -1528,24 +1545,23 @@ before every catalog, schema, table and column operation (`make catalog-enforce`
   Lakekeeper directly (Nova writes uploads that way); the grants there are the same ones,
   because it is the same store.
 
-**Recovery.** `make catalog-enforce-rollback` puts Trino back on the file rules alone and
-the username principal, in one command, and says so when it is done: every signed-in
-person addresses every catalog again and the `Catalog` grants enforce nothing. The reason
-to roll back is a cell of the verification table failing — including the latency cell, which
-is what a per-catalog authorizer round trip shows up in first. An unreachable bridge is
-*not* such a reason: fail-closed is the design, so fix the bridge rather than the switch
-(`SELECT 1` is denied while it is down). `make verify-catalog-permissions` and
-`make bridge-replay --data-only` answer the same questions the engine asks, without
-touching Trino, so they are the safe way to look before switching again.
+**Recovery.** `make catalog-enforce-rollback` puts Trino back on the file rules alone, in one
+command, and says so when it is done: every signed-in person addresses every catalog again
+and the `Catalog` grants enforce nothing. The reason to roll back is a cell of the
+verification table failing — including the latency cell, which is what a per-catalog
+authorizer round trip shows up in first. An unreachable bridge is *not* such a reason:
+fail-closed is the design, so fix the bridge rather than the switch (`SELECT 1` is denied
+while it is down). `make verify-catalog-permissions` and `make bridge-replay --data-only`
+answer the same questions the engine asks, without touching Trino, so they are the safe way
+to look before switching again.
 
-The rollback changes two things that must agree (the group file's strings and the principal
-Trino compares them with), so it has a window in which they do not. The target therefore
-runs `deps` first (a missing tool must not stop it half-way), switches the group-sync
-CronJob back before it touches the file (the five-minute writer must not re-apply `sub` in
-the middle), and waits for the coordinator rollout before it prints that it is done. A
-failure inside that window is recovered by running the same target again; it is idempotent.
-This was learned the hard way on 2026-10-21: the first shape rewrote the group file, then
-stopped in `make trino`'s `deps` check, and admins lost query visibility until the re-run.
+The rollback takes the bridge out of the authorization path and changes nothing else: the
+principal stays the Keycloak `sub`, and the group file stays the one CronJob `access-sync`
+writes by `sub` (platform#312). There is therefore no window in which the file and the
+engine compare different strings, and no second writer to switch off first. It still runs
+`deps` first (a missing tool must not stop it half-way) and waits for the coordinator
+rollout before it prints that it is done; a failure is recovered by running the same target
+again, which is idempotent.
 
 **One known limit.** The bridge's administrator list (`OPABridge.adminUsers`) is rendered
 from the `stardelt-admins` line of ConfigMap `trino-group-file` when a Lakekeeper release
@@ -2104,7 +2120,8 @@ aws --endpoint-url "$AWS_ENDPOINT_URL" s3 sync s3://lakehouse-backup s3://lakeho
 | `sync-catalog-audience` | Add/repair the `aud-lakekeeper` mapper on `jupyterhub` and `stardelt-dev` (the control client `superset` must not carry it), prove it with Keycloak's evaluate call; idempotent, runs with `install-identity` (#317) |
 | `sync-catalog-clients` | Create/converge the seven catalog-caller service clients (`svc-catalog-*`) and their Secrets, audience `lakekeeper`, no group; idempotent (#282, #303; Lakekeeper validates them since #285) |
 | `delete-catalog-clients` | Delete those seven clients and Secrets; only `stardelt-managed=service` clients, needs `YES=1` |
-| `access-sync` | Create/refresh ConfigMap `access-sync-script` and apply CronJob `access-sync` — one Lakekeeper warehouse per `Catalog`, its `owner`/`grants` on that warehouse (platform#305, #306) |
+| `access-sync` | Create/refresh ConfigMap `access-sync-script`, ensure ConfigMaps `trino-warehouses`/`trino-group-file` exist, and apply CronJob `access-sync` — one Lakekeeper warehouse per `Catalog`, its `owner`/`grants` on that warehouse, and one resource group plus group-file line per `SqlWarehouse` (platform#305, #306, #312) |
+| `trino-warehouse-configmaps` | Create ConfigMaps `trino-warehouses` (key `resource-groups.json`) and `trino-group-file` (key `groups.txt`) when they are missing; the sync fills them and may never create them itself (platform#312) |
 | `access-sync-now` | Run that CronJob once as a Job now, wait for it and print its log |
 | `catalogs` | Converge every Ready `Catalog` into a Trino catalog and an OPA-bridge mapping; runs `access-sync-now`, upgrades Lakekeeper, then Trino (restarts Trino only when the set changed) (platform#308) |
 | `seed-dev-access` | Create the dev seed: groups `finops`/`analytics`, users `dev-*`, Catalogs `warehouse`/`finance`/`product`/`sandbox` and the `seed.nation` tables; needs `YES=1`, refuses on `environment: production` (platform#309) |
@@ -2113,10 +2130,9 @@ aws --endpoint-url "$AWS_ENDPOINT_URL" s3 sync s3://lakehouse-backup s3://lakeho
 | `bridge-capture` | Capture the authorization requests the Trino coordinator's image sends to an OPA authorizer, from a throwaway pod with a stub, into `scripts/tests/fixtures/trino-opa-requests.json`; refresh after a Trino upgrade (platform#333) |
 | `bridge-replay` | Replay the captured requests against the live bridge for the three seed people and an admin: contract, probes, must-work reads and the matrix; exit 1 on an error, empty answer or wrong row. `--data-only` is the matrix gate (platform#333) |
 | `bridge-latency` | `FilterCatalogs` with every catalog of the cluster plus system/tpch/tpcds, five cold runs per seed person and the admin: prints min/median/max and exits 1 above a 1.0 s median; asserts every answer equals the chart's per-catalog path (platform#359) |
-| `catalog-enforce` | **The switch** (platform#311): Trino asks the bridge and the engine user becomes the Keycloak `sub`. Gated in order — `access-sync-now`, `verify-catalog-permissions`, `bridge-replay --data-only`, the group file by `sub`, Lakekeeper with `OPABridge.adminUsers`, `make trino` — and stops at the first failure. See [Who may read what](#who-may-read-what) |
-| `catalog-enforce-rollback` | The recovery path: the group-sync CronJob back to `GROUP_PRINCIPAL=username` first (so the five-minute writer cannot re-apply `sub` mid-rollback), then the group file by usernames, then Trino on the file access control alone (`helm-values/trino-identity-file-only.yaml`), waiting for the rollout. `deps` is a prerequisite, so a missing tool cannot stop it after it has started changing state. One command, for a failed cell of the switch's verification |
-| `trino` | Install/upgrade Trino; adds `helm-values/trino-identity.yaml` (Keycloak OAuth2 + service-account password) when `stardelt-identity` exists |
-| `sync-trino-groups` | Sync the live realm's `stardelt-admins` membership into ConfigMap `trino-group-file` (Trino query visibility); `GROUP_PRINCIPAL=sub` (default) or `username` decides whether it holds Keycloak user ids or usernames, and must match Trino's `principal-field`; idempotent, runs inside `make trino` (#125, #311) |
+| `catalog-enforce` | **The switch** (platform#311): Trino asks the bridge and the engine user becomes the Keycloak `sub`. Gated in order — `access-sync-now` (grants, group file and resource groups), `verify-catalog-permissions`, `bridge-replay --data-only`, Lakekeeper with `OPABridge.adminUsers`, `make trino` — and stops at the first failure. See [Who may read what](#who-may-read-what) |
+| `catalog-enforce-rollback` | The recovery path: Trino on the file access control alone (`helm-values/trino-identity-file-only.yaml`), waiting for the rollout. It takes the bridge out of the authorization path and changes nothing else — the principal stays the Keycloak `sub` and the group file stays the one CronJob `access-sync` writes, so there is no window in which the two disagree. `deps` is a prerequisite, so a missing tool cannot stop it after it has started changing state. One command, for a failed cell of the switch's verification |
+| `trino` | Install/upgrade Trino; adds `helm-values/trino-identity.yaml` (Keycloak OAuth2 + service-account password) when `stardelt-identity` exists. Ensures the two ConfigMaps and runs one `access-sync-now` before the upgrade (platform#312) |
 | `install-operator` | Install the stardelt Operator from `../stardelt-operator/chart` (dev path) |
 | `pin` | Pin a deployment to the newest published digest **and write it back into the manifest** (`make pin APP=nova`, `APP=spark DEPLOY=spark-connect`), so a later `kubectl apply` cannot put the mutable tag back |
 | `pin-images` | Pin Nova, the operator and Spark to their digests (the install targets do this themselves) |
@@ -2166,8 +2182,8 @@ manifests/            Plain Kubernetes manifests (kubectl apply)
   keycloak.yaml         Platform IdP: Keycloak + its CNPG Cluster (make install-identity)
   lakekeeper-bootstrap.yaml  Job: accept ToS + create default warehouse
   lakekeeper-network-policy.yaml  Catalog ingress: the callers that may reach 8181 / the bridge
-  access-sync.yaml      CronJob: one Lakekeeper warehouse per Catalog, its grants, status written back
-  trino-group-sync.yaml CronJob: Trino query-visibility group file from the live realm
+  access-sync.yaml      CronJob: one Lakekeeper warehouse per Catalog, its grants, and the
+                        resource groups + group file of every SqlWarehouse, statuses written back
   nova-deployment.yaml  stardelt Nova UI + backend
   spark.yaml            Spark Connect endpoint + Spark configuration (make install-spark)
   s3-credentials.example.yaml  Template for the stardelt-s3-creds Secret
@@ -2181,7 +2197,8 @@ images/
 scripts/
   app-secrets.sh        Generate the Airflow/Superset Secrets (idempotent, never printed)
   access-sync-job.py    CronJob access-sync: Catalog objects become Lakekeeper warehouses
-                        and grants (groups become roles, members assignees)
+                        and grants (groups become roles, members assignees); SqlWarehouse
+                        objects become resource groups and wh-<name> group-file lines
   check-deps.sh         Verify required CLI tools
   check-catalog-template.sh  Fail when catalog.properties.tmpl drifts from the `warehouse` block (platform#308)
   render-catalogs.sh    Ready Catalogs → Trino `--set-file`s and the bridge's `--set-json` (platform#308)
@@ -2198,7 +2215,6 @@ scripts/
   sync-realm-admin.sh   Re-apply Secret stardelt-realm-admin to the live realm's admin (import skips an existing realm)
   sync-realm-user-management.sh  Grant stardelt-admins the user-management roles + enforce brute force on the live realm
   sync-oidc-clients.sh  Re-apply Secret stardelt-oidc-clients to the live realm's clients (import skips an existing realm; trino delegated)
-  sync-trino-groups.sh  Write the live realm's stardelt-admins membership into ConfigMap trino-group-file (Trino query visibility, #125)
   verify-backups.sh     Backup guards: post-apply spec.backup assert + bucket-vs-database WAL check
   verify-pgdump.sh      Run a pg_dump CronJob, restore the newest dump into a scratch DB, compare table counts (platform#366)
   verify-notebook-identity.py  Headless hub login + run the quickstart in the pod (positive and 401 negative)
@@ -2207,6 +2223,7 @@ scripts/
   verify-trino-auth.sh  Assert Trino refuses anonymous SQL, accepts user tokens + the service account, and Superset's stored connection works
   tests/
     test_access_sync.py  Unit tests for access-sync-job.py (python3 -m unittest discover -s scripts/tests)
+    fixtures/            The golden resource-groups.json the renderer is compared against (#312)
   helm-plugins/
     stardelt-dedupe/    Helm v4 post-renderer: deduplicates env lists
 ```

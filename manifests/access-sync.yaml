@@ -1,6 +1,8 @@
-# Catalog access sync (authz 4/8 and 5/8, stardelt-platform#305, #306): every `Catalog`
-# object becomes a Lakekeeper warehouse, the warehouse id lands in its status, and the
-# catalog's `owner`/`grants` become grants on that warehouse.
+# Catalog and SqlWarehouse access sync (authz 4/8 and 5/8, stardelt-platform#305,
+# #306; warehouses, #312): every `Catalog` object becomes a Lakekeeper warehouse,
+# the warehouse id lands in its status, and the catalog's `owner`/`grants` become
+# grants on that warehouse; every `SqlWarehouse` object becomes a Trino resource
+# group and a group in the file group provider.
 #
 # Part 2 (#306) adds the identity plumbing to part 1's loop: a Keycloak group becomes
 # a Lakekeeper role of the same name, the group's members are the role's assignees by
@@ -8,17 +10,25 @@
 # Lakekeeper relations (`browse`→`describe`, `select`→`select`, `write`→`modify`,
 # `create`→`create`, `manage`→`manage_grants`; the owner group gets `manage_grants`
 # only), and the admin group's role holds `project_admin` on the project. The realm is
-# only read: client `trino-group-sync` (`view-users` on `realm-management`), the same
-# one CronJob `trino-group-sync` uses. The job never logs a subject, username, member
-# or token — counts only.
+# only read: client `trino-group-sync` (`view-users` on `realm-management`), the
+# read-only Keycloak client `make install-identity` converges. The job never logs a
+# subject, username, member or token — counts only.
+#
+# Part 3 (#312) is the warehouses: the objects become the coordinator's resource
+# groups in ConfigMap `trino-warehouses` (key `resource-groups.json`, loaded once — a
+# change needs a restart, ticket 2/3) and one `wh-<name>` line per warehouse in
+# ConfigMap `trino-group-file` (key `groups.txt`, re-read within 30 s), which also
+# carries the `stardelt-admins` line the query-visibility rules read. This CronJob is
+# the single writer of both files from that ticket on; it never creates them (the
+# Makefile does, and this Role has no `create` on ConfigMaps).
 #
 # The design (internal note `design/multitenant-catalogs.md` §4.2, §7.2 P2a) gives this
 # loop to the operator; the operator builds objects and Jobs only, has no HTTP client
 # and no `CATALOG_*` environment yet, so a CronJob does the work until the operator
-# absorbs it. This is the same pattern as CronJob `trino-group-sync` (platform#167):
-# stock `python:slim` image, the script on a ConfigMap volume that `make access-sync`
-# refreshes from `scripts/access-sync-job.py` on every apply (one source of truth), and
-# the Kubernetes API over the Pod's ServiceAccount — no kubectl in the image.
+# absorbs it: stock `python:slim` image, the script on a ConfigMap volume that `make
+# access-sync` refreshes from `scripts/access-sync-job.py` on every apply (one source
+# of truth), and the Kubernetes API over the Pod's ServiceAccount — no kubectl in the
+# image.
 #
 # Identity and least privilege:
 #   * Lakekeeper: the management API authenticated as `svc-catalog-operator` (Secret
@@ -28,10 +38,11 @@
 #     warehouse — and nothing broader. Its secret is read from the API, never mounted
 #     and never logged.
 #   * Kubernetes: ServiceAccount `access-sync` may only `get` those three Secrets,
-#     `get/list` catalogs and sqlwarehouses, and `patch` their `status` subresource.
-#     No create/delete anywhere: the CronJob never removes a warehouse or data, and a
-#     Catalog deleted by a person leaves its warehouse behind (design §2.5) — the job
-#     then logs `orphan warehouse <name>`.
+#     `get/list` catalogs and sqlwarehouses, `patch` their `status` subresource, and
+#     `get/update/patch` the two ConfigMaps it converges. No create/delete anywhere:
+#     the CronJob never removes a warehouse or data, a Catalog deleted by a person
+#     leaves its warehouse behind (design §2.5) — the job then logs `orphan warehouse
+#     <name>` — and the ConfigMaps are the Makefile's to create.
 #   * Network: the catalog NetworkPolicy admits this pod on TCP 8181 by its
 #     `app.kubernetes.io/name: access-sync` label; Keycloak has no ingress policy, so
 #     the realm reads need nothing extra. Nothing else widens.
@@ -65,16 +76,24 @@ rules:
     resources: ["secrets"]
     resourceNames: ["svc-catalog-operator", "stardelt-s3-creds", "stardelt-oidc-clients"]
     verbs: ["get"]
-  # Read every Catalog; the names are chosen by users, so no resourceNames here.
+  # Read every Catalog and SqlWarehouse; the names are chosen by users, so no
+  # resourceNames here.
   - apiGroups: ["stardelt.io"]
     resources: ["catalogs", "sqlwarehouses"]
     verbs: ["get", "list"]
-  # Status only: the sync never edits a spec (a Catalog's spec is a person's input).
-  # SqlWarehouse status is here because a later part of the sync owns it; this job
-  # only reads it.
+  # Status only: the sync never edits a spec (a spec is a person's input). It owns
+  # the SqlWarehouse status (`phase`, `renderedGroup`, `engine`, `Rendered`) and the
+  # Catalog status.
   - apiGroups: ["stardelt.io"]
     resources: ["catalogs/status", "sqlwarehouses/status"]
     verbs: ["patch"]
+  # The two files the warehouse half converges (platform#312): `trino-warehouses`
+  # (the resource groups the coordinator loads) and `trino-group-file` (the file
+  # group provider). Converge in place, never create — the Makefile creates both.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["trino-warehouses", "trino-group-file"]
+    verbs: ["get", "update", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -124,7 +143,7 @@ spec:
             seccompProfile: { type: RuntimeDefault }
           containers:
             - name: sync
-              # Same pin as CronJob trino-group-sync: stdlib only, no build of ours.
+              # stdlib only, no build of ours.
               image: python:3.13.16-slim-bookworm
               command: ["python3", "/opt/job/job.py"]
               env:

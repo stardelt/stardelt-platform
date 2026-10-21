@@ -1,0 +1,66 @@
+{
+  "rootGroups": [
+    {
+      "name": "global",
+      "softMemoryLimit": "90%",
+      "hardConcurrencyLimit": 100,
+      "maxQueued": 500,
+      "subGroups": [
+        {
+          "name": "wh-large",
+          "softMemoryLimit": "70%",
+          "hardConcurrencyLimit": 6,
+          "maxQueued": 70,
+          "schedulingPolicy": "fair"
+        },
+        {
+          "name": "wh-medium",
+          "softMemoryLimit": "40%",
+          "hardConcurrencyLimit": 5,
+          "maxQueued": 50,
+          "schedulingPolicy": "fair"
+        },
+        {
+          "name": "wh-small",
+          "softMemoryLimit": "20%",
+          "hardConcurrencyLimit": 10,
+          "maxQueued": 100,
+          "schedulingPolicy": "fair"
+        }
+      ]
+    },
+    {
+      "name": "admin",
+      "softMemoryLimit": "100%",
+      "hardConcurrencyLimit": 50,
+      "maxQueued": 100
+    },
+    {
+      "name": "no-warehouse",
+      "softMemoryLimit": "0%",
+      "hardConcurrencyLimit": 0,
+      "maxQueued": 0
+    }
+  ],
+  "selectors": [
+    {
+      "userGroup": "stardelt-admins",
+      "group": "admin"
+    },
+    {
+      "userGroup": "wh-large",
+      "group": "global.wh-large"
+    },
+    {
+      "userGroup": "wh-medium",
+      "group": "global.wh-medium"
+    },
+    {
+      "userGroup": "wh-small",
+      "group": "global.wh-small"
+    },
+    {
+      "group": "global.wh-small"
+    }
+  ]
+}
