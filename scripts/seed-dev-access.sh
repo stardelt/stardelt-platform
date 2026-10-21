@@ -8,6 +8,12 @@
 #   make seed-permission-fixtures YES=1   # opt-in: finance/product/sandbox + seed.nation
 #   make unseed-permission-fixtures YES=1 # delete exactly those three Catalogs
 #
+# The three warehouses (`dev/seed/warehouses.yaml`, platform#313) are part of every
+# seed run: `small` (the default class, everybody), `medium` (`finops`), `large`
+# (`analytics`). They are `SqlWarehouse` objects, so `kubectl apply` is idempotent and
+# a second run changes nothing; the class file only changes when a rendered class
+# does, and `unseed` keeps `small` and deletes `medium` and `large`.
+#
 # The baseline is the maintainer's layout: `warehouse`, `shared`, `bronze`,
 # `silver`, `gold`, each granted the four data verbs to `stardelt-users`
 # (dev/seed/catalogs.yaml). The seed does NOT apply that file unless
@@ -18,8 +24,9 @@
 # What every seed run does create is cheap and invisible: the realm groups
 # `finops` and `analytics`, the people `dev-finops`, `dev-analytics`,
 # `dev-outsider` (all also in `stardelt-users`), the existing user `analyst` in
-# `analytics`, Secret `dev-seed-users` with their generated passwords, and one
-# access-sync run so the new memberships reach Lakekeeper now, not on the next
+# `analytics`, Secret `dev-seed-users` with their generated passwords, the three
+# warehouses of dev/seed/warehouses.yaml, and one access-sync run so the new
+# memberships and classes reach Lakekeeper and Trino now, not on the next
 # two-minute tick. That sync writes a Catalog status only when it drifted.
 #
 # Passwords: generated here, 24 random letters and digits, never printed. They
@@ -61,6 +68,12 @@ SEED_VALUE=seed
 SEED_SECRET=dev-seed-users
 CATALOGS_FILE=dev/seed/catalogs.yaml
 BASELINE_CATALOGS=(warehouse shared bronze silver gold)
+# The seed's three compute classes (platform#313). `small` is the default one and
+# stays after `unseed`: the default class is a property of the install, the other
+# two are the seed's differentiators.
+WAREHOUSES_FILE=dev/seed/warehouses.yaml
+SEED_WAREHOUSES=(small medium large)
+UNSEED_WAREHOUSES=(medium large)
 FIXTURES_FILE=dev/seed/fixtures/permission-fixtures.yaml
 FIXTURES_CATALOGS=(finance product sandbox)
 SEED_SCHEMA=seed
@@ -92,16 +105,16 @@ environment="$(kubectl -n "$NAMESPACE" get configmap stardelt-identity -o jsonpa
 if [ "$YES" != 1 ]; then
   case "$mode" in
     unseed)
-      echo "would delete the seed users and groups (attribute $SEED_ATTRIBUTE=$SEED_VALUE) and Secret $NAMESPACE/$SEED_SECRET (no Catalog is deleted) — re-run with YES=1" ;;
+      echo "would delete the seed users and groups (attribute $SEED_ATTRIBUTE=$SEED_VALUE), the warehouses ${UNSEED_WAREHOUSES[*]} (keeping small) and Secret $NAMESPACE/$SEED_SECRET (no Catalog is deleted) — re-run with YES=1" ;;
     fixtures)
       echo "would apply $FIXTURES_FILE (Catalogs ${FIXTURES_CATALOGS[*]}) and create $SEED_SCHEMA.$SEED_TABLE in them — re-run with YES=1" ;;
     unseed-fixtures)
       echo "would delete the Catalogs ${FIXTURES_CATALOGS[*]} (never a baseline one) — re-run with YES=1" ;;
     *)
       if [ "$SEED_CATALOGS" = 1 ]; then
-        echo "would create the groups ${SEED_GROUPS[*]}, the users ${SEED_USERS[*]}, Secret $NAMESPACE/$SEED_SECRET, and apply $CATALOGS_FILE (SEED_CATALOGS=1) — re-run with YES=1"
+        echo "would create the groups ${SEED_GROUPS[*]}, the users ${SEED_USERS[*]}, Secret $NAMESPACE/$SEED_SECRET, apply $WAREHOUSES_FILE (${SEED_WAREHOUSES[*]}) and $CATALOGS_FILE (SEED_CATALOGS=1) — re-run with YES=1"
       else
-        echo "would create the groups ${SEED_GROUPS[*]}, the users ${SEED_USERS[*]} and Secret $NAMESPACE/$SEED_SECRET; no Catalog would be touched (set SEED_CATALOGS=1 to apply $CATALOGS_FILE) — re-run with YES=1"
+        echo "would create the groups ${SEED_GROUPS[*]}, the users ${SEED_USERS[*]}, Secret $NAMESPACE/$SEED_SECRET and apply $WAREHOUSES_FILE (${SEED_WAREHOUSES[*]}); no Catalog would be touched (set SEED_CATALOGS=1 to apply $CATALOGS_FILE) — re-run with YES=1"
       fi ;;
   esac
   exit 1
@@ -209,10 +222,33 @@ if [ "$mode" = unseed ]; then
         done
   fi
 
+  # The seed's differentiator classes (platform#313). `small` stays: it is the default
+  # class of the install (a principal that matches no group lands there), the two
+  # others only exist for the seed's people.
+  for warehouse in "${UNSEED_WAREHOUSES[@]}"; do
+    kubectl -n "$NAMESPACE" delete sqlwarehouse "$warehouse" --ignore-not-found >/dev/null \
+      || fail "cannot delete SqlWarehouse $warehouse"
+    echo "› warehouse $warehouse: deleted (small kept — it is the default class)"
+  done
+
   kubectl -n "$NAMESPACE" delete secret "$SEED_SECRET" --ignore-not-found >/dev/null \
     || fail "cannot delete Secret $NAMESPACE/$SEED_SECRET"
   echo "› secret $NAMESPACE/$SEED_SECRET: deleted (its passwords belonged to deleted users)"
-  echo "› kept: every Catalog (the baseline ${BASELINE_CATALOGS[*]}, and the fixtures if applied),"
+
+  # The removed objects reach the engine through the next tick; run one now so the
+  # rendered file is up to date when this script returns. A changed resource-group file
+  # restarts the coordinator (it loads the file once, platform#313) — the restart drops
+  # running queries, so it is not awaited here, only reported.
+  if kubectl -n "$NAMESPACE" get cronjob access-sync >/dev/null 2>&1; then
+    NAMESPACE="$NAMESPACE" make --no-print-directory access-sync-now
+    echo "› coordinator: restarts when the rendered class file changed (running queries end)"
+    echo "  watch it with: kubectl -n $NAMESPACE rollout status deploy/trino-coordinator"
+  else
+    echo "› warehouses: CronJob access-sync is not installed here, so the rendered classes"
+    echo "  follow with the next engine install"
+  fi
+
+  echo "› kept: the default warehouse small, every Catalog (the baseline ${BASELINE_CATALOGS[*]}, and the fixtures if applied),"
   echo "  every Lakekeeper warehouse and every table — deleting a Catalog deletes no data anyway."
   echo "  The existing user analyst is not a seed object and is left alone."
   echo "seed-dev-access: OK — the dev seed people are gone"
@@ -493,7 +529,17 @@ fi
 apply_seed_secret
 
 # ---------------------------------------------------------------------------
-# seed — 5. the baseline Catalogs, only when asked
+# seed — 5. the three warehouses (platform#313)
+# ---------------------------------------------------------------------------
+# `small` is the default class everybody lands in, `medium` is `finops`, `large` is
+# `analytics`. The objects, not this script, decide who is in which class: the group
+# is the identity the resource-group selectors read. The rendered file follows on the
+# next access-sync tick (or the one section 6 runs); the coordinator restarts for it.
+[ -f "$WAREHOUSES_FILE" ] || fail "$WAREHOUSES_FILE is missing"
+kubectl apply -f "$WAREHOUSES_FILE"
+
+# ---------------------------------------------------------------------------
+# seed — 6. the baseline Catalogs, only when asked
 # ---------------------------------------------------------------------------
 if [ "$SEED_CATALOGS" = 1 ]; then
   [ -f "$CATALOGS_FILE" ] || fail "$CATALOGS_FILE is missing"
@@ -506,10 +552,13 @@ else
   NAMESPACE="$NAMESPACE" make --no-print-directory access-sync-now
   echo "› catalogs: not touched — the baseline layout is the maintainer's (${BASELINE_CATALOGS[*]});"
   echo "  set SEED_CATALOGS=1 to apply $CATALOGS_FILE"
+  echo "› warehouses: ${SEED_WAREHOUSES[*]} applied (small is the default class); the coordinator"
+  echo "  restarts once when the rendered file changed — kubectl -n $NAMESPACE rollout status deploy/trino-coordinator"
 fi
 
 echo ""
 echo "seed-dev-access: OK — groups ${SEED_GROUPS[*]}, users ${SEED_USERS[*]}, Secret $NAMESPACE/$SEED_SECRET"
+echo "  warehouses: ${SEED_WAREHOUSES[*]} (small is the default class, medium is finops, large is analytics)"
 echo "  passwords are only in Secret $NAMESPACE/$SEED_SECRET (one key per user name); read one with:"
 echo "    kubectl -n $NAMESPACE get secret $SEED_SECRET -o jsonpath='{.data.dev-finops}' | base64 -d"
 echo "  the permissions: make verify-catalog-permissions (expectations from the live Catalog objects)"

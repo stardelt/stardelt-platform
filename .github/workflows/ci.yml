@@ -175,6 +175,28 @@ jobs:
           # `batched-uri` is the Trino 480 property; `batch-uri` (the spike's typo) is ignored.
           assert 'opa.policy.batched-uri=http://lakekeeper-opa.stardelt.svc.cluster.local:8282/v1/data/stardelt/batch' in opa, opa
           assert not any(line.startswith('opa.batch-uri') for line in opa), opa
+          # Resource groups (#313): the file manager reads the document CronJob
+          # access-sync writes, mounted as a directory from ConfigMap `trino-warehouses`.
+          # The chart's own `resourceGroups` block stays unset — with it, the chart would
+          # render `resource-groups.properties` and a volume of its own, pointing at a
+          # file nothing writes.
+          assert cm['data']['resource-groups.properties'].splitlines() == [
+              'resource-groups.configuration-manager=file',
+              'resource-groups.config-file=/etc/trino/warehouses/resource-groups.json',
+          ], cm['data']['resource-groups.properties']
+          assert 'resource-groups.' not in cfg, 'the chart must not own the resource-groups properties'
+          dep = next(d for d in docs if d.get('kind') == 'Deployment' and d['metadata']['name'] == 'trino-coordinator')
+          pod = dep['spec']['template']['spec']
+          volumes = {v['name']: v for v in pod['volumes']}
+          assert volumes['trino-warehouses']['configMap']['name'] == 'trino-warehouses', volumes.get('trino-warehouses')
+          mounts = {m['name']: m['mountPath'] for m in pod['containers'][0]['volumeMounts']}
+          assert mounts.get('trino-warehouses') == '/etc/trino/warehouses', mounts
+          annotations = dep['spec']['template']['metadata']['annotations']
+          # The file manager loads the file once (spike platform#273 R6): the ConfigMap
+          # has to restart the coordinator. The group file must NOT: it reloads in 30 s
+          # and a restart would drop running queries for nothing.
+          assert 'trino-warehouses' in annotations.get('configmap.reloader.stakater.com/reload', ''), annotations
+          assert 'trino-group-file' not in annotations.get('configmap.reloader.stakater.com/reload', ''), annotations
           PY
 
       - name: helm template — trino rollback overlay (file rules only, #311)
@@ -198,6 +220,9 @@ jobs:
           assert 'access-control.config-files=/etc/trino/access-control.properties\n' in cfg + '\n', cfg
           assert 'access-control-opa.properties' not in cfg.split('access-control.config-files=')[1].splitlines()[0], cfg
           assert 'http-server.authentication.oauth2.principal-field=sub' in cfg
+          # A rollback takes the bridge out of the chain; it must not take the resource
+          # groups out (platform#313) — the classes are routing, not authorization.
+          assert 'resource-groups.config-file=/etc/trino/warehouses/resource-groups.json' in cm['data'].get('resource-groups.properties', ''), cm['data'].get('resource-groups.properties')
           for needed in ('http-server.https.keystore.key=', 'http-server.authentication.oauth2.issuer=',
                          'http-server.authentication.allow-insecure-over-http=false', 'query.max-run-time=15m'):
               assert needed in cfg, needed

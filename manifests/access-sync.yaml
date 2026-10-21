@@ -16,7 +16,7 @@
 #
 # Part 3 (#312) is the warehouses: the objects become the coordinator's resource
 # groups in ConfigMap `trino-warehouses` (key `resource-groups.json`, loaded once — a
-# change needs a restart, ticket 2/3) and one `wh-<name>` line per warehouse in
+# change restarts the coordinator, platform#313) and one `wh-<name>` line per warehouse in
 # ConfigMap `trino-group-file` (key `groups.txt`, re-read within 30 s), which also
 # carries the `stardelt-admins` line the query-visibility rules read. This CronJob is
 # the single writer of both files from that ticket on; it never creates them (the

@@ -77,7 +77,7 @@ they send. Two ConfigMaps carry the result, and from this ticket on this job is 
 single writer of both:
 
 * `trino-warehouses`, key `resource-groups.json` — the file the coordinator loads
-  **once** (spike R6; a changed file needs a restart, ticket 2/3). Root group `global`
+  **once** (spike R6; a changed file restarts the coordinator, platform#313). Root group `global`
   (90% memory, 100 running, 500 queued) holds one `wh-<name>` sub group per rendered
   warehouse; root group `admin` (100%, 50, 100) is where the admin group lands; root
   group `no-warehouse` (0%, 0, 0) is the catch-all when no warehouse is the default,
@@ -1344,7 +1344,7 @@ def converge_configmap(name, key, text):
     """Write one ConfigMap key when it differs from the live one; True when written.
 
     GET first, PATCH only when different: the data fans out through mounted volumes (and
-    a Reloader restart for `trino-warehouses` in ticket 2/3), so a no-op write would
+    a Reloader restart for `trino-warehouses`, platform#313), so a no-op write would
     bounce a file the engine reads for nothing. A missing ConfigMap fails the tick with
     the fix in the message — the Makefile creates both, this job's Role has no `create`,
     and self-healing here would hide a broken install.
@@ -1773,8 +1773,8 @@ def main():
     #    groups and the granted groups' members become the group file's `wh-<name>`
     #    lines. `trino-group-file` holds the admin line this job has always kept
     #    fresh; `trino-warehouses` is loaded once by the coordinator, so a changed
-    #    file needs the restart of ticket 2/3 — writing only on a difference keeps
-    #    a converged tick from restarting the engine.
+    #    file restarts it (Reloader, platform#313) — writing only on a difference
+    #    keeps a converged tick from restarting the engine.
     failures += converge_warehouses(warehouses, members, unknown)
 
     # 6. The catalog decision table (platform#359): after the grants were written,

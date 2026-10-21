@@ -39,8 +39,19 @@ coordinator:
   # The catalog's client credential (platform#283) is reloaded the same way: a rotated
   # svc-catalog-trino Secret restarts the coordinator, because Trino reads ${ENV:…} once at
   # startup and the catalog's token comes from those variables.
+  #
+  # The second line is the one ConfigMap that *does* need a restart (platform#313): the
+  # resource-group file manager loads `/etc/trino/warehouses/resource-groups.json` once at
+  # startup and never again (spike platform#273 R6), so a changed class — a new
+  # `SqlWarehouse`, a cap, the default — only arrives with a new coordinator. Reloader
+  # restarts the coordinator when ConfigMap `trino-warehouses` changes; access-sync writes
+  # it only when the rendered document differs, so an unchanged tick does not bounce the
+  # engine. The group file (`trino-group-file`) is deliberately NOT listed: the file group
+  # provider re-reads it every 30 s and a restart would drop running queries for nothing.
+  # Like the S3 rotation, a restart ends the queries that are running — pick a quiet moment.
   annotations:
     secret.reloader.stakater.com/reload: "stardelt-s3-creds,svc-catalog-trino"
+    configmap.reloader.stakater.com/reload: "trino-warehouses"
   jvm:
     maxHeapSize: "2G"
     gcMethod:
