@@ -9,8 +9,12 @@ codes — without a cluster. The Kubernetes half is stubbed at `k8s_request` wit
 in-memory Catalog, the one seam the job has there (the real thing needs the Pod's
 ServiceAccount token and CA file).
 """
+import base64
+import contextlib
 import importlib.util
+import io
 import json
+import logging
 import re
 import threading
 import unittest
@@ -29,6 +33,25 @@ S3 = {
     "access-key": "test-access-key",
     "secret-key": "test-secret-key",
 }
+
+# The fixture token's `sub`: the identity behind `oidc~<sub>` that Lakekeeper records
+# as the creator's `ownership` on a warehouse. The canary test asserts it never
+# reaches a log line.
+TOKEN_SUB = "fixture-sub-9d41"
+
+
+def _jwt_part(payload):
+    """One base64url JWT segment, unpadded, the way a token carries it."""
+    raw = json.dumps(payload).encode()
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+
+# Unsigned fixture JWT: the job reads the payload and never checks the signature.
+TEST_TOKEN = "%s.%s.%s" % (
+    _jwt_part({"alg": "none", "typ": "JWT"}),
+    _jwt_part({"sub": TOKEN_SUB, "iss": "http://keycloak/realms/stardelt"}),
+    "not-a-signature",
+)
 
 
 class FakeLakekeeper:
@@ -343,7 +366,7 @@ class JobTestCase(unittest.TestCase):
             access_sync.ROLE_PAGE,
         )
         access_sync.LAKEKEEPER_URL = self.fake.url
-        access_sync.lakekeeper_token = lambda: "test-token"
+        access_sync.lakekeeper_token = lambda: TEST_TOKEN
         access_sync.PLATFORM_BUCKET = S3["bucket"]
         access_sync.STATIC_ASSIGNEES = "{}"
         access_sync.s3_credentials = lambda: dict(S3)
@@ -807,6 +830,104 @@ class SyncWarehouseGrantsTest(JobTestCase):
             self.fake.warehouse_assignments[self.warehouse_id],
             [{"type": "select", "role": "role-someone-else"}],
         )
+
+    def test_own_ownership_is_not_foreign(self):
+        """The creator tuple Lakekeeper writes for this client is the sync's own record.
+
+        It is the one assignment every created warehouse has (and the adopted
+        `warehouse`, created before authorization existed, does not), so counting it
+        made every created Catalog `Drift=True/ForeignGrants`. It is not drift, it is
+        never deleted, and a second tick is still a no-op.
+        """
+        role_id = self.fake.create_role("finance")
+        own = {"type": "ownership", "user": "oidc~" + TOKEN_SUB}
+        self.fake.warehouse_assignments[self.warehouse_id] = [
+            own,
+            {"type": "select", "role": role_id},
+        ]
+        posts = len(self.posts())
+        self.assertEqual(
+            access_sync.sync_warehouse_grants(
+                self.warehouse_id, {("select", "finance")}, {"finance": role_id}
+            ),
+            (0, 0, 0),
+        )
+        self.assertEqual(len(self.posts()), posts, "the own ownership must not be deleted")
+        self.assertIn(own, self.fake.warehouse_assignments[self.warehouse_id])
+        self.assertEqual(
+            access_sync.sync_warehouse_grants(
+                self.warehouse_id, {("select", "finance")}, {"finance": role_id}
+            ),
+            (0, 0, 0),
+        )
+        self.assertEqual(len(self.posts()), posts, "a converged tick must not POST")
+
+    def test_another_users_ownership_is_foreign(self):
+        """Only *this* client's ownership is ours; anybody else's is drift."""
+        role_id = self.fake.create_role("finance")
+        self.fake.warehouse_assignments[self.warehouse_id] = [
+            {"type": "ownership", "user": "oidc~somebody-else"},
+            {"type": "select", "role": role_id},
+        ]
+        self.assertEqual(
+            access_sync.sync_warehouse_grants(
+                self.warehouse_id, {("select", "finance")}, {"finance": role_id}
+            ),
+            (0, 0, 1),
+        )
+
+    def test_foreign_role_grant_is_foreign(self):
+        role_id = self.fake.create_role("finance")
+        self.fake.warehouse_assignments[self.warehouse_id] = [
+            {"type": "describe", "role": "role-zz-foreign"},
+        ]
+        self.assertEqual(
+            access_sync.sync_warehouse_grants(
+                self.warehouse_id, {("select", "finance")}, {"finance": role_id}
+            ),
+            (1, 0, 1),
+        )
+
+
+class OwnUserTest(JobTestCase):
+    def test_own_user_id_from_token_payload(self):
+        """The `sub` comes from the payload; the signature is never checked."""
+        self.assertTrue(TEST_TOKEN.endswith(".not-a-signature"), "fixture is unsigned")
+        self.assertEqual(access_sync.own_user_id(), "oidc~" + TOKEN_SUB)
+
+    def test_own_user_id_is_none_without_a_readable_sub(self):
+        access_sync.lakekeeper_token = lambda: "opaque-token"
+        self.assertIsNone(access_sync.own_user_id())
+
+    def test_own_user_id_never_logged(self):
+        """caplog canary: the principal stays out of stdout, stderr and the log."""
+        role_id = self.fake.create_role("finance")
+        warehouse_id = self.fake.add_warehouse("warehouse")
+        records = []
+
+        class Sink(logging.Handler):
+            def emit(self, record):
+                records.append(record.getMessage())
+
+        sink = Sink()
+        root = logging.getLogger()
+        previous_level = root.level
+        root.addHandler(sink)
+        root.setLevel(logging.DEBUG)
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                own = access_sync.own_user_id()
+                access_sync.sync_warehouse_grants(
+                    warehouse_id, {("select", "finance")}, {"finance": role_id}
+                )
+        finally:
+            root.removeHandler(sink)
+            root.setLevel(previous_level)
+        self.assertEqual(own, "oidc~" + TOKEN_SUB)
+        logged = "\n".join(records + [out.getvalue(), err.getvalue()])
+        self.assertNotIn(TOKEN_SUB, logged)
+        self.assertNotIn(TEST_TOKEN, logged)
 
 
 class EnsureAdminGrantTest(JobTestCase):
