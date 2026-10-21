@@ -258,11 +258,12 @@ install-core: deps _context _helm-repos ## Install the core only (storage+catalo
 	  $(HELM_FLAGS) \
 	  -f helm-values/seaweedfs.yaml
 
-	@echo "› [5/7] Lakekeeper"
+	@echo "› [5/7] Lakekeeper (allowall: install-core has no IdP for OpenFGA)"
 	@helm upgrade --install lakekeeper lakekeeper/lakekeeper \
 	  --version $(LAKEKEEPER_VERSION) \
 	  $(HELM_FLAGS) \
-	  -f helm-values/lakekeeper.yaml
+	  -f helm-values/lakekeeper.yaml \
+	  -f helm-values/lakekeeper-allowall.yaml
 
 	@echo "› [6/7] Lakekeeper bootstrap"
 	@kubectl apply -f manifests/lakekeeper-bootstrap.yaml
@@ -297,10 +298,11 @@ install-notebooks: deps _context _helm-repos ## Install JupyterHub (notebooks)
 # ---------------------------------------------------------------------------
 # OpenFGA — the catalog's permission store (platform#302, authz 1/8).
 #
-# Deployed next to Lakekeeper but, deliberately, not wired to it yet:
-# `helm-values/lakekeeper.yaml` still sets `authz.backend: allowall`, so no
-# request is checked against these tuples until the cutover (platform#304,
-# `make catalog-authz`). Its own CloudNative-PG Cluster (manifests/openfga-pg.yaml)
+# Deployed next to Lakekeeper. The cutover (platform#304, `make catalog-authz`)
+# switches `helm-values/lakekeeper.yaml` to `authz.backend: openfga`, so every
+# catalog request is then checked against these tuples; `install-core` keeps
+# `allowall` through `helm-values/lakekeeper-allowall.yaml`. Its own
+# CloudNative-PG Cluster (manifests/openfga-pg.yaml)
 # and daily base backups; `make verify-backup-config PG_CLUSTER=openfga-pg`
 # is the post-apply guard.
 # ---------------------------------------------------------------------------
@@ -490,6 +492,21 @@ sync-catalog-clients: _context ## Create/converge the seven svc-catalog-* servic
 	@# mapper still puts the audience on the token. A merge of the same value changes nothing,
 	@# so a rerun that changes nothing leaves the Secret's resourceVersion alone.
 	@kubectl -n $(NAMESPACE) patch secret svc-catalog-bridge --type merge -p '{"stringData":{"scope":"openid"}}'
+
+# ---------------------------------------------------------------------------
+# Catalog authorization (platform#304, authz 3/8) — the OpenFGA cutover.
+#
+# A live operation: take a CloudNative-PG backup, upgrade Lakekeeper to
+# `authz.backend: openfga`, re-bootstrap the catalog, reconcile OpenFGA and
+# write the grants, then run the verification table. Idempotent: a second run
+# reports every step as already done. A mistake locks the catalog out (403) —
+# the recovery path is in the script and in the README "Catalog authorization"
+# section. Never switch back to `allowall` by improvising; that is a maintainer
+# decision.
+# ---------------------------------------------------------------------------
+.PHONY: catalog-authz
+catalog-authz: _context ## Cut Lakekeeper over to OpenFGA authorization (idempotent; scripts/catalog-authz-bootstrap.sh)
+	@NAMESPACE=$(NAMESPACE) LAKEKEEPER_VERSION=$(LAKEKEEPER_VERSION) HELM_FLAGS="$(HELM_FLAGS)" bash scripts/catalog-authz-bootstrap.sh
 
 .PHONY: delete-catalog-clients
 delete-catalog-clients: _context ## Delete the seven svc-catalog-* service clients and their Secrets (stardelt-managed only; needs YES=1)
