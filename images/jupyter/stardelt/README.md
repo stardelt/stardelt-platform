@@ -19,3 +19,21 @@ and `NOTEBOOK_PARAMS` as raw `-r` parameters, uploads the executed copy to `NOTE
 (after a failure too), and on SIGTERM cancels the statements it recorded in `STARDELT_QUERY_IDS`
 before exiting 143 (papermill's own code otherwise, 2 for a contract error). Stages and byte counts
 are logged — never a URL, a token, a parameter value or notebook text.
+
+## Reading public S3 with Spark
+
+A `stardelt.spark()` session reads a **public** S3 bucket anonymously, with either
+URI form Spark understands:
+
+```python
+spark = stardelt.spark()
+spark.read.csv("s3a://noaa-ghcn-pds/csv.gz/by_year/1763.csv.gz").count()
+spark.read.parquet("s3://ookla-open-data/parquet/performance/type=fixed/year=2023/quarter=1/").limit(5).show()
+```
+
+Only public buckets answer: S3A runs with `AnonymousAWSCredentialsProvider`, so a
+private bucket fails with an access error, and the platform's own storage
+(`s3a://lakehouse/`) is not reachable this way — read it through Trino or an Iceberg
+table, where the catalog's grants apply. The jars and the switch live in the Spark
+image and `manifests/spark.yaml`; the platform README ("Reading public S3 with
+Spark") has the details.
