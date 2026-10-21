@@ -462,10 +462,12 @@ else sees only their own queries):
 SELECT "user", resource_group_id FROM system.runtime.queries ORDER BY created DESC LIMIT 20
 ```
 
-`resource_group_id` is the selector path the coordinator walked, e.g. `[global, wh-medium]` for
-`dev-finops` and `[admin]` for an administrator; `[global, wh-small]` is the default class. The
-`user` column is the Keycloak `sub` (the engine's principal, platform#311), so match it against the
-`wh-<name>` lines of `trino-group-file` or look the person up in Nova's session list.
+`resource_group_id` is the selector path the coordinator walked — an `array(varchar)` of the group
+names, so the CLI prints `[global, wh-medium]` for `dev-finops`, `[global, wh-large]` for
+`dev-analytics`, `[global, wh-small]` for `dev-outsider` (the default class) and `[admin]` for an
+administrator. The `user` column is the Keycloak `sub` (the engine's principal, platform#311), so
+match it against the `wh-<name>` lines of `trino-group-file` or look the person up in Nova's
+session list.
 
 The classes partition the one coordinator and worker (2 GiB heaps each) — a `large` class on a
 one-node cluster means few concurrent queries with a bigger share of memory, not more hardware.
