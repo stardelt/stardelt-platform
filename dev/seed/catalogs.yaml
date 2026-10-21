@@ -1,21 +1,25 @@
-# The dev seed's catalogs (authz 7/8, stardelt-platform#309) — four data domains
-# with an owner group and a permission matrix that is small enough to check by
-# hand. `make seed-dev-access` applies this file; `make unseed-dev-access`
-# removes the three seed catalogs again (`warehouse` stays: it is the platform
-# catalog, and deleting a Catalog never deletes a warehouse or data anyway).
+# The dev seed's baseline catalogs (platform#309, layout decision platform#365):
+# the maintainer's live layout — `warehouse`, `shared`, `bronze`, `silver`, `gold`
+# — each owned by `stardelt-admins` and granted the four data verbs to the realm's
+# default group `stardelt-users`. Nothing else.
 #
-# The grants are the matrix `make verify-catalog-permissions` proves against the
-# OPA bridge. Verbs are groups, never people (design/multitenant-catalogs.md
-# §5.1–§5.3); `browse` is also the ability to address a catalog, `write` is
-# Lakekeeper's `modify`.
+# This file is the baseline, not something every seed run applies: `make
+# seed-dev-access YES=1` creates groups, people and their Secret and leaves the
+# Catalog objects alone. Only `SEED_CATALOGS=1 make seed-dev-access YES=1` applies
+# this file (that is how a deleted baseline catalog comes back). The
+# differentiated permission fixtures — `finance`, `product`, `sandbox` — are opt-in
+# and live in `dev/seed/fixtures/permission-fixtures.yaml`:
 #
-# `warehouse` keeps today's behaviour for `stardelt-users` (the realm's default
-# group): browse, select, write and create are exactly what Trino allows every
-# signed-in user there today. Narrowing that is a separate, announced change
-# (design §9 Q6) — not a side effect of this seed.
+#   make seed-permission-fixtures YES=1
+#   make unseed-permission-fixtures YES=1
+#
+# Verbs are groups, never people (design/multitenant-catalogs.md §5.1–§5.3);
+# `browse` is also the ability to address a catalog, `write` is Lakekeeper's
+# `modify`, `create` is `create_namespace`, and the owner group gets
+# `manage_grants` only — ownership is not a data verb (design §5.3).
 #
 # `lakehouseRef.name: main` is the Lakehouse every install has (the operator's
-# one-per-namespace rule); the ticket text said `default`, which no cluster has.
+# one-per-namespace rule).
 apiVersion: stardelt.io/v1alpha1
 kind: Catalog
 metadata:
@@ -32,56 +36,63 @@ spec:
     - { group: stardelt-users, verb: write }
     - { group: stardelt-users, verb: create }
 ---
-# Owned by the finance group itself: it may manage grants here but does not get
-# `select` from ownership, so the four data verbs are spelled out.
 apiVersion: stardelt.io/v1alpha1
 kind: Catalog
 metadata:
-  name: finance
+  name: shared
   namespace: stardelt
 spec:
   lakehouseRef: { name: main }
-  displayName: "Finance"
-  description: "Contracted revenue, orders and billing — the seed's read/write domain."
-  owner: finops
+  displayName: "Shared"
+  description: "One shared catalog for everyone; administrators own it."
+  owner: stardelt-admins
   grants:
-    - { group: finops, verb: browse }
-    - { group: finops, verb: select }
-    - { group: finops, verb: write }
-    - { group: finops, verb: create }
-    - { group: analytics, verb: browse }
-    - { group: analytics, verb: select }
+    - { group: stardelt-users, verb: browse }
+    - { group: stardelt-users, verb: select }
+    - { group: stardelt-users, verb: write }
+    - { group: stardelt-users, verb: create }
 ---
-# Owned by analytics; finops may only look (browse), which is enough to see the
-# catalog and not enough to read a row.
 apiVersion: stardelt.io/v1alpha1
 kind: Catalog
 metadata:
-  name: product
+  name: bronze
   namespace: stardelt
 spec:
   lakehouseRef: { name: main }
-  displayName: "Product"
-  description: "Product, catalogue and session data — the seed's analytics domain."
-  owner: analytics
+  displayName: "Bronze"
+  description: "Medallion layer: bronze."
+  owner: stardelt-admins
   grants:
-    - { group: analytics, verb: browse }
-    - { group: analytics, verb: select }
-    - { group: analytics, verb: write }
-    - { group: analytics, verb: create }
-    - { group: finops, verb: browse }
+    - { group: stardelt-users, verb: browse }
+    - { group: stardelt-users, verb: select }
+    - { group: stardelt-users, verb: write }
+    - { group: stardelt-users, verb: create }
 ---
-# The playground: every signed-in person (including dev-outsider) may read and
-# write here, and platform administrators own it.
 apiVersion: stardelt.io/v1alpha1
 kind: Catalog
 metadata:
-  name: sandbox
+  name: silver
   namespace: stardelt
 spec:
   lakehouseRef: { name: main }
-  displayName: "Sandbox"
-  description: "Scratch space every signed-in person may use."
+  displayName: "Silver"
+  description: "Medallion layer: silver."
+  owner: stardelt-admins
+  grants:
+    - { group: stardelt-users, verb: browse }
+    - { group: stardelt-users, verb: select }
+    - { group: stardelt-users, verb: write }
+    - { group: stardelt-users, verb: create }
+---
+apiVersion: stardelt.io/v1alpha1
+kind: Catalog
+metadata:
+  name: gold
+  namespace: stardelt
+spec:
+  lakehouseRef: { name: main }
+  displayName: "Gold"
+  description: "Medallion layer: gold."
   owner: stardelt-admins
   grants:
     - { group: stardelt-users, verb: browse }
