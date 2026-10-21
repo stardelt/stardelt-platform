@@ -36,9 +36,11 @@ The sync owns only what it created: roles whose description starts with
 `stardelt group `, nothing else — a role with a foreign description is reported as a
 conflict and never edited. Grants on a managed warehouse held by a role this job
 manages that the spec does not declare are removed; grants held by anything else
-(the project-level `data_admin` of the platform's service accounts, the bootstrap
-user's ownership, a person) are left alone and only *counted* in the Catalog's
-`Drift` condition (reason plus count, no names).
+(the project-level `data_admin` of the platform's service accounts, a person's
+ownership, a person) are left alone and only *counted* in the Catalog's `Drift`
+condition (reason plus count, no names). The sync's own `ownership` on a warehouse it
+created (`own_user_id()`, the creator tuple Lakekeeper writes) is its own record and
+is not drift.
 
 The admin group (`ADMIN_GROUP`, default `stardelt-admins`) is always managed: its
 role exists, holds its members, and is a `project_admin` of the project, so every
@@ -134,6 +136,8 @@ K8S_API = "https://kubernetes.default.svc"
 
 _TOKEN = None  # Lakekeeper client-credentials token, cached for one run, never logged
 _KC_TOKEN = None  # Keycloak client-credentials token, cached for one run, never logged
+_OWN_USER = None  # `oidc~<sub>` of this job's Lakekeeper client (own_user_id), never logged
+_OWN_USER_TOKEN = None  # the token _OWN_USER was decoded from; recompute when it changes
 # Filled by main() from Secret stardelt-s3-creds: the one bucket every catalog shares
 # until per-catalog buckets exist.
 PLATFORM_BUCKET = ""
@@ -279,6 +283,37 @@ def lakekeeper_token():
     _TOKEN = token
     del client_secret, body
     return _TOKEN
+
+
+def own_user_id():
+    """`oidc~<sub>` of the Lakekeeper client this run authenticates as, or None.
+
+    Lakekeeper writes an `ownership` assignment for the principal that creates a
+    warehouse; for a Catalog this job creates, that principal is this client. The
+    `sub` is read from the payload of the token `lakekeeper_token()` already holds —
+    base64url, signature *not* verified, because this is the token this process just
+    received over TLS, not a credential somebody else handed in. Computed once per
+    token (one decode per run) and never printed or logged: the `sub` is a principal,
+    like every other subject this job refuses to name.
+
+    Returns None when the token carries no readable `sub`; the caller then counts
+    every assignment it does not manage, exactly as before this helper existed.
+    """
+    global _OWN_USER, _OWN_USER_TOKEN
+    token = lakekeeper_token()
+    if token == _OWN_USER_TOKEN:
+        return _OWN_USER
+    _OWN_USER_TOKEN, _OWN_USER = token, None
+    try:
+        payload = token.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    except (IndexError, TypeError, ValueError):
+        return None
+    sub = claims.get("sub") if isinstance(claims, dict) else None
+    if not isinstance(sub, str) or not sub:
+        return None
+    _OWN_USER = "oidc~" + sub
+    return _OWN_USER
 
 
 def keycloak_token():
@@ -586,11 +621,14 @@ def sync_warehouse_grants(warehouse_id, desired, role_ids, managed_role_ids=None
     `role_ids`) — a grant held by one of those that the spec does not declare is
     removed. Everything else (another role, a person, the platform's service accounts
     at project level) is left alone and only counted as `foreign`, because the sync
-    never edits a subject it does not own. `apply=False` reads and counts without
-    writing — used when one of the Catalog's groups cannot be resolved, so a broken
-    spec removes nothing.
+    never edits a subject it does not own. One exception: the `ownership` assignment
+    Lakekeeper wrote for the sync's *own* client when it created the warehouse
+    (`own_user_id()`) is the sync's own record, not drift, so it is neither counted
+    nor deleted. `apply=False` reads and counts without writing — used when one of the
+    Catalog's groups cannot be resolved, so a broken spec removes nothing.
     """
     managed = set(role_ids.values()) if managed_role_ids is None else set(managed_role_ids)
+    own = own_user_id()
     status, body = lk("GET", "/management/v1/permissions/warehouse/%s/assignments" % warehouse_id)
     if status != 200 or body is None:
         raise GrantsFailed("cannot read the grants of a warehouse (HTTP %s)" % status)
@@ -608,8 +646,22 @@ def sync_warehouse_grants(warehouse_id, desired, role_ids, managed_role_ids=None
     writes = sorted(declared - current)
     deletes = sorted({entry for entry in current if entry[1] in managed} - declared)
     # Every assignment whose subject is not a role of ours: another role, a person,
-    # the bootstrap user's ownership. Counted, never edited, never named.
-    foreign = len([entry for entry in assignments if entry.get("role") not in managed])
+    # the platform's service accounts. Counted, never edited, never named — except
+    # this job's own `ownership` tuple, which is the sync's own record, not drift.
+    def is_own_ownership(entry):
+        return (
+            own is not None
+            and entry.get("type") == "ownership"
+            and entry.get("user") == own
+        )
+
+    foreign = len(
+        [
+            entry
+            for entry in assignments
+            if entry.get("role") not in managed and not is_own_ownership(entry)
+        ]
+    )
     if not apply or (not writes and not deletes):
         return 0, 0, foreign
     status, _ = lk(
