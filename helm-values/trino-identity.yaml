@@ -286,6 +286,28 @@ coordinator:
   # coordinator restart (which drops running queries — pick a quiet moment) is
   # only needed when this values file itself changes.
   additionalConfigFiles:
+    # Resource groups (platform#313): the file manager, pointing at the file
+    # CronJob access-sync renders from the `SqlWarehouse` objects (platform#312)
+    # into ConfigMap `trino-warehouses`, mounted below at /etc/trino/warehouses.
+    #
+    # Why the file is ours and not the chart's: trino 1.42.2 renders
+    # `resource-groups.properties` only for `resourceGroups.type: configmap|properties`,
+    # and in both shapes it owns the JSON too (the `configmap` type points at
+    # /etc/trino/resource-groups/resource-groups.json, its own ConfigMap). Our file is
+    # written by the access-sync CronJob, so `resourceGroups` stays unset — with the
+    # chart's default `{}` it renders no file and no volume, verified with
+    # `helm template` — and the properties are one more file in the coordinator's
+    # config directory, exactly like `group-provider.properties` below.
+    #
+    # The file manager reads the file once at startup and never again (spike
+    # platform#273 R6), so a changed class needs a new coordinator: the pod template
+    # carries `configmap.reloader.stakater.com/reload: "trino-warehouses"` in
+    # helm-values/trino.yaml, and a coordinator restart ends the running queries.
+    # Only the coordinator gets this file: `resource-groups.*` is a coordinator
+    # property and a worker refuses keys it does not bind.
+    resource-groups.properties: |
+      resource-groups.configuration-manager=file
+      resource-groups.config-file=/etc/trino/warehouses/resource-groups.json
     group-provider.properties: |
       group-provider.name=file
       file.group-file=/etc/trino/groups/groups.txt
@@ -327,6 +349,13 @@ coordinator:
   additionalVolumes:
     - name: trino-groups
       configMap: { name: trino-group-file }
+    # The resource-group document (platform#313): one directory mount, not a subPath
+    # file — a subPath mount never sees a ConfigMap update, and Reloader restarts the
+    # pod on change, so the new content is there when the new coordinator starts.
+    # `/etc/trino/warehouses` need not exist in the image (a ConfigMap directory mount
+    # creates it) and the file name matches `resource-groups.config-file` above.
+    - name: trino-warehouses
+      configMap: { name: trino-warehouses }
     # Repeated from helm-values/trino.yaml: Helm replaces lists instead of
     # merging them, so without this the identity overlay would drop the
     # file-system cache mount (platform#134) and the coordinator would
@@ -340,6 +369,7 @@ coordinator:
       emptyDir: { sizeLimit: 2Gi }
   additionalVolumeMounts:
     - { name: trino-groups, mountPath: /etc/trino/groups }
+    - { name: trino-warehouses, mountPath: /etc/trino/warehouses }
     - { name: trino-fscache, mountPath: /var/trino/cache }
     - { name: trino-dumps, mountPath: /dumps }
 

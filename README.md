@@ -390,6 +390,7 @@ plain development default when it does not.
 | `accessControl` (file `rules.json`: `queries` and `tables`) | query visibility is owner-only: each user sees and kills only their own queries, members of `stardelt-admins` see and kill all (viewing/killing one's own needs no rule — it is built-in). The `tables` rules deny everyone but `stardelt-admins` the cluster-wide `system.runtime.tasks`, `.transactions` and `.optimizer_rule_stats` (`tasks` lists other users' queries) and grant every other table as before; `system.runtime.queries` (own queries only) and `.nodes` stay open (platform#181) |
 | `coordinatorExtraConfig: access-control.config-files` + `coordinator.additionalConfigFiles` (`access-control-opa.properties`) | the second access control, platform#311: Trino also asks the catalog's OPA bridge (`lakekeeper-opa:8282`) before every catalog/schema/table/column operation, so the `Catalog` grants decide who reads what — see "Who may read what" below. Both systems have to allow a statement; the bridge therefore only ever removes access. Fail-closed: an unreachable bridge denies every statement |
 | `coordinator.additionalConfigFiles` (`group-provider.properties`) + `trino-groups` volume | the file group provider reads ConfigMap `trino-group-file` (written by CronJob `access-sync`, never committed): the `stardelt-admins` line the query rules read, and one `wh-<name>` line per `SqlWarehouse`, which is what the resource-group selectors match; `file.refresh-period=30s` picks remounts up with no restart. The strings are Keycloak user ids, matching `principal-field=sub` |
+| `coordinator.additionalConfigFiles` (`resource-groups.properties`) + `trino-warehouses` volume, `configmap.reloader.stakater.com/reload` | the resource-group file manager (`configuration-manager=file`) reads `/etc/trino/warehouses/resource-groups.json` from ConfigMap `trino-warehouses` — the file CronJob `access-sync` renders from the `SqlWarehouse` objects (platform#312, platform#313). It is loaded **once** at startup, so Reloader restarts the coordinator when that ConfigMap changes; the chart's own `resourceGroups` block stays unset (it would render and mount a file of its own). See "Warehouses" below |
 
 **What the public host serves (platform#181).** The `trino.<baseDomain>` Ingress
 (`dev/playground/ingress.yaml`, and `chart/templates/ingress.yaml` when `trino` is listed in
@@ -417,8 +418,8 @@ set in both the manifest and the chart). A token without `aud: trino` is rejecte
 wait for the next apply — a removed admin kept their all-queries view with no bound. CronJob
 `access-sync` (`manifests/access-sync.yaml`, every 2 minutes) now converges ConfigMap
 `trino-group-file` (the `stardelt-admins` line, re-read within 30 s, no restart) and the
-resource groups of ConfigMap `trino-warehouses` (loaded once — a changed file needs a
-coordinator restart, ticket 2/3), so a membership change lands without an apply. It
+resource groups of ConfigMap `trino-warehouses` (loaded once — a changed file restarts the
+coordinator, platform#313), so a membership change lands without an apply. It
 authenticates as the dedicated `trino-group-sync` service-account client with exactly
 `view-users` on `realm-management` (converged by
 `scripts/keycloak-sync-trino-group-sync-client.sh`, run by `make install-identity`; the realm
@@ -426,22 +427,59 @@ import declares the client for fresh installs) — read-only group membership, n
 and its RBAC may only read that client secret, patch status and converge those two ConfigMaps.
 Its logs state counts, never principals.
 
-*Warehouses (platform#312).* A `SqlWarehouse` object is a named compute class inside the one
-Trino: `access-sync` renders every valid object into a resource group of ConfigMap
+*Warehouses (platform#312, platform#313).* A `SqlWarehouse` object is a named compute class inside
+the one Trino: `access-sync` renders every valid object into a resource group of ConfigMap
 `trino-warehouses` (key `resource-groups.json`) and one `wh-<name>` line of
 `trino-group-file`, and writes `status.phase`/`renderedGroup`/`engine` back. The class
 defaults are `xs` 2 running / 10 queued / 10 % memory, `small` 10/100/20 %, `medium`
 5/50/40 %, `large` 6/70/70 %, scheduling `fair`; `spec.concurrency` overrides any of them.
-The classes partition the one coordinator and worker (2 GiB heaps each) — a `large` class on
-a one-node cluster means few concurrent queries with a bigger share of memory, not more
-hardware. Selection is by identity, never by a header: the admin group lands in its own
-`admin` root group, then the first `userGroup` selector a person matches (largest class
-first), then the catch-all into the one `default: true` warehouse — or into the
-zero-concurrency `no-warehouse` when zero or two are marked default, which answers
-`Too many queued queries for "no-warehouse"`. Every selector carries an identity constraint;
-a tag-only selector would be spoofable and the renderer refuses to write one. `make trino`
-mounts and restarts for the file (ticket 2/3); until then the objects are rendered and
-visible, and no query is routed by them.
+
+The dev cluster ships three classes (`dev/seed/warehouses.yaml`, applied by `make seed-dev-access
+YES=1`; `make unseed-dev-access YES=1` deletes `medium` and `large` and keeps `small`, the default
+class, which any install needs):
+
+| Class | Who lands in it | running / queued / memory |
+|---|---|---|
+| `small` — the one `default: true` | everybody in `stardelt-users`, `dev-outsider` included, and any principal that matches no group at all; administrators are routed to `admin` before a class selector is read | 10 / 100 / 20 % |
+| `medium` | `finops` — the seeded `dev-finops` | 5 / 50 / 40 % |
+| `large` | `analytics` — the seeded `dev-analytics` and the pre-existing `analyst` | 6 / 70 / 70 % |
+
+The class is chosen by identity, never by a header a client sends: the coordinator reads its
+selectors top to bottom and the first match wins — the admin group into its own `admin` root
+group, then one `userGroup: wh-<name>` selector per warehouse from the **largest** class to the
+smallest, then a catch-all into the one `default: true` warehouse. A person in two granted groups
+therefore lands in the bigger class, and a selector that matches only on `clientTags` is refused by
+the renderer because a client sets its own tags. With no default warehouse the catch-all goes to
+the zero-concurrency `no-warehouse` root group instead, which answers `Too many queued queries for
+"no-warehouse"`; with `small` marked default, a principal that nobody granted — a throwaway
+Keycloak user outside `stardelt-users` — runs in `wh-small` rather than in a queue that never
+moves.
+
+Which class a query ran in is visible in `system.runtime.queries`, as an administrator (everybody
+else sees only their own queries):
+
+```sql
+SELECT "user", resource_group_id FROM system.runtime.queries ORDER BY created DESC LIMIT 20
+```
+
+`resource_group_id` is the selector path the coordinator walked, e.g. `[global, wh-medium]` for
+`dev-finops` and `[admin]` for an administrator; `[global, wh-small]` is the default class. The
+`user` column is the Keycloak `sub` (the engine's principal, platform#311), so match it against the
+`wh-<name>` lines of `trino-group-file` or look the person up in Nova's session list.
+
+The classes partition the one coordinator and worker (2 GiB heaps each) — a `large` class on a
+one-node cluster means few concurrent queries with a bigger share of memory, not more hardware.
+Queueing is real: a class at its `hardConcurrencyLimit` puts further queries into its queue, and a
+query past `maxQueued` fails with `QUERY_QUEUE_FULL` instead of waiting forever.
+
+The file manager loads `/etc/trino/warehouses/resource-groups.json` **once**, at startup (spike
+platform#273 R6) — there is no live reload. A changed class therefore restarts the coordinator:
+ConfigMap `trino-warehouses` is in the coordinator's `configmap.reloader.stakater.com/reload`
+annotation (`helm-values/trino.yaml`), Reloader restarts the pod when the rendered file changes,
+and `access-sync` writes the file only when the document differs, so a tick that changes nothing
+does not bounce the engine. The restart ends the queries that are running — pick a quiet moment for
+a class change. The group file (`trino-group-file`) is deliberately *not* in that annotation: the
+file group provider re-reads it every 30 s, so a membership change needs no restart.
 
 *Service principal for scheduled pipelines (platform#118).* Scheduled `Pipeline` tasks run SQL on
 the query engine as the confidential service-account client `pipeline-runner`, not as a person:

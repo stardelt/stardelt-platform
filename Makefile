@@ -663,15 +663,22 @@ catalogs: _context ## Converge Catalogs into Trino catalogs + bridge mappings (r
 # target needs YES=1. Passwords are generated at run time and stored only in
 # Secret `dev-seed-users` (one key per user name) — never printed, never
 # committed. A second seed run changes nothing; `unseed` deletes only what
-# carries the Keycloak attribute `stardelt-managed=seed` and that Secret — never
+# carries the Keycloak attribute `stardelt-managed=seed`, the two warehouse
+# classes `medium`/`large` and that Secret — never `small` (the default class),
 # a Catalog, a Lakekeeper warehouse, or data.
+#
+# The warehouses (platform#313) come with every seed run: dev/seed/warehouses.yaml
+# is the three classes `small` (default, `stardelt-users`), `medium` (`finops`) and
+# `large` (`analytics`). Applying it changes ConfigMap `trino-warehouses`, and
+# Reloader restarts the coordinator for that (running queries end) — this is the one
+# restart the class change needs.
 # ---------------------------------------------------------------------------
 .PHONY: seed-dev-access unseed-dev-access seed-permission-fixtures unseed-permission-fixtures
 .PHONY: verify-catalog-permissions
-seed-dev-access: _context ## Create the dev seed groups, people and Secret (no Catalog unless SEED_CATALOGS=1; needs YES=1)
+seed-dev-access: _context ## Create the dev seed groups, people, Secret and the three warehouses (no Catalog unless SEED_CATALOGS=1; needs YES=1)
 	@NAMESPACE=$(NAMESPACE) YES=$(YES) SEED_CATALOGS=$(SEED_CATALOGS) bash scripts/seed-dev-access.sh
 
-unseed-dev-access: _context ## Remove the dev seed users, groups and their Secret (keeps every Catalog; needs YES=1)
+unseed-dev-access: _context ## Remove the dev seed users, groups, Secret and the medium/large warehouses (keeps small and every Catalog; needs YES=1)
 	@NAMESPACE=$(NAMESPACE) YES=$(YES) bash scripts/seed-dev-access.sh --unseed
 
 seed-permission-fixtures: _context ## Create the opt-in finance/product/sandbox Catalogs and their seed.nation tables (needs YES=1)
