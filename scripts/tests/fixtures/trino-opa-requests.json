@@ -1,0 +1,629 @@
+{
+  "trinoImage": "trinodb/trino:480",
+  "capturedAt": "2026-10-21T06:14:34Z",
+  "requests": [
+    {
+      "path": "/v1/data/trino/allow",
+      "operation": "AccessCatalog",
+      "resourceKind": "catalog",
+      "input": {
+        "action": {
+          "operation": "AccessCatalog",
+          "resource": {
+            "catalog": {
+              "name": "finance"
+            }
+          }
+        },
+        "context": {
+          "identity": {
+            "groups": [],
+            "user": "<sub>"
+          },
+          "properties": {},
+          "queryId": "20261021_061336_00000_a9b5n",
+          "softwareStack": {
+            "trinoVersion": "480"
+          }
+        }
+      }
+    },
+    {
+      "path": "/v1/data/trino/allow",
+      "operation": "CreateSchema",
+      "resourceKind": "schema",
+      "input": {
+        "action": {
+          "operation": "CreateSchema",
+          "resource": {
+            "schema": {
+              "catalogName": "finance",
+              "properties": {},
+              "schemaName": "seed"
+            }
+          }
+        },
+        "context": {
+          "identity": {
+            "groups": [],
+            "user": "<sub>"
+          },
+          "properties": {},
+          "queryId": "20261021_061336_00000_a9b5n",
+          "softwareStack": {
+            "trinoVersion": "480"
+          }
+        }
+      }
+    },
+    {
+      "path": "/v1/data/trino/allow",
+      "operation": "CreateTable",
+      "resourceKind": "table",
+      "input": {
+        "action": {
+          "operation": "CreateTable",
+          "resource": {
+            "table": {
+              "catalogName": "finance",
+              "properties": {},
+              "schemaName": "seed",
+              "tableName": "nation"
+            }
+          }
+        },
+        "context": {
+          "identity": {
+            "groups": [],
+            "user": "<sub>"
+          },
+          "properties": {},
+          "queryId": "20261021_061338_00001_a9b5n",
+          "softwareStack": {
+            "trinoVersion": "480"
+          }
+        }
+      }
+    },
+    {
+      "path": "/v1/data/trino/allow",
+      "operation": "CreateView",
+      "resourceKind": "table",
+      "input": {
+        "action": {
+          "operation": "CreateView",
+          "resource": {
+            "table": {
+              "catalogName": "sandbox",
+              "schemaName": "seed",
+              "tableName": "v"
+            }
+          }
+        },
+        "context": {
+          "identity": {
+            "groups": [],
+            "user": "<sub>"
+          },
+          "properties": {},
+          "queryId": "20261021_061406_00020_a9b5n",
+          "softwareStack": {
+            "trinoVersion": "480"
+          }
+        }
+      }
+    },
+    {
+      "path": "/v1/data/trino/allow",
+      "operation": "DropSchema",
+      "resourceKind": "schema",
+      "input": {
+        "action": {
+          "operation": "DropSchema",
+          "resource": {
+            "schema": {
+              "catalogName": "finance",
+              "schemaName": "tmp"
+            }
+          }
+        },
+        "context": {
+          "identity": {
+            "groups": [],
+            "user": "<sub>"
+          },
+          "properties": {},
+          "queryId": "20261021_061405_00019_a9b5n",
+          "softwareStack": {
+            "trinoVersion": "480"
+          }
+        }
+      }
+    },
+    {
+      "path": "/v1/data/trino/allow",
+      "operation": "DropTable",
+      "resourceKind": "table",
+      "input": {
+        "action": {
+          "operation": "DropTable",
+          "resource": {
+            "table": {
+              "catalogName": "finance",
+              "schemaName": "tmp",
+              "tableName": "t"
+            }
+          }
+        },
+        "context": {
+          "identity": {
+            "groups": [],
+            "user": "<sub>"
+          },
+          "properties": {},
+          "queryId": "20261021_061404_00018_a9b5n",
+          "softwareStack": {
+            "trinoVersion": "480"
+          }
+        }
+      }
+    },
+    {
+      "path": "/v1/data/trino/allow",
+      "operation": "ExecuteProcedure",
+      "resourceKind": "function",
+      "input": {
+        "action": {
+          "operation": "ExecuteProcedure",
+          "resource": {
+            "function": {
+              "catalogName": "system",
+              "functionName": "kill_query",
+              "schemaName": "runtime"
+            }
+          }
+        },
+        "context": {
+          "identity": {
+            "groups": [],
+            "user": "<sub>"
+          },
+          "properties": {},
+          "queryId": "20261021_061421_00030_a9b5n",
+          "softwareStack": {
+            "trinoVersion": "480"
+          }
+        }
+      }
+    },
+    {
+      "path": "/v1/data/trino/allow",
+      "operation": "ExecuteQuery",
+      "resourceKind": null,
+      "input": {
+        "action": {
+          "operation": "ExecuteQuery"
+        },
+        "context": {
+          "identity": {
+            "groups": [],
+            "user": "<sub>"
+          },
+          "properties": {},
+          "softwareStack": {
+            "trinoVersion": "480"
+          }
+        }
+      }
+    },
+    {
+      "path": "/v1/data/trino/batch",
+      "operation": "FilterCatalogs",
+      "resourceKind": "catalog",
+      "input": {
+        "action": {
+          "filterResources": [
+            {
+              "catalog": {
+                "name": "system"
+              }
+            },
+            {
+              "catalog": {
+                "name": "product"
+              }
+            },
+            {
+              "catalog": {
+                "name": "tpch"
+              }
+            },
+            {
+              "catalog": {
+                "name": "sandbox"
+              }
+            },
+            {
+              "catalog": {
+                "name": "finance"
+              }
+            },
+            {
+              "catalog": {
+                "name": "warehouse"
+              }
+            }
+          ],
+          "operation": "FilterCatalogs"
+        },
+        "context": {
+          "identity": {
+            "groups": [],
+            "user": "<sub>"
+          },
+          "properties": {},
+          "queryId": "20261021_061349_00008_a9b5n",
+          "softwareStack": {
+            "trinoVersion": "480"
+          }
+        }
+      }
+    },
+    {
+      "path": "/v1/data/trino/batch",
+      "operation": "FilterColumns",
+      "resourceKind": "table",
+      "input": {
+        "action": {
+          "filterResources": [
+            {
+              "table": {
+                "catalogName": "finance",
+                "columns": [
+                  "nationkey",
+                  "name",
+                  "regionkey",
+                  "comment"
+                ],
+                "schemaName": "seed",
+                "tableName": "nation"
+              }
+            }
+          ],
+          "operation": "FilterColumns"
+        },
+        "context": {
+          "identity": {
+            "groups": [],
+            "user": "<sub>"
+          },
+          "properties": {},
+          "queryId": "20261021_061354_00011_a9b5n",
+          "softwareStack": {
+            "trinoVersion": "480"
+          }
+        }
+      }
+    },
+    {
+      "path": "/v1/data/trino/batch",
+      "operation": "FilterSchemas",
+      "resourceKind": "schema",
+      "input": {
+        "action": {
+          "filterResources": [
+            {
+              "schema": {
+                "catalogName": "finance",
+                "schemaName": "information_schema"
+              }
+            },
+            {
+              "schema": {
+                "catalogName": "finance",
+                "schemaName": "default"
+              }
+            },
+            {
+              "schema": {
+                "catalogName": "finance",
+                "schemaName": "seed"
+              }
+            }
+          ],
+          "operation": "FilterSchemas"
+        },
+        "context": {
+          "identity": {
+            "groups": [],
+            "user": "<sub>"
+          },
+          "properties": {},
+          "queryId": "20261021_061351_00009_a9b5n",
+          "softwareStack": {
+            "trinoVersion": "480"
+          }
+        }
+      }
+    },
+    {
+      "path": "/v1/data/trino/batch",
+      "operation": "FilterTables",
+      "resourceKind": "table",
+      "input": {
+        "action": {
+          "filterResources": [
+            {
+              "table": {
+                "catalogName": "finance",
+                "schemaName": "seed",
+                "tableName": "nation"
+              }
+            }
+          ],
+          "operation": "FilterTables"
+        },
+        "context": {
+          "identity": {
+            "groups": [],
+            "user": "<sub>"
+          },
+          "properties": {},
+          "queryId": "20261021_061352_00010_a9b5n",
+          "softwareStack": {
+            "trinoVersion": "480"
+          }
+        }
+      }
+    },
+    {
+      "path": "/v1/data/trino/batch",
+      "operation": "FilterViewQueryOwnedBy",
+      "resourceKind": "user",
+      "input": {
+        "action": {
+          "filterResources": [
+            {
+              "user": {
+                "groups": [],
+                "user": "<sub>"
+              }
+            }
+          ],
+          "operation": "FilterViewQueryOwnedBy"
+        },
+        "context": {
+          "identity": {
+            "groups": [],
+            "user": "<peer>"
+          },
+          "properties": {},
+          "softwareStack": {
+            "trinoVersion": "480"
+          }
+        }
+      }
+    },
+    {
+      "path": "/v1/data/trino/allow",
+      "operation": "InsertIntoTable",
+      "resourceKind": "table",
+      "input": {
+        "action": {
+          "operation": "InsertIntoTable",
+          "resource": {
+            "table": {
+              "catalogName": "finance",
+              "schemaName": "seed",
+              "tableName": "nation"
+            }
+          }
+        },
+        "context": {
+          "identity": {
+            "groups": [],
+            "user": "<sub>"
+          },
+          "properties": {},
+          "queryId": "20261021_061400_00015_a9b5n",
+          "softwareStack": {
+            "trinoVersion": "480"
+          }
+        }
+      }
+    },
+    {
+      "path": "/v1/data/trino/allow",
+      "operation": "KillQueryOwnedBy",
+      "resourceKind": "user",
+      "input": {
+        "action": {
+          "operation": "KillQueryOwnedBy",
+          "resource": {
+            "user": {
+              "groups": [],
+              "user": "<sub>"
+            }
+          }
+        },
+        "context": {
+          "identity": {
+            "groups": [],
+            "user": "<peer>"
+          },
+          "properties": {},
+          "softwareStack": {
+            "trinoVersion": "480"
+          }
+        }
+      }
+    },
+    {
+      "path": "/v1/data/trino/allow",
+      "operation": "SelectFromColumns",
+      "resourceKind": "table",
+      "input": {
+        "action": {
+          "operation": "SelectFromColumns",
+          "resource": {
+            "table": {
+              "catalogName": "tpch",
+              "columns": [
+                "nationkey",
+                "regionkey",
+                "name",
+                "comment"
+              ],
+              "schemaName": "tiny",
+              "tableName": "nation"
+            }
+          }
+        },
+        "context": {
+          "identity": {
+            "groups": [],
+            "user": "<sub>"
+          },
+          "properties": {},
+          "queryId": "20261021_061338_00001_a9b5n",
+          "softwareStack": {
+            "trinoVersion": "480"
+          }
+        }
+      }
+    },
+    {
+      "path": "/v1/data/trino/allow",
+      "operation": "SetSystemSessionProperty",
+      "resourceKind": "systemSessionProperty",
+      "input": {
+        "action": {
+          "operation": "SetSystemSessionProperty",
+          "resource": {
+            "systemSessionProperty": {
+              "name": "query_max_run_time"
+            }
+          }
+        },
+        "context": {
+          "identity": {
+            "groups": [],
+            "user": "<sub>"
+          },
+          "properties": {},
+          "softwareStack": {
+            "trinoVersion": "480"
+          }
+        }
+      }
+    },
+    {
+      "path": "/v1/data/trino/allow",
+      "operation": "ShowColumns",
+      "resourceKind": "table",
+      "input": {
+        "action": {
+          "operation": "ShowColumns",
+          "resource": {
+            "table": {
+              "catalogName": "finance",
+              "schemaName": "seed",
+              "tableName": "nation"
+            }
+          }
+        },
+        "context": {
+          "identity": {
+            "groups": [],
+            "user": "<sub>"
+          },
+          "properties": {},
+          "queryId": "20261021_061354_00011_a9b5n",
+          "softwareStack": {
+            "trinoVersion": "480"
+          }
+        }
+      }
+    },
+    {
+      "path": "/v1/data/trino/allow",
+      "operation": "ShowFunctions",
+      "resourceKind": "schema",
+      "input": {
+        "action": {
+          "operation": "ShowFunctions",
+          "resource": {
+            "schema": {
+              "catalogName": "system",
+              "schemaName": "runtime"
+            }
+          }
+        },
+        "context": {
+          "identity": {
+            "groups": [],
+            "user": "<sub>"
+          },
+          "properties": {},
+          "queryId": "20261021_061423_00032_a9b5n",
+          "softwareStack": {
+            "trinoVersion": "480"
+          }
+        }
+      }
+    },
+    {
+      "path": "/v1/data/trino/allow",
+      "operation": "ShowSchemas",
+      "resourceKind": "catalog",
+      "input": {
+        "action": {
+          "operation": "ShowSchemas",
+          "resource": {
+            "catalog": {
+              "name": "finance"
+            }
+          }
+        },
+        "context": {
+          "identity": {
+            "groups": [],
+            "user": "<sub>"
+          },
+          "properties": {},
+          "queryId": "20261021_061351_00009_a9b5n",
+          "softwareStack": {
+            "trinoVersion": "480"
+          }
+        }
+      }
+    },
+    {
+      "path": "/v1/data/trino/allow",
+      "operation": "ShowTables",
+      "resourceKind": "schema",
+      "input": {
+        "action": {
+          "operation": "ShowTables",
+          "resource": {
+            "schema": {
+              "catalogName": "finance",
+              "schemaName": "seed"
+            }
+          }
+        },
+        "context": {
+          "identity": {
+            "groups": [],
+            "user": "<sub>"
+          },
+          "properties": {},
+          "queryId": "20261021_061352_00010_a9b5n",
+          "softwareStack": {
+            "trinoVersion": "480"
+          }
+        }
+      }
+    }
+  ]
+}

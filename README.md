@@ -1264,6 +1264,116 @@ reject is skipped with a warning. On a cluster without the Catalog CRD (no opera
 catalog. The umbrella chart path (`make chart-install`) is not wired to this yet: it still
 renders its own static `warehouse` catalog from `chart/values.yaml`.
 
+### The bridge contract
+
+The bridge answers questions Trino writes, so the questions have to be known before Trino
+is pointed at it (`platform#311`). `make bridge-capture` records them from the coordinator's
+own image and `make bridge-replay` asks the live bridge the recorded questions — no
+hand-written request shape, no guess about what 480 sends (`platform#333`).
+
+**What Trino 480 sends.** A `POST` to the policy URI (the bridge serves the package as
+`/v1/data/trino/allow`), body `{"input": {context, action}}`:
+
+```json
+{"input": {
+  "context": {"identity": {"user": "<sub>", "groups": []},
+              "softwareStack": {"trinoVersion": "480"},
+              "properties": {}, "queryId": "20261021_061336_00000_a9b5n"},
+  "action": {"operation": "AccessCatalog",
+             "resource": {"catalog": {"name": "finance"}}}}}
+```
+
+- **Per question.** `AccessCatalog`, `ShowSchemas` (resource `catalog`), `ShowTables` /
+  `ShowColumns` (`schema` / `table`), `CreateSchema`, `CreateTable`, `CreateView`,
+  `DropSchema`, `DropTable`, `InsertIntoTable`, `SelectFromColumns`, `ExecuteQuery`
+  (no resource), `SetSystemSessionProperty` (`systemSessionProperty`),
+  `ExecuteProcedure` and `ShowFunctions` (`function` / `schema`), and the query-ownership
+  operations (`user`).
+- **Batched.** With `opa.policy.batched-uri` set, as the bridge's chart config does,
+  `FilterCatalogs`, `FilterSchemas`, `FilterTables` and `FilterColumns` arrive at
+  `/v1/data/trino/batch` as one request: `{"action": {"operation": "FilterCatalogs",
+  "filterResources": [{"catalog": {"name": "system"}}, …]}}`, answered with
+  `{"result": [<allowed index>, …]}`. The index order is the order the resources were
+  sent in, and it is not sorted — the answer is a set of positions, not a list of names.
+  Without that URI the plugin sends one request per resource instead.
+- **What the bridge must never see.** `FilterFunctions` and
+  `CreateViewWithSelectFromColumns` exist in the plugin's interface, but 480 never sends
+  them in this battery: `SHOW FUNCTIONS` asks `ShowFunctions`, and view creation asks
+  `CreateView` plus the underlying `SelectFromColumns`. `ImpersonateUser` only appears
+  when the server authenticates a principal and then acts for a different user — which
+  is what Superset does after `platform#310`, so it is a #311 question, not a 480 one.
+- **The two facts the bridge relies on:** every data question carries
+  `context.identity.user` (it becomes `oidc~<sub>`, the Lakekeeper user) and a catalog
+  name under `resource.<kind>.catalogName` (or `resource.catalog.name`). A body that
+  lacks either gets `false` **before** any call to Lakekeeper, which is why the
+  Lakekeeper audit log shows no batch-check at all.
+
+**The fixture and the replay.** `scripts/tests/fixtures/trino-opa-requests.json` holds one
+request per distinct (path, operation, resource kind) — 21 shapes, 131 requests captured
+from `trinodb/trino:480` on 2026-10-21 — with the capture user replaced by `<sub>` (and the
+second user, for the query-ownership questions, by `<peer>`). Refresh it after a Trino
+upgrade:
+
+```sh
+make bridge-capture    # throwaway Trino + a stub authorizer that allows and records;
+                       # deletes its pod and ConfigMap, including on failure
+make bridge-replay     # the contract, the probes, the must-work reads, the matrix
+make bridge-replay --data-only   # only the matrix (the gate)
+```
+
+`make bridge-capture` runs the coordinator image with no authentication, the `tpch` catalog
+and four `memory` catalogs (`warehouse`, `finance`, `product`, `sandbox`), an OPA authorizer
+pointing at a python stub in the same pod, and executes a battery of statements covering
+catalog/schema/table DDL and DML, `SELECT`, `EXPLAIN`, `SET SESSION`, `SHOW …`, the system
+tables and a second user's query. The stub answers `{"result": true}` (and every index for
+a batch) and appends every body to `/captures/requests.jsonl`; the pod is labelled
+`app.kubernetes.io/name=trino-capture`, so NetworkPolicy `lakekeeper-ingress` keeps it away
+from the real bridge. Two statements in the battery are kept verbatim from the ticket even
+though 480 cannot parse them (`SHOW FUNCTIONS LIMIT 3`, and `n_nationkey` on a TPCH table,
+whose columns have no `n_` prefix); the working variants next to them are what reach the
+authorizer.
+
+`make bridge-replay` asks every captured shape for the three seed people and one
+`stardelt-admins` member (their Keycloak `sub`), from a throwaway pod labelled like the
+coordinator so `lakekeeper-ingress` admits it to 8282. It prints four tables — the
+contract, the operations 480 did not send, the reads that must keep working
+(`SELECT 1`, `system.runtime.nodes`, `information_schema`), and the permission matrix —
+and exits 1 on an HTTP error, a non-JSON body, an empty body, a missing `result`, a wrong
+matrix row, or a must-work read that is denied. `--data-only` keeps only the matrix: that
+is the regression row `make catalog-authz` runs before it trusts the bridge, and
+`make catalog-enforce` (`platform#311`) must run it too.
+
+**The decision for unmapped catalogs.** The bridge gets `allowUnmanagedCatalogs: true`, so
+any catalog that is not in `catalogs.rego` is allowed without asking Lakekeeper. That is
+deliberate and it covers exactly the catalogs this platform does not manage: `system`,
+`tpch` and `tpcds` (the engines' built-ins). Every `Catalog` object is mapped by
+`make catalogs`, so a data catalog is never in that set; if one ever is (a typo, a render
+that printed nothing), its grants are not enforced — that is the failure mode
+`make verify-catalog-permissions` and `make bridge-replay` are for. The same mechanism is
+why `SELECT * FROM system.runtime.nodes` and `SHOW FUNCTIONS FROM tpch.tiny` work for
+everyone: those catalogs are not ours to govern.
+
+**What the capture changed** (`platform#333`, before the switch):
+
+| operation | before | after | why |
+|---|:--:|:--:|---|
+| `SetSystemSessionProperty` | denied for everyone | allowed | Trino asks it before *any* `SET SESSION`; the chart had no rule, so `SET SESSION query_max_run_time` failed for every person |
+| `FilterFunctions` on a managed catalog | denied (empty `SHOW FUNCTIONS`) | allowed with `browse` | a function list is metadata; it follows the same `get_config` question as the catalog |
+| `AccessCatalog`, `SelectFromColumns`, `InsertIntoTable`, `CreateSchema`, `FilterCatalogs` | correct | correct | the 21-shape table showed no defect here — the nine-row matrix and the replay agree |
+| `ImpersonateUser` | denied | denied | **open for #311**: the OPA bridge has no rule for it, so Superset's impersonation (`platform#310`) would stop working the moment Trino's authorizer becomes OPA. The file rule in `helm-values/trino-identity.yaml` cannot survive the switch. |
+
+The two fixes are one small policy in `helm-values/lakekeeper.yaml`
+(`OPABridge.customPolicies.trino.stardelt.rego`), proved by `make bridge-replay`. The
+symptom the reporter saw after `make catalogs` in `platform#308` — every catalog question
+`false`, no batch-check in Lakekeeper — does **not** reproduce: the chart's
+`checksum/opa-policies` annotation rolls the bridge pod whenever the generated
+`catalogs.rego` changes, and the replay is correct for dev-outsider at t+0, +10, +30, +60
+and +120 s after the rollout. Sending the same question without `context.identity.user`, or
+with the catalog name only as a flat `catalogName`, does reproduce it exactly (`false`, no
+batch-check): the bridge fails closed before it calls Lakekeeper. The capture in this
+repository is the request shape that avoids that.
+
+
 ### Dev seed: four catalogs, three people, one matrix
 
 A small permission set you can check by hand, for development and for demoing the model
@@ -1564,6 +1674,8 @@ kubectl -n stardelt delete pods -l spark-role=executor
 | `seed-dev-access` | Create the dev seed: groups `finops`/`analytics`, users `dev-*`, Catalogs `warehouse`/`finance`/`product`/`sandbox` and the `seed.nation` tables; needs `YES=1`, refuses on `environment: production` (platform#309) |
 | `unseed-dev-access` | Delete the seed users, groups and Catalogs and Secret `dev-seed-users`; needs `YES=1`, never touches `warehouse` or data (platform#309) |
 | `verify-catalog-permissions` | Prove the nine-row permission matrix against the OPA bridge, one PASS/FAIL per cell; exit 1 on any mismatch (platform#309) |
+| `bridge-capture` | Capture the authorization requests the Trino coordinator's image sends to an OPA authorizer, from a throwaway pod with a stub, into `scripts/tests/fixtures/trino-opa-requests.json`; refresh after a Trino upgrade (platform#333) |
+| `bridge-replay` | Replay the captured requests against the live bridge for the three seed people and an admin: contract, probes, must-work reads and the matrix; exit 1 on an error, empty answer or wrong row. `--data-only` is the matrix gate (platform#333) |
 | `trino` | Install/upgrade Trino; adds `helm-values/trino-identity.yaml` (Keycloak OAuth2 + service-account password) when `stardelt-identity` exists |
 | `sync-trino-groups` | Sync the live realm's `stardelt-admins` membership into ConfigMap `trino-group-file` (Trino query visibility); idempotent, runs inside `make trino` (#125) |
 | `install-operator` | Install the stardelt Operator from `../stardelt-operator/chart` (dev path) |

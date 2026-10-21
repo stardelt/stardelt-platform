@@ -260,5 +260,19 @@ node_mem=$(kubectl top node --no-headers 2>/dev/null | awk '{print $5}' | tr -d 
 if [ "${node_mem:-100}" -lt 85 ]; then r=0; else r=1; fi
 check "node memory ${node_mem:-?}% (< 85%)" $r
 
+# 8. The questions a query depends on (platform#333). The bridge must answer the
+#    captured Trino 480 requests the way the seed's grants say — the replay's
+#    data rows are the regression gate before anyone points Trino's authorizer
+#    at it (platform#311). It needs the dev seed (#309) to have people to ask
+#    as; on a cluster without it there is nothing to compare against and the
+#    step is skipped, not failed.
+if kubectl -n "$NAMESPACE" get secret dev-seed-users >/dev/null 2>&1 \
+   && kubectl -n "$NAMESPACE" get catalogs.stardelt.io/finance >/dev/null 2>&1; then
+  NAMESPACE="$NAMESPACE" bash scripts/bridge-replay.sh --data-only >"$TMP/bridge-replay.log" 2>&1
+  check "the bridge answers the replay's data rows (make bridge-replay --data-only)" $?
+else
+  info "skipped: bridge replay (no dev seed — run 'make seed-dev-access YES=1' to enable it)"
+fi
+
 printf '\n  %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
