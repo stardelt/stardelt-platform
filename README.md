@@ -1580,17 +1580,30 @@ service), so an idle platform pays for the driver only:
 
 | Part | Request | Limit | Steady state |
 |------|---------|-------|--------------|
-| Driver (`spark-connect`) | 250m / 1 GiB | 1 CPU / 2 GiB | ~0.5 GiB measured |
+| Driver (`spark-connect`) | 250m / 1 GiB | 1 CPU / 3 GiB | 0.5 GiB idle, 1.8 GiB under a large job (2026-10-21) |
 | Executor, each (max 2) | 1 CPU / 1.4 GiB | JVM heap `1g` + `384m` overhead | 0.6–1.4 GiB, only while querying |
 
-On the shared 16 GB dev node the driver measured 529 MiB and the node stayed at
-~64–69 % with an executor running, well inside the headroom left by Trino,
-Airflow, Superset and JupyterHub. Executors are released after
+On the shared 16 GB dev node the driver idles at about 0.5 GiB and a large notebook job
+took it to 1.8 GiB of the 3 GiB limit on 2026-10-21, while the node stayed inside the
+headroom left by Trino, Airflow, Superset and JupyterHub. The request stays at 1 GiB
+(the node's requests are at 99 % of allocatable, so a larger request would leave the
+driver Pending); only the limit has room. Executors are released after
 `shuffleTracking.timeout` (180 s) plus the idle timeout, so a query leaves the
 node as it was a few minutes later.
 Change the numbers in `manifests/spark.yaml` (ConfigMap `spark-connect-config` +
 the driver's `resources`) and re-run `make install-spark`; the target restarts the
 driver only when the ConfigMap actually changed.
+
+**What a notebook can do to the driver.** Every notebook shares this one driver
+(`replicas: 1`), so a result that lands in it lands in everyone's way. `collect()` and
+`toPandas()` are capped at `spark.driver.maxResultSize` (512 MiB): above that the call
+fails in the notebook with `Total size of serialized results of N tasks (...) is bigger
+than spark.driver.maxResultSize` and the driver keeps serving — before the cap the same
+result filled the heap and killed the pod under every open session. When a call fails
+that way, write the result to a table (`df.writeTo("<catalog>.<schema>.<table>").createOrReplace()`)
+and read it back, or aggregate first; do not raise the limit. The
+[notebook cheat sheet](images/jupyter/stardelt/README.md#keeping-the-shared-driver-healthy)
+(platform#374) has the patterns that keep the driver small.
 
 ### Catalog wiring
 
