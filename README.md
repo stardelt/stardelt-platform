@@ -1598,8 +1598,13 @@ driver only when the ConfigMap actually changed.
 (`replicas: 1`), so a result that lands in it lands in everyone's way. `collect()` and
 `toPandas()` are capped at `spark.driver.maxResultSize` (512 MiB): above that the call
 fails in the notebook with `Total size of serialized results of N tasks (...) is bigger
-than spark.driver.maxResultSize` and the driver keeps serving — before the cap the same
-result filled the heap and killed the pod under every open session. When a call fails
+than spark.driver.maxResultSize` and the driver keeps serving. Without the cap Spark's
+default is 1 GiB, as large as the whole heap, so one big result could exhaust it. The
+cap does not bound everything a notebook can do to the driver: on 2026-10-21 a load that
+turned 250,000-row chunks into DataFrames (tasks of 11 MiB, no big result) got the driver
+OOMKilled at the 2 GiB limit, which is why the limit is 3 GiB: heap 1g plus JVM direct
+memory up to its default cap of 1g plus about 0.4g of metaspace, code and threads is about
+2.4 GiB (arithmetic, not a measurement). When a call fails
 that way, write the result to a table (`df.writeTo("<catalog>.<schema>.<table>").createOrReplace()`)
 and read it back, or aggregate first; do not raise the limit. The
 [notebook cheat sheet](images/jupyter/stardelt/README.md#keeping-the-shared-driver-healthy)
