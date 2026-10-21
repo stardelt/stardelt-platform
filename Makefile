@@ -195,6 +195,10 @@ install: deps _context _helm-repos ## Install all stardelt components (idempoten
 	@kubectl apply -f manifests/lakekeeper-bootstrap.yaml
 	@echo "› [5/11] catalog ingress NetworkPolicy (only the components that need it)"
 	@kubectl apply -f manifests/lakekeeper-network-policy.yaml
+	@echo "› [5/11] Access sync: one warehouse per Catalog (platform#305)"
+	@if kubectl -n $(NAMESPACE) get configmap stardelt-identity >/dev/null 2>&1; then \
+	  $(MAKE) --no-print-directory access-sync; \
+	fi
 
 	@echo "› [6/11] Trino"
 	@$(MAKE) --no-print-directory trino
@@ -518,6 +522,35 @@ delete-catalog-clients: _context ## Delete the seven svc-catalog-* service clien
 	@NAMESPACE=$(NAMESPACE) KIND=service NAME=catalog-bridge YES=$(YES) bash scripts/keycloak-sync-principal.sh --delete
 	@NAMESPACE=$(NAMESPACE) KIND=service NAME=catalog-operator YES=$(YES) bash scripts/keycloak-sync-principal.sh --delete
 
+# ---------------------------------------------------------------------------
+# Access sync (platform#305, authz 4/8) — `Catalog` objects become Lakekeeper
+# warehouses.
+#
+# CronJob `access-sync` (every 2 minutes) converges every Catalog into one
+# Lakekeeper warehouse and writes `status.phase` / `status.warehouseId` back;
+# scripts/access-sync-job.py holds the rules, the design and the "what is not
+# built" list (per-catalog buckets). The script reaches the Pod on ConfigMap
+# `access-sync-script`, refreshed here from the file on every apply so there is
+# one source of truth — the pattern of CronJob trino-group-sync (platform#167).
+#
+# Needs the identity install: the job signs in to the catalog as
+# `svc-catalog-operator` (project_admin), so a bare `install-core` — anonymous
+# catalog, no IdP — gets no CronJob.
+# ---------------------------------------------------------------------------
+.PHONY: access-sync access-sync-now
+access-sync: _context ## Create/refresh the script ConfigMap and apply CronJob access-sync
+	@kubectl -n $(NAMESPACE) create configmap access-sync-script --from-file=job.py=scripts/access-sync-job.py \
+	  --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+	@kubectl apply -f manifests/access-sync.yaml
+
+access-sync-now: _context ## Run one access-sync Job now, wait for it and print its log
+	@name=access-sync-now-$$(date +%s); \
+	  kubectl -n $(NAMESPACE) create job --from=cronjob/access-sync "$$name" >/dev/null; \
+	  kubectl -n $(NAMESPACE) wait --for=condition=complete "job/$$name" --timeout=150s >/dev/null \
+	    || { kubectl -n $(NAMESPACE) logs "job/$$name" 2>/dev/null || true; \
+	         echo "job $$name did not complete — see the log above" >&2; exit 1; }; \
+	  kubectl -n $(NAMESPACE) logs "job/$$name"
+
 # The public client developer tools on a laptop sign in with (platform#157): the device grant and
 # PKCE to a loopback address. `make sync-dev-client DEV_CLIENT_ENABLED=false` switches it off.
 sync-dev-client: _context ## Converge the live realm's stardelt-dev client (device grant, PKCE, loopback redirects; idempotent)
@@ -650,6 +683,8 @@ uninstall: _context ## Uninstall all stardelt components (reverse order)
 	@echo "› removing manifests"
 	@kubectl delete -f manifests/trino-group-sync.yaml          --ignore-not-found
 	@kubectl -n $(NAMESPACE) delete configmap trino-group-sync-script --ignore-not-found
+	@kubectl delete -f manifests/access-sync.yaml              --ignore-not-found
+	@kubectl -n $(NAMESPACE) delete configmap access-sync-script --ignore-not-found
 	@kubectl delete -f manifests/spark.yaml                   --ignore-not-found
 	@kubectl delete -f manifests/trino-tls.yaml               --ignore-not-found
 	@kubectl delete -f manifests/nova-deployment.yaml        --ignore-not-found

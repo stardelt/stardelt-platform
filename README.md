@@ -1031,6 +1031,76 @@ Lakekeeper), because authorization is keyed on the IdP's subjects; a bare
 
 ---
 
+## Catalogs
+
+A `Catalog` is one data domain: the name users type (`finance.orders`) and, in
+Lakekeeper, the name of one warehouse. It is a CRD (`catalogs.stardelt.io`, short
+`cat`) — owner group, optional storage overrides, grants — so a catalog is a
+cluster object like everything else, not a row in a UI (platform#305, design
+`design/multitenant-catalogs.md` §4.2).
+
+```yaml
+apiVersion: stardelt.io/v1alpha1
+kind: Catalog
+metadata:
+  name: finance              # 1-40 lower-case letters and digits, starts with a letter
+  namespace: stardelt
+spec:
+  lakehouseRef: { name: main }
+  displayName: "Finance"
+  description: "Contracted revenue, orders and billing."
+  owner: stardelt-finops     # exactly one group: ownership means manage, not select
+  storage:
+    keyPrefix: domains/finance   # default: the catalog name
+  grants:
+    - { group: stardelt-finops, verb: browse }
+    - { group: stardelt-analytics, verb: select }
+```
+
+```sh
+kubectl apply -f finance.yaml
+make access-sync-now            # run the CronJob once, wait, print its log
+kubectl -n stardelt get cat finance -o jsonpath='{.status.phase} {.status.warehouseId}'
+# Ready 5f1c2bde-…             (within 2 minutes without access-sync-now)
+```
+
+CronJob `access-sync` (`manifests/access-sync.yaml`) runs every 2 minutes — in the
+`stardelt-identity` guard of `make install`, because the job signs in to the catalog
+as `svc-catalog-operator`; `make access-sync` refreshes its script ConfigMap and
+applies it. It is the part of the operator's job the operator cannot do yet: it
+builds objects and Jobs, has no HTTP client, so a CronJob holds this loop until the
+operator absorbs it. The design stays the operator's: nothing here is a second
+control plane, and the Catalog controller keeps its dry-run plan.
+
+Status fields:
+
+| Field | Meaning |
+|-------|---------|
+| `status.phase` | `Ready` (a warehouse of that name exists) or `Invalid` (a rule failed; no warehouse was created) |
+| `status.warehouseId` | The Lakekeeper warehouse id — Nova and the permission bridge read it instead of guessing by name |
+| `status.conditions[CatalogReady]` | `reason`/`message` name the rule when `Invalid`; `observedGeneration` says which spec the verdict is for |
+
+The job is idempotent: an existing warehouse is **adopted** (no storage change, no
+credential refresh — the bootstrap Job owns the platform warehouse's credential),
+a converged tick writes no status at all, and a second `make access-sync-now` leaves
+`resourceVersion` alone. Names the engine or the platform owns (`system`,
+`information_schema`, `memory`, `tpch`, `tpcds`, `jmx`) are `Invalid`, never a
+warehouse.
+
+**Not built: per-catalog buckets.** Every catalog shares the platform bucket
+(`stardelt-s3-creds`) and is separated by `storage.keyPrefix`. A `Catalog` with a
+`storage.bucket` other than the platform bucket is `Invalid/BucketsNotBuilt` — until
+per-catalog buckets exist, storage isolation cannot be enforced (internal note
+§2.4), and users never hold storage credentials, so accepting the field would
+advertise an isolation that is not there.
+
+**Deleting a Catalog deletes no data** (design §2.5): the warehouse and its tables
+stay, and the job reports it as `orphan warehouse <name>` on each tick. Removing a
+catalog for good is a maintainer decision on the warehouse, not a side effect of
+`kubectl delete catalog`.
+
+---
+
 ## Spark — heavy compute on the same Iceberg tables
 
 Spark is the heavy-compute plug of the master spec (§5 #14): a **Spark Connect**
@@ -1252,6 +1322,8 @@ kubectl -n stardelt delete pods -l spark-role=executor
 | `verify-oidc-clients` | Prove every client secret still authenticates at the token endpoint (`invalid_grant` vs `unauthorized_client`) and matches what the realm stores; names the drifting clients and the fix |
 | `sync-catalog-clients` | Create/converge the seven catalog-caller service clients (`svc-catalog-*`) and their Secrets, audience `lakekeeper`, no group; idempotent (#282, #303; Lakekeeper validates them since #285) |
 | `delete-catalog-clients` | Delete those seven clients and Secrets; only `stardelt-managed=service` clients, needs `YES=1` |
+| `access-sync` | Create/refresh ConfigMap `access-sync-script` and apply CronJob `access-sync` — one Lakekeeper warehouse per `Catalog` (platform#305) |
+| `access-sync-now` | Run that CronJob once as a Job now, wait for it and print its log |
 | `trino` | Install/upgrade Trino; adds `helm-values/trino-identity.yaml` (Keycloak OAuth2 + service-account password) when `stardelt-identity` exists |
 | `sync-trino-groups` | Sync the live realm's `stardelt-admins` membership into ConfigMap `trino-group-file` (Trino query visibility); idempotent, runs inside `make trino` (#125) |
 | `install-operator` | Install the stardelt Operator from `../stardelt-operator/chart` (dev path) |
@@ -1300,6 +1372,9 @@ manifests/            Plain Kubernetes manifests (kubectl apply)
   openfga-network-policy.yaml  OpenFGA ingress: the Lakekeeper catalog and migration pods only
   keycloak.yaml         Platform IdP: Keycloak + its CNPG Cluster (make install-identity)
   lakekeeper-bootstrap.yaml  Job: accept ToS + create default warehouse
+  lakekeeper-network-policy.yaml  Catalog ingress: the callers that may reach 8181 / the bridge
+  access-sync.yaml      CronJob: one Lakekeeper warehouse per Catalog, status written back
+  trino-group-sync.yaml CronJob: Trino query-visibility group file from the live realm
   nova-deployment.yaml  stardelt Nova UI + backend
   spark.yaml            Spark Connect endpoint + Spark configuration (make install-spark)
   s3-credentials.example.yaml  Template for the stardelt-s3-creds Secret
@@ -1312,6 +1387,7 @@ images/
 
 scripts/
   app-secrets.sh        Generate the Airflow/Superset Secrets (idempotent, never printed)
+  access-sync-job.py    CronJob access-sync: Catalog objects become Lakekeeper warehouses
   check-deps.sh         Verify required CLI tools
   identity-bootstrap.sh Generate the IdP Secrets + render realm/identity ConfigMaps
   keycloak-sync-trino-client.sh  Sync the live realm's Trino token settings (import skips an existing realm)
@@ -1328,6 +1404,8 @@ scripts/
   verify-oidc-clients.sh Assert every client secret in Secret stardelt-oidc-clients authenticates at the token endpoint
   verify-realm-admin.sh Assert the realm-admin Secret still signs in to realm `stardelt`
   verify-trino-auth.sh  Assert Trino refuses anonymous SQL, accepts user tokens + the service account, and Superset's stored connection works
+  tests/
+    test_access_sync.py  Unit tests for access-sync-job.py (python3 -m unittest discover -s scripts/tests)
   helm-plugins/
     stardelt-dedupe/    Helm v4 post-renderer: deduplicates env lists
 ```

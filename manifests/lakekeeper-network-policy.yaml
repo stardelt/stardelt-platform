@@ -27,6 +27,8 @@
 #     `warehouse` (manifests/lakekeeper-bootstrap.yaml). The Job controller puts
 #     `batch.kubernetes.io/job-name=lakekeeper-bootstrap` on its pod, so no
 #     change to the Job is needed.
+#   - Access sync CronJob: one Lakekeeper warehouse per `Catalog`
+#     (manifests/access-sync.yaml, platform#305). Management API on 8181.
 #
 # Not callers, and therefore not allowed: Trino workers (they read Parquet from
 # S3; the coordinator does the catalog work), Spark executors (they read data
@@ -86,6 +88,11 @@ spec:
         - podSelector:
             matchLabels:
               batch.kubernetes.io/job-name: lakekeeper-bootstrap
+        # Access sync CronJob (platform#305) — a `Catalog` becomes a warehouse,
+        # which is a management-API call on the same port.
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: access-sync
       ports:
         - protocol: TCP
           port: 8181

@@ -49,6 +49,9 @@ jobs:
       - name: Lint shell scripts (bash -n + shellcheck)
         run: make lint
 
+      - name: Unit tests — the access sync job's rules and Lakekeeper calls
+        run: python3 -m unittest discover -s scripts/tests -v
+
   # ---------------------------------------------------------------------------
   # helm template each chart with its values file
   # ---------------------------------------------------------------------------
