@@ -1,0 +1,11 @@
+# `make install-core` runs without an identity provider (no ConfigMap
+# `stardelt-identity`), so it cannot authenticate to the external OpenFGA either.
+# This overlay restores the pre-#304 behaviour for the core install only; `make
+# install` (with identity) uses `helm-values/lakekeeper.yaml` alone, where
+# authorization is `openfga` and the OPA bridge is enabled.
+authz:
+  backend: allowall
+  openfga:
+    endpoint: ""
+OPABridge:
+  enabled: false

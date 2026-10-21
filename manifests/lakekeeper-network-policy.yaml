@@ -2,11 +2,11 @@
 #
 # Lakekeeper validates tokens since platform#285 (`LAKEKEEPER__OPENID_PROVIDER_URI`
 # and `AUDIENCE=lakekeeper` from ConfigMap `stardelt-identity`), so a request without
-# a valid bearer token is 401. Authorisation is still `allowall`: a valid token may
-# read and change the metadata of every table, namespace and warehouse. Until real
-# authorisation lands, this policy is defence in depth — it narrows *which* pods may
-# even attempt a request, and it keeps the catalog unreachable if authentication
-# ever regresses to anonymous.
+# a valid bearer token is 401. Since platform#304 authorisation is decided by OpenFGA
+# and the OPA bridge: a valid token without a grant is 403. This policy stays as
+# defence in depth — it narrows *which* pods may even attempt a request (and which
+# may ask the bridge), and it keeps the catalog unreachable if authentication ever
+# regresses to anonymous.
 #
 # This policy is ingress-only: it does not restrict what Lakekeeper itself
 # reaches (Postgres, S3), and it has no namespaceSelector and no ipBlock rule.
@@ -89,3 +89,14 @@ spec:
       ports:
         - protocol: TCP
           port: 8181
+    # The OPA bridge sidecar (platform#304) answers Trino's authorization
+    # questions on TCP 8282. Only the coordinator asks; Trino workers read data
+    # files and never call it.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: trino
+              app.kubernetes.io/component: coordinator
+      ports:
+        - protocol: TCP
+          port: 8282

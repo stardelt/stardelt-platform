@@ -1118,19 +1118,61 @@ requests. Spark gets the credentials from Secret `stardelt-s3-creds` through
 `spark.kubernetes.executor.secretKeyRef.*` on every executor; nothing is written
 into a config file.
 
+### Catalog authorization
+
+Four facts about the enforcement path (platform#285, platform#304):
+
+1. **Authentication is the token.** Lakekeeper validates the bearer against the realm
+   (`LAKEKEEPER__OPENID_PROVIDER_URI`, audience `lakekeeper`); without one, every
+   request is 401.
+2. **Authorization is OpenFGA.** Every catalog request is decided against tuples in
+   OpenFGA (via the OPA bridge sidecar); a valid token without a grant is 403.
+   Grants are keyed by `oidc~<sub>`; authenticating does not create a user row.
+3. **Trino is inside the trust boundary.** Its coordinator signs in as
+   `svc-catalog-trino` (`data_admin`); the bridge answers its decisions, and the
+   NetworkPolicy admits TCP 8282 only from the coordinator.
+4. **The bridge's client is a god credential.** `svc-catalog-bridge` holds
+   `project_admin` on the project, so it can change every grant. Treat its Secret like
+   the realm admin Secret; it is read by the sidecar, never mounted into other pods.
+
+`make catalog-authz` runs `scripts/catalog-authz-bootstrap.sh`, the one supported
+cutover: it takes a CloudNative-PG backup (`pre-authz-*`), upgrades Lakekeeper to
+`authz.backend: openfga`, calls `reopen-bootstrap`, re-bootstraps the catalog, runs
+`openfga reconcile`, writes the grants and prints the verification table. It is
+idempotent; a second run reports every step as already done. `make install-core`
+(no IdP) keeps `allowall` through `helm-values/lakekeeper-allowall.yaml`.
+
+To see the grants, use a `project_admin` client (the bridge's) and read the project
+assignments:
+
+```sh
+kubectl -n stardelt port-forward svc/lakekeeper 8181:8181
+# with a token from svc-catalog-bridge (never print it):
+curl -sS -H "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:8181/management/v1/permissions/project/assignments
+```
+
+**If the catalog is locked out** (403 on everything, e.g. after a bad values edit):
+re-run `make catalog-authz` (it re-bootstraps and re-grants); if the bootstrap state is
+inconsistent, `kubectl -n stardelt exec deploy/lakekeeper -c lakekeeper --
+/home/nonroot/lakekeeper reopen-bootstrap -y`, POST `/management/v1/bootstrap` as
+`svc-catalog-bootstrap`, then `openfga reconcile` and the grants. Switching back to
+`allowall` is not supported by upstream and is a maintainer decision; a restore from the
+`pre-authz-*` backup is the last resort.
+
 ### Catalog network access (interim)
 
-Lakekeeper authenticates every request since platform#285, but it authorises with `allowall`: a
-valid token — any of the `svc-catalog-*` clients — may read and change the metadata of every table.
-Until real authorisation lands (#304), the network is what narrows *who can even attempt a call*,
-and it is the control that still holds if authentication regresses to anonymous. `make install` and
-`make install-core` apply `manifests/lakekeeper-network-policy.yaml`
-(`NetworkPolicy lakekeeper-ingress`): only the Trino coordinator, Nova, the Spark Connect
-driver, Airflow task pods and the Lakekeeper bootstrap Job may open TCP 8181. Trino
-workers read Parquet from S3 and Spark executors read data files, so neither calls the
-catalog; the JupyterHub single-user egress policy already denies it. The policy is
-ingress-only — it does not touch what Lakekeeper reaches (Postgres, S3) — and it has no
-namespace-wide or CIDR rule. Kubelet probes come from the node, so the pod stays Ready.
+Lakekeeper authorizes every request with OpenFGA (above), and the network is the second
+control: it narrows *who can even attempt a call* and still holds if authentication ever
+regresses. `make install` and `make install-core` apply
+`manifests/lakekeeper-network-policy.yaml` (`NetworkPolicy lakekeeper-ingress`): only the
+Trino coordinator, Nova, the Spark Connect driver, Airflow task pods and the Lakekeeper
+bootstrap Job may open TCP 8181, and only the Trino coordinator may open the OPA bridge's
+TCP 8282. Trino workers read Parquet from S3 and Spark executors read data files, so
+neither calls the catalog; the JupyterHub single-user egress policy already denies it. The
+policy is ingress-only — it does not touch what Lakekeeper reaches (Postgres, OpenFGA, S3)
+— and it has no namespace-wide or CIDR rule. Kubelet probes come from the node, so the pod
+stays Ready.
 
 It needs a CNI that enforces NetworkPolicy: k3s does (the JupyterHub policies already
 rely on its controller), while plain Flannel does not. To remove the interim restriction,

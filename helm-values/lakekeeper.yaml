@@ -3,9 +3,16 @@
 #
 # Decisions for the MVP:
 #   - bundled postgres OFF → use CNPG Cluster `lakekeeper-pg`
-#   - bundled OpenFGA OFF → authz backend = "allowall" (no real authz)
+#   - authorization through the external OpenFGA and the OPA sidecar (platform#304,
+#     authz 3/8); `install-core` (no IdP) overrides this back to `allowall`
 #   - authentication ON (platform#285): every request needs a valid bearer token
 #   - helmWait true so `helm upgrade --wait` blocks until migrations land
+#
+# Authorization must not change after bootstrapping: enabling OpenFGA on the
+# bootstrapped catalog locks every request out (403) until the catalog is
+# re-bootstrapped and the grants are written. `make catalog-authz` does that in
+# one idempotent run (scripts/catalog-authz-bootstrap.sh) — never apply this
+# file with a bare `helm upgrade`.
 
 helmWait: true
 
@@ -24,9 +31,47 @@ externalDatabase:
   passwordSecretKey: password
 
 authz:
-  backend: allowall
+  backend: openfga
+  openfga:
+    # OpenFGA's gRPC port (platform#302). Its authorization model is written by
+    # the chart's migration Job during `helm upgrade`, so OpenFGA must be Ready
+    # first or the server fails with "Active authorization model ... not found".
+    endpoint: http://openfga.stardelt.svc.cluster.local:8081
 
-internalOpenFGA: false
+# The OPA bridge (platform#304): a sidecar in the catalog pod, exposed on TCP
+# 8282 by Service `lakekeeper-opa`, that answers Trino's authorization
+# questions. It signs in to Lakekeeper with `svc-catalog-bridge` and writes the
+# per-request decisions; its `project_admin` grant is a god credential (it can
+# change every grant in the project).
+OPABridge:
+  enabled: true
+  catalogs:
+    - trinoCatalog: warehouse
+      lakekeeperWarehouse: warehouse
+  allowUnmanagedCatalogs: true
+  resources:
+    requests: { cpu: "20m", memory: "48Mi" }
+    limits: { memory: "256Mi" }
+  # The chart's `lakekeeper.existingSecret` branch (0.11.0 and 0.12.0) emits
+  # `value: "1000"` and the next `- name:` without a newline, which makes the
+  # rendered Deployment invalid YAML. Until that is fixed upstream, the four
+  # credentials are mounted with `extraEnv` + `secretKeyRef` from the same Secret;
+  # nothing secret is written into values or the release.
+  lakekeeper:
+    existingSecret: ""
+    tokenEndpoint: ""
+    clientId: ""
+    clientSecret: ""
+    scope: ""
+  extraEnv:
+    - name: LAKEKEEPER_TOKEN_ENDPOINT
+      valueFrom: { secretKeyRef: { name: svc-catalog-bridge, key: token-url } }
+    - name: LAKEKEEPER_CLIENT_ID
+      valueFrom: { secretKeyRef: { name: svc-catalog-bridge, key: client-id } }
+    - name: LAKEKEEPER_CLIENT_SECRET
+      valueFrom: { secretKeyRef: { name: svc-catalog-bridge, key: client-secret } }
+    - name: LAKEKEEPER_SCOPE
+      valueFrom: { secretKeyRef: { name: svc-catalog-bridge, key: scope } }
 
 catalog:
   replicas: 1
