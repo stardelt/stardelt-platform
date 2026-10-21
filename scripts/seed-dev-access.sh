@@ -422,8 +422,8 @@ for catalog in "${SEED_CATALOGS[@]}"; do
   [ "$count" = 25 ] || fail "$catalog.$SEED_SCHEMA.$SEED_TABLE has $rows rows, expected 25"
   echo "› table $catalog.$SEED_SCHEMA.$SEED_TABLE: 25 rows"
 done
-trino_retry "SELECT count(*) FROM warehouse.demo.trips" >/dev/null \
-  || fail "warehouse.demo.trips is not readable with the service account — the legacy catalog broke"
+trino_retry "SELECT count(*) FROM warehouse.covid.covid_summary" >/dev/null \
+  || fail "warehouse.covid.covid_summary is not readable with the service account — the warehouse catalog broke"
 
 phases="$(kubectl -n "$NAMESPACE" get catalogs.stardelt.io -o json \
   | jq -r '[.items[] | "\(.metadata.name) \(.status.phase // "Pending")"] | join(", ")')"

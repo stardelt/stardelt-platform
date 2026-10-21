@@ -624,6 +624,31 @@
           }
         }
       }
+    },
+    {
+      "path": "/v1/data/trino/allow",
+      "operation": "ImpersonateUser",
+      "resourceKind": "user",
+      "input": {
+        "action": {
+          "operation": "ImpersonateUser",
+          "resource": {
+            "user": {
+              "user": "<sub>"
+            }
+          }
+        },
+        "context": {
+          "identity": {
+            "groups": [],
+            "user": "superset"
+          },
+          "properties": {},
+          "softwareStack": {
+            "trinoVersion": "480"
+          }
+        }
+      }
     }
   ]
 }
