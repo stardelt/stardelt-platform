@@ -59,11 +59,15 @@ configOverrides:
   # STARDELT_AUTH_LOCAL_ONLY=1 is set on the deployment:
   #   kubectl -n stardelt set env deploy/superset STARDELT_AUTH_LOCAL_ONLY=1
   # (rolls the pod; `set env ... STARDELT_AUTH_LOCAL_ONLY-` undoes it).
+  # With impersonation on (#310) that local `admin` is a name Trino's
+  # impersonation rule refuses (only UUID principals may be impersonated), so the
+  # break-glass restores administration of Superset, not data access through it.
   # Also carries the Trino service-account password store at the end: both are
   # read from os.environ, so they share the import instead of repeating it.
   oauth: |
     import os
     from flask_appbuilder.const import AUTH_DB, AUTH_OAUTH
+    from superset.security import SupersetSecurityManager
 
     # From the stardelt-identity ConfigMap and stardelt-oidc-clients Secret,
     # injected as env by extraEnvRaw above. Never literals in this file.
@@ -103,8 +107,82 @@ configOverrides:
             "stardelt-users": ["Gamma", "stardelt-analyst"],
         }
         AUTH_ROLES_SYNC_AT_LOGIN = True
+
+        # --- the Superset username is the Keycloak subject (#310) -------------
+        # The person who signs in here is the person Trino authorizes: the form
+        # login name is not what the catalog knows. After the identity turn-on
+        # (authz 8/8) Trino's principal is the token's `sub` and the permission
+        # bridge maps that principal to the Lakekeeper user `oidc~<sub>`, so the
+        # name Superset impersonates must be that same UUID. Readable names do not
+        # disappear: first and last name come from the same userinfo response and
+        # Superset shows those.
+        #
+        # FAB's Keycloak branch (flask_appbuilder/security/manager.py,
+        # `get_oauth_user_info`) returns `preferred_username`; this subclass keeps
+        # that branch's keys and swaps only the username. `oauth_user_info` is the
+        # hook FAB's OAuth view calls (it binds the instance attribute in __init__
+        # unless a subclass already provides one), and the fallback names
+        # `get_oauth_user_info` because `BaseSecurityManager.oauth_user_info`
+        # itself is None in FAB 4.5.5 — checked in the running pod, not guessed.
+        class StardeltSecurityManager(SupersetSecurityManager):
+            """Sign people in under their Keycloak subject (`sub`), not their login name."""
+
+            @staticmethod
+            def _rename_alias_row(subject, email):
+                """Adopt the row a person already has from before #310.
+
+                People who signed in before this change have a row under their login
+                name, and FAB's `ab_user.email` is UNIQUE *and* NOT NULL — a second row
+                for the same address cannot be inserted. Measured on this cluster: the
+                next sign-in ended 401 with `duplicate key value violates unique
+                constraint "ab_user_email_key"` when the old row already held the
+                address (the ticket expected a new row; the column forbids it). Rename
+                that row instead: one row per person, the same email and saved queries,
+                and the username (the name Trino sees) becomes the `sub`.
+                """
+                if not email:
+                    return
+                from flask_appbuilder.security.sqla.models import User
+                from superset import db
+
+                alias = db.session.query(User).filter(User.email == email).one_or_none()
+                if alias is None or alias.username == subject:
+                    return
+                if db.session.query(User).filter(User.username == subject).one_or_none():
+                    return  # somebody already signs in under the subject: merge nothing
+                alias.username = subject
+                db.session.commit()
+
+            def oauth_user_info(self, provider, response=None):
+                if provider == "keycloak":
+                    me = self.appbuilder.sm.oauth_remotes[provider].get(
+                        "openid-connect/userinfo"
+                    )
+                    me.raise_for_status()
+                    data = me.json()
+                    self._rename_alias_row(data["sub"], data.get("email", ""))
+                    return {
+                        "username": data["sub"],
+                        "first_name": data.get("given_name", ""),
+                        "last_name": data.get("family_name", ""),
+                        "email": data.get("email", ""),
+                        "role_keys": data.get("groups", []),
+                    }
+                return super().get_oauth_user_info(provider, response)
+
+        CUSTOM_SECURITY_MANAGER = StardeltSecurityManager
     else:
         AUTH_TYPE = AUTH_DB
+
+    # --- one result cache per person (#310) -----------------------------------
+    # With impersonation on, a chart's query runs as the viewer; without this flag
+    # Superset keys the result cache by the query alone, and user B is served user
+    # A's cached chart (measured in platform#279, Q6 — a cross-user data leak).
+    # `globals()` is empty here: Superset loads this file as its own module and
+    # copies the upper-case names onto superset.config, whose FEATURE_FLAGS is {}.
+    # Outside the branch on purpose: switching back to the local form must not
+    # silently drop the flag.
+    FEATURE_FLAGS = {**globals().get("FEATURE_FLAGS", {}), "CACHE_IMPERSONATION": True}
 
     # --- Trino service account (platform#278) ---------------------------------
     # The datasource URI carries no password (extraConfigs/import_datasources.yaml):
@@ -199,11 +277,25 @@ extraEnvRaw:
 # carries it and there is one copy to edit. A `helm upgrade` of this release
 # without that flag fails the init Job loudly rather than silently installing
 # without the role.
+#
+# `impersonate_user: true` (#310) makes every query run as the signed-in person:
+# Superset keeps authenticating to Trino as the `superset` service account
+# (PASSWORD) and sends the person as `X-Trino-User`; Trino's file access control
+# authorizes that through the `impersonation` rule in
+# helm-values/trino-identity.yaml, and the person is the Keycloak `sub` — the
+# username CUSTOM_SECURITY_MANAGER gives them in configOverrides above.
+#
+# The import updates this row on every init run, not only on first creation: the
+# v0 importer calls `Database.import_from_dict`, which looks the row up by
+# database_name and sets every key it knows — `impersonate_user` is in
+# `Database.export_fields`, so no hand-written UPDATE is needed for an existing
+# install.
 extraConfigs:
   import_datasources.yaml: |
     databases:
     - database_name: Trino Warehouse
       sqlalchemy_uri: trino://superset@trino.alpha.dev.stardelt.io:443/warehouse
+      impersonate_user: true
       tables: []
 
 # init Job creates admin user + imports the datasource above.

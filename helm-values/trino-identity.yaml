@@ -19,6 +19,10 @@
 #     valid here (chart/files/keycloak-realm.json).
 #   * PASSWORD keeps machine clients (Superset) working from one service
 #     account; users never see a password prompt.
+#   * Impersonation (#310) lets that one service account act for a person —
+#     and only for a person: Superset sends the signed-in user's Keycloak `sub`
+#     as `X-Trino-User`, and the `impersonation` rule under `accessControl` is
+#     the only grant (UUID principals only; no admin, no service account).
 #   * Anonymous requests get 401 with no query id.
 #
 # TLS (platform#80) — the in-cluster hole this closes. Until this overlay grew a
@@ -193,6 +197,17 @@ server:
 # group, no usernames. The membership itself lives in ConfigMap
 # `trino-group-file`, written by scripts/sync-trino-groups.sh and never
 # committed.
+#
+# `impersonation` (#310) is what lets Superset act for a person instead of for
+# its service account: Superset keeps authenticating as `superset` (PASSWORD)
+# and sends the signed-in person as `X-Trino-User`, and this rule is the one
+# place that grants it. A rule list denies by default, so a name that does not
+# match stays refused — `select current_user` still works for `superset` itself
+# (no impersonation happens when the names are equal) and every other account
+# is denied. The pattern is deliberately narrow: only UUID-shaped principals,
+# i.e. a Keycloak `sub` (the Superset username and the Trino principal after the
+# identity turn-on). `admin`, `stardelt-admins` and the service account itself
+# cannot be impersonated through it.
 accessControl:
   type: configmap
   rules:
@@ -201,6 +216,9 @@ accessControl:
         "queries": [
           {"group": "stardelt-admins", "allow": ["execute", "kill", "view"]},
           {"allow": ["execute"]}
+        ],
+        "impersonation": [
+          {"original_user": "superset", "new_user": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", "allow": true}
         ],
         "tables": [
           {"group": "stardelt-admins", "privileges": ["SELECT", "INSERT", "DELETE", "UPDATE", "OWNERSHIP", "GRANT_SELECT"]},
