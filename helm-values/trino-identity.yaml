@@ -199,27 +199,58 @@ server:
     # rollback is `make catalog-enforce-rollback`.
     access-control.config-files=/etc/trino/access-control.properties,/etc/trino/access-control-opa.properties
 
-# Query visibility (platform#125) — owner-only by default, admins exempted.
+# The file rules: query visibility, the three engine catalogs, table guards.
 # File-based system access control (Trino 480, no custom plugin): rule order
-# matters, first match wins. Members of `stardelt-admins` get everything;
-# everyone else gets `execute` only. Viewing and killing one's *own* queries
-# needs no rule (built-in: users always may). The `superset` service account
-# falls in the second rule and keeps exactly what it needs.
+# matters, first match wins, and a section that exists denies every entry no
+# rule matches — which is why each section here ends with a catch-all.
 #
-# The catch-all second rule is load-bearing: with no matching rule, query
-# management is *denied*, so omitting it breaks every query on the cluster.
+# `queries` (platform#125) is query visibility — owner-only by default, admins
+# exempted. Members of `stardelt-admins` get everything; everyone else gets
+# `execute` only. Viewing and killing one's *own* queries needs no rule
+# (built-in: users always may). The `superset` service account falls in the
+# second rule and keeps exactly what it needs. The catch-all is load-bearing:
+# with no matching rule, query management is *denied*, so omitting it breaks
+# every query on the cluster.
+#
+# `catalogs` (platform#363) reserves the three catalogs that belong to the
+# engine, not to the platform, for administrators: `system` (Trino's metadata:
+# `runtime.nodes`, `runtime.queries`, `metadata.*`, `jdbc.*`), and the sample
+# connectors `tpch` and `tpcds`. Nobody's data lives there, so no grant can
+# express "who may read them"; the platform's catalogs are `warehouse`,
+# `shared`, `bronze`, `silver`, `gold` and whatever a `Catalog` object creates.
+# Trino hides a catalog from `SHOW CATALOGS` when a person's catalog access is
+# `none`, and refuses a statement against it with `Access Denied: Cannot access
+# catalog …` — so an ordinary person no longer sees the three in the SQL editor,
+# Nova's catalog switcher, Superset or a notebook, and gets an engine refusal
+# instead of a query. Administrators keep all three (rule 1, `allow: all`),
+# which is where the documented smoke test `SELECT * FROM system.runtime.nodes`
+# now lives (`CALL system.runtime.kill_query` is refused for administrators too:
+# the bridge has no `ExecuteProcedure` rule at all — a pre-existing gap, not
+# something this rule changes). This layer and not the bridge
+# is the one that can do it: the bridge lets every catalog it does not manage
+# through (`allowUnmanagedCatalogs`, helm-values/lakekeeper.yaml), and both
+# authorizers must allow a statement, so a `none` here is the deny.
+# Rule 3 is load-bearing for the same reason as above: once a `catalogs` section
+# exists, a catalog no rule matches is DENIED, so without the catch-all every
+# managed catalog would disappear for everyone. It grants `all`, which is what
+# Trino grants when there is no `catalogs` section at all, so the managed
+# catalogs are unchanged and the bridge/Lakekeeper decides access to them.
+# Denying a catalog does NOT deny built-in functions (they resolve from
+# `system.builtin` without a catalog access check): `SELECT abs(-1)`, `now()`
+# and `SHOW FUNCTIONS` were part of the acceptance battery (platform#363).
+#
 # `tables` (platform#181) keeps cluster-wide engine internals away from
-# ordinary users: system.runtime.tasks lists the tasks of *other* users' queries,
-# and system.runtime.transactions and .optimizer_rule_stats are cluster-wide too.
-# Rule 1 lets administrators through, rule 2 denies those three tables
-# (`privileges: []`), rule 3 is the catch-all. It is load-bearing: once a `tables`
-# section exists, a table that no rule matches is DENIED, so without rule 3 every
-# query on the cluster fails. Rule 3 grants what Trino grants anyway when there is
-# no `tables` section, so data access is unchanged (the catalog decides that).
-# system.runtime.queries stays open (the `queries` rules filter it to one's own
-# queries) and so does system.runtime.nodes (the documented smoke test reads it).
-# The file holds ONLY `queries` and `tables` — no `catalogs`/`schemas` section:
-# with first-match-wins + default deny, anything more risks denying data access.
+# ordinary users even where a catalog is allowed: system.runtime.tasks lists
+# the tasks of *other* users' queries, and system.runtime.transactions and
+# .optimizer_rule_stats are cluster-wide too. Rule 1 lets administrators
+# through, rule 2 denies those three tables (`privileges: []`), rule 3 is the
+# catch-all — same load-bearing argument, and it grants what Trino grants when
+# there is no `tables` section, so data access is unchanged (the catalog and the
+# bridge decide that). `system.runtime.queries` stays available under the
+# `queries` rules (own queries only) for anyone the `catalogs` rule admits — an
+# administrator; Nova's query log reads its own store. The file holds no
+# `schemas`/`functions` section: with first-match-wins + default deny, anything
+# more risks denying data access, and the bridge already answers those.
 #
 # `rules` is a map of filename -> content (not a string): the chart ranges
 # over it into ConfigMap trino-access-control-volume-coordinator, mounted at
@@ -245,6 +276,11 @@ accessControl:
   rules:
     rules.json: |-
       {
+        "catalogs": [
+          {"group": "stardelt-admins", "allow": "all"},
+          {"catalog": "(system|tpch|tpcds)", "allow": "none"},
+          {"allow": "all"}
+        ],
         "queries": [
           {"group": "stardelt-admins", "allow": ["execute", "kill", "view"]},
           {"allow": ["execute"]}

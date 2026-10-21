@@ -327,7 +327,10 @@ BATTERY=(
   # is what produces SelectFromColumns on product.
   "expect-fail|SELECT n_name FROM product.seed.nation WHERE n_nationkey < 3"
   "ok|SELECT name FROM product.seed.nation WHERE nationkey < 3"
-  "ok|INSERT INTO finance.seed.nation SELECT * FROM tpch.tiny.nation"
+  # The matrix's write row (platform#363): it inserts from VALUES, not from
+  # `tpch.tiny.nation` — the engine's sample catalogs are administrator-only,
+  # and a capture battery has no business depending on one.
+  "ok|INSERT INTO finance.seed.nation VALUES (BIGINT '25', 'SEED', BIGINT '0', 'inserted by the capture')"
   "ok|CREATE SCHEMA finance.tmp"
   "ok|CREATE TABLE finance.tmp.t AS SELECT 1 a"
   "ok|DROP TABLE finance.tmp.t"
