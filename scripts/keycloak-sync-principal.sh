@@ -131,60 +131,21 @@ fi
 
 umask 077
 tmp="$(mktemp -d)"
-pf_pid=""
 cleanup() {
-  if [ -n "$pf_pid" ]; then kill "$pf_pid" 2>/dev/null || true; fi
+  keycloak_admin_stop
   rm -rf "$tmp"
 }
 trap cleanup EXIT
 
-# 1. Reach the admin API on loopback, through the Service.
-local_port=18260
-while (exec 3<>"/dev/tcp/127.0.0.1/$local_port") 2>/dev/null; do
-  local_port=$((local_port + 1))
-done
-kubectl -n "$NAMESPACE" port-forward svc/keycloak "$local_port:8080" >"$tmp/port-forward.log" 2>&1 &
-pf_pid=$!
-ready=""
-for _ in $(seq 1 30); do
-  if (exec 3<>"/dev/tcp/127.0.0.1/$local_port") 2>/dev/null; then ready=1; break; fi
-  sleep 0.5
-done
-[ -n "$ready" ] || fail "port-forward to svc/keycloak never came up — is Keycloak installed in namespace $NAMESPACE?"
-KC="http://127.0.0.1:$local_port"
-
-# Keycloak in production mode answers on its public hostname (KC_HOSTNAME), so a
-# request to 127.0.0.1 has to say which host it is meant for.
-strip_scheme() { printf '%s' "$1" | sed -E 's|https?://||; s|/.*||'; }
-KC_HOST="$(strip_scheme "$(kubectl -n "$NAMESPACE" get configmap keycloak-env -o jsonpath='{.data.KC_HOSTNAME}' 2>/dev/null || true)")"
-[ -n "$KC_HOST" ] || fail "ConfigMap keycloak-env has no KC_HOSTNAME — run 'make install-identity'"
-HEAD=(-H "X-Forwarded-Host: $KC_HOST" -H 'X-Forwarded-Proto: https')
-
-# 2. Master-realm token. Retry: the Service can accept a connection while Keycloak
-#    is still finishing its boot.
-kubectl -n "$NAMESPACE" get secret "$MASTER_SECRET" -o jsonpath='{.data.password}' | base64 -d > "$tmp/master-pw" \
-  || fail "cannot read Secret $MASTER_SECRET — run 'make install-identity'"
-master_token=""
-for _ in $(seq 1 20); do
-  master_token="$("${CURL_SOFT[@]}" "${HEAD[@]}" -X POST "$KC/realms/master/protocol/openid-connect/token" \
-    --data-urlencode "username=admin" --data-urlencode "password@$tmp/master-pw" \
-    --data-urlencode "client_id=admin-cli" --data-urlencode "grant_type=password" 2>/dev/null \
-    | python3 -c 'import sys,json
-try: print(json.load(sys.stdin).get("access_token") or "")
-except Exception: print("")' 2>/dev/null || true)"
-  [ -n "$master_token" ] && break
-  sleep 2
-done
-[ -n "$master_token" ] || fail "the master realm refused the $MASTER_SECRET credential — is Keycloak reachable through svc/keycloak?"
-AUTH=(-H "Authorization: Bearer $master_token")
-API="$KC/admin/realms/$REALM"
-
-for _ in $(seq 1 30); do
-  status="$("${CURL_SOFT[@]}" -o /dev/null -w '%{http_code}' "${HEAD[@]}" "${AUTH[@]}" "$API" || true)"
-  [ "$status" = 200 ] && break
-  sleep 2
-done
-[ "$status" = 200 ] || fail "realm $REALM does not exist after 60s — check 'kubectl -n $NAMESPACE logs deploy/keycloak' for the import"
+# 1. Reach the admin API on loopback, through the Service: port-forward, the
+#    forwarded-host headers, a master-realm token and the realm check, all in
+#    scripts/lib/keycloak-admin.sh (platform#309). It leaves KC, HEAD, AUTH and
+#    API ready and is stopped by the trap above.
+# KC_LOG_PREFIX is read by the lib below, which keeps this script's messages.
+# shellcheck disable=SC2034
+KC_LOG_PREFIX=keycloak-sync-principal
+# shellcheck source=lib/keycloak-admin.sh disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/lib/keycloak-admin.sh"
 
 # 3. Delete mode: only a client this script created (attribute stardelt-managed equal to
 #    KIND) may be deleted, and only with YES=1. Anything else is reported and left alone.
