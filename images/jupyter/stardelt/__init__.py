@@ -17,7 +17,10 @@ signed-in user's Keycloak access token into the single-user server as
 ``20-notebook-identity``), ``TRINO_URL`` is the coordinator endpoint, and the
 internal CA arrives through ``REQUESTS_CA_BUNDLE``. Trino therefore runs every
 statement as the person behind the keyboard — row and column policy applies,
-and the audit trail names them. Nothing is baked into the image.
+and the audit trail names them. ``stardelt.spark()`` follows the same rule: it
+configures the catalogs Trino lists for the person and sends that same token to
+the catalog, which decides what the session may read. Nothing is baked into the
+image.
 
 SPDX-License-Identifier: MIT
 """
@@ -27,6 +30,8 @@ import datetime
 import json
 import math
 import os
+import re
+import sys
 import time
 import uuid
 from urllib.parse import urlsplit
@@ -54,6 +59,26 @@ DEFAULT_BATCH_ROWS = 1_000
 # a user pod through the egress rule in helm-values/jupyterhub.yaml, and from
 # nowhere else, because Spark Connect has no authentication of its own.
 SPARK_REMOTE_DEFAULT = "sc://spark-connect.stardelt.svc.cluster.local:15002"
+
+# The catalog and the lakehouse data, as the in-cluster services name them.
+# STARDELT_CATALOG_URI / STARDELT_S3_ENDPOINT override them for a split install.
+CATALOG_URI_DEFAULT = "http://lakekeeper.stardelt.svc.cluster.local:8181/catalog"
+S3_ENDPOINT_DEFAULT = "http://seaweedfs-s3.stardelt.svc.cluster.local:8333"
+
+# Catalogs that belong to an engine, not to a person: Trino's system catalog,
+# its metadata views, Spark's in-memory catalogs and the sample connectors.
+HIDDEN_CATALOGS = frozenset({"system", "information_schema", "memory", "tpch", "tpcds", "jmx"})
+
+# The same rule the operator's CatalogDomainSpec::validate and the access sync
+# apply (`^[a-z][a-z0-9]{0,39}$`); a name Trino would accept but the platform
+# would not is skipped rather than turned into a Spark property.
+CATALOG_NAME_RE = re.compile(r"^[a-z][a-z0-9]{0,39}$")
+
+# The session spark() built last, and the token it was built with. A renewed
+# token means a new session: Spark reads `spark.sql.catalog.*` when it creates
+# the session state, so an already-initialized catalog cannot be re-keyed.
+_SPARK_SESSION = None
+_SPARK_TOKEN = None
 
 # A pipeline pod has no hub behind it: when its token ages out, the grant that issued it is
 # the only way to get another one. Renew this long before `exp` so no statement races the
@@ -148,6 +173,11 @@ def _connect():
 def _one_line(exc):
     text = str(exc).strip().splitlines()
     return text[0] if text else type(exc).__name__
+
+
+def _redact(text, secret):
+    """Remove a credential from a message before it can reach a notebook or a log."""
+    return text.replace(secret, "<token>") if secret else text
 
 
 def _record_query_id(cur):
@@ -364,22 +394,139 @@ def write_df(df, table, mode="append", batch_rows=DEFAULT_BATCH_ROWS, bronze=Fal
     return n
 
 
+def _catalog_names():
+    """The catalogs Trino lists for the signed-in person, minus engine-only ones.
+
+    Trino decides *visibility* (the ``Catalog`` objects render into its catalogs,
+    and its access control filters them); Lakekeeper decides *access* and answers
+    the first catalog call with the person's token. A name the platform would
+    reject is dropped here too, so a stray catalog cannot become a Spark property.
+
+    If Trino cannot be reached, only ``warehouse`` is configured: it is the one
+    catalog every install has. The message never carries the token.
+    """
+    try:
+        frame = sql("SHOW CATALOGS")
+    except Exception:  # noqa: BLE001 - Spark-only work must survive a Trino outage
+        print(
+            "stardelt.spark: Trino is not reachable — configuring only the warehouse catalog.",
+            file=sys.stderr,
+        )
+        return ["warehouse"]
+    if frame is None or len(frame) == 0 or len(frame.columns) == 0:
+        return []
+    return [
+        name
+        for name in (str(n) for n in frame.iloc[:, 0].tolist())
+        if name not in HIDDEN_CATALOGS and CATALOG_NAME_RE.match(name)
+    ]
+
+
 def spark(app_name="stardelt-notebook"):
-    """Open a Spark Connect session against the platform's Spark, return it.
+    """Open a Spark Connect session for bulk work, as the signed-in person.
 
-    Reads ``SPARK_REMOTE`` (default the in-cluster Connect endpoint). For
-    bulk writes and heavy compute — the path ``write_df`` points at past
-    200,000 rows.
+    Spark now sees the catalogs you may see and the catalog checks your token;
+    storage keys stay with the platform, so only use it where Trino cannot.
 
-    Limitation, stated rather than implied: Spark reaches storage through the
-    cluster's shared storage credential, so tables written through this
-    session are NOT subject to the per-user table permissions that govern
-    Trino. ``stardelt.sql`` and ``stardelt.write_df`` run as the signed-in
-    user; ``stardelt.spark()`` does not.
+    The session is built from what Trino's ``SHOW CATALOGS`` returns for the
+    person (engine-only names removed) and receives one Iceberg REST catalog per
+    name, each with ``token=_token()``. Lakekeeper — the authority — then refuses
+    a catalog the person has no grant on. ``STARDELT_CATALOG_URI`` and
+    ``STARDELT_S3_ENDPOINT`` override the in-cluster catalog and S3 endpoints.
+
+    The catalogs and the token are set on the new session before its first catalog
+    call (Spark reads ``spark.sql.catalog.*`` then). Setting the token again on a
+    live session does not re-key an initialized catalog, so a later call with a
+    renewed token builds a new session and stops the previous one.
+
+    ``SPARK_REMOTE`` selects the endpoint (default the in-cluster Connect service).
+    Limitations, stated rather than implied: Spark Connect has no authentication of
+    its own and is ClusterIP-only, row/column masks are Trino-only (design
+    ``multitenant-catalogs.md`` §5.8), and tables written through Spark use the
+    cluster's shared storage credential — use Spark where Trino cannot, not to
+    bypass a policy. The token is never printed or returned.
     """
     from pyspark.sql import SparkSession
+
+    global _SPARK_SESSION, _SPARK_TOKEN
 
     remote = os.environ.get("SPARK_REMOTE", SPARK_REMOTE_DEFAULT).strip()
     if not remote:
         raise RuntimeError("SPARK_REMOTE is not set — point it at the Spark Connect endpoint.")
-    return SparkSession.builder.remote(remote).appName(app_name).getOrCreate()
+
+    names = _catalog_names()
+    token = _token()
+    if _SPARK_SESSION is not None and _SPARK_TOKEN == token:
+        return _SPARK_SESSION
+
+    catalog_uri = os.environ.get("STARDELT_CATALOG_URI", CATALOG_URI_DEFAULT).strip()
+    s3_endpoint = os.environ.get("STARDELT_S3_ENDPOINT", S3_ENDPOINT_DEFAULT).strip()
+
+    session = None
+    try:
+        # create(), not getOrCreate(): the latter returns the process-wide
+        # session, so a second person's call would reuse the first person's
+        # catalogs and token. A fresh Connect session is isolated server-side.
+        session = SparkSession.builder.remote(remote).appName(app_name).create()
+        for name in names:
+            session.conf.set(
+                f"spark.sql.catalog.{name}", "org.apache.iceberg.spark.SparkCatalog"
+            )
+            for key, value in (
+                ("type", "rest"),
+                ("uri", catalog_uri),
+                ("warehouse", name),
+                ("token", token),
+                ("io-impl", "org.apache.iceberg.aws.s3.S3FileIO"),
+                ("s3.endpoint", s3_endpoint),
+                ("s3.region", "us-east-1"),
+                ("s3.path-style-access", "true"),
+            ):
+                session.conf.set(f"spark.sql.catalog.{name}.{key}", value)
+        if "warehouse" in names:
+            session.conf.set("spark.sql.defaultCatalog", "warehouse")
+
+        # Spark lists a catalog only after the session has loaded it. Load each
+        # once so `SHOW CATALOGS` shows what the person may see, and leave one
+        # the catalog refuses out (unless every one is refused: then the token
+        # or the catalog is broken and the person sees the error, not an empty
+        # session).
+        loaded = []
+        refusal = None
+        for name in names:
+            try:
+                session.catalog.setCurrentCatalog(name)
+                loaded.append(name)
+            except Exception as exc:  # noqa: BLE001 - one refusal must not hide the rest
+                refusal = exc
+        if names and not loaded:
+            if refusal is not None:
+                raise refusal
+            raise RuntimeError("no catalog loaded")
+        target = "warehouse" if "warehouse" in loaded else (loaded[0] if loaded else None)
+        if target is not None:
+            session.catalog.setCurrentCatalog(target)
+        missing = [name for name in names if name not in loaded]
+        if missing:
+            print(
+                "stardelt.spark: the catalog refused "
+                + ", ".join(missing)
+                + " for this token — not loading it.",
+                file=sys.stderr,
+            )
+    except Exception as exc:  # noqa: BLE001 - one line, and never the credential
+        if session is not None:
+            try:
+                session.stop()
+            except Exception:  # noqa: BLE001 - the original failure is the one to report
+                pass
+        raise RuntimeError(f"stardelt.spark failed: {_redact(_one_line(exc), token)}") from exc
+
+    previous = _SPARK_SESSION
+    _SPARK_SESSION, _SPARK_TOKEN = session, token
+    if previous is not None:
+        try:
+            previous.stop()
+        except Exception:  # noqa: BLE001 - an already-gone client is not an error
+            pass
+    return session

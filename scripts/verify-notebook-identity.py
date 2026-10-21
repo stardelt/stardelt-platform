@@ -177,7 +177,7 @@ print(output)
 check("quickstart executed", positive.returncode == 0,
       "" if positive.returncode == 0 else positive.stderr.strip()[-300:])
 check(f"Trino reports current_user = {USER}", f"signed_in_as" in output and USER in output)
-check("warehouse.demo.trips was queried", "warehouse.demo.trips" in output)
+check("warehouse.covid.covid_summary was queried", "warehouse.covid.covid_summary" in output)
 
 # 4. The negative: without the token there is nothing to authenticate with.
 print("› 4/4 execute the quickstart with TRINO_TOKEN unset (expect 401)")

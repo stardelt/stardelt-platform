@@ -51,7 +51,7 @@ BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 .PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator openfga trino catalogs upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-up dev-down dev-dns dev-dns-down
 .PHONY: chart-deps chart-template chart-install
 .PHONY: verify-backups verify-backups-identity verify-backups-nova verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
-.PHONY: sync-oidc-clients verify-oidc-clients verify-trino-tls verify-trino-auth sync-trino-groups sync-trino-group-sync-client sync-pipeline-runner-client sync-dev-client openbao test-openbao-policies seaweedfs-admin
+.PHONY: sync-oidc-clients verify-oidc-clients verify-trino-tls verify-trino-auth sync-trino-groups sync-trino-group-sync-client sync-pipeline-runner-client sync-dev-client sync-catalog-audience openbao test-openbao-policies seaweedfs-admin
 .PHONY: external-secrets eso-stores
 
 help: ## Show this help
@@ -647,6 +647,12 @@ sync-store-audience: _context ## Converge the live realm so Nova, hub and dev-cl
 sync-nova-audience: _context ## Converge the live realm so hub and dev-client tokens carry Nova's audience (idempotent)
 	@NAMESPACE=$(NAMESPACE) bash scripts/keycloak-sync-nova-audience.sh
 
+# The audience `lakekeeper` on the notebook hub's and the developer client's tokens, so a notebook's
+# Spark session talks to the catalog as the signed-in person (platform#317).
+.PHONY: sync-catalog-audience
+sync-catalog-audience: _context ## Converge the live realm so hub and dev-client tokens carry the catalog's audience (idempotent)
+	@NAMESPACE=$(NAMESPACE) bash scripts/keycloak-sync-catalog-audience.sh
+
 # External Secrets Operator (decision D23): syncs a secret store into Kubernetes Secrets. Opt-in.
 external-secrets: deps _context _helm-repos ## Install External Secrets Operator (opt-in)
 	@helm upgrade --install external-secrets external-secrets/external-secrets --version $(EXTERNAL_SECRETS_VERSION) $(HELM_FLAGS) -f helm-values/external-secrets.yaml
@@ -715,6 +721,8 @@ install-identity: deps _context ## Install the platform IdP (Keycloak) at id.$(B
 	@$(MAKE) --no-print-directory verify-oidc-clients
 	@echo "› [10/11] Sync the live realm's Nova audience (notebook publishing, platform#290)"
 	@$(MAKE) --no-print-directory sync-nova-audience
+	@echo "› [10/11] Sync the live realm's catalog audience (Spark in notebooks, platform#317)"
+	@$(MAKE) --no-print-directory sync-catalog-audience
 	@echo "› [10/11] Catalog callers get their own service clients (svc-catalog-*, platform#282)"
 	@$(MAKE) --no-print-directory sync-catalog-clients
 	@echo "› [11/11] Put the query engine behind the platform identity (TLS on the coordinator)"

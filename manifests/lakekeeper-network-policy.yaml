@@ -18,8 +18,8 @@
 #     (ConfigMap trino-catalog, `iceberg.rest-catalog.uri`).
 #   - Nova: catalog browser and table documentation
 #     (`NOVA_LAKEKEEPER_URL` in manifests/nova-deployment.yaml).
-#   - Spark Connect driver: the second engine over the same catalog
-#     (`spark.sql.catalog.warehouse.uri` in manifests/spark.yaml).
+#   - Spark Connect driver: the second engine over the same catalog (the
+#     per-session catalog URI the notebook helper configures, platform#317).
 #   - Airflow task pods: the NYC-taxi DAG writes through pyiceberg
 #     (`CATALOG_URI` in helm-values/airflow.yaml; every KubernetesExecutor task
 #     pod carries release=airflow, component=worker, tier=airflow).
