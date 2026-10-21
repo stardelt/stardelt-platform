@@ -290,12 +290,21 @@ extraEnvRaw:
 # database_name and sets every key it knows — `impersonate_user` is in
 # `Database.export_fields`, so no hand-written UPDATE is needed for an existing
 # install.
+#
+# `allow_multi_catalog: true` (#349) makes SQL Lab and the dataset editor list the
+# catalogs Trino reports for the signed-in person, not just the default one;
+# `metadata_cache_timeout` stays empty on purpose: Superset keys its catalog and
+# schema caches per database, not per person, so under impersonation a cache would
+# serve one person's catalogs to another.
 extraConfigs:
   import_datasources.yaml: |
     databases:
     - database_name: Trino Warehouse
       sqlalchemy_uri: trino://superset@trino.alpha.dev.stardelt.io:443/warehouse
       impersonate_user: true
+      extra: >-
+        {"allow_multi_catalog": true, "metadata_params": {}, "engine_params": {},
+        "metadata_cache_timeout": {}, "schemas_allowed_for_file_upload": []}
       tables: []
 
 # init Job creates admin user + imports the datasource above.
