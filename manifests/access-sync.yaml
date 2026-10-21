@@ -1,0 +1,133 @@
+# Catalog access sync, part 1 (authz 4/8, stardelt-platform#305): every `Catalog`
+# object becomes a Lakekeeper warehouse, and the warehouse id lands in its status.
+#
+# The design (internal note `design/multitenant-catalogs.md` §4.2, §7.2 P2a) gives this
+# loop to the operator; the operator builds objects and Jobs only, has no HTTP client
+# and no `CATALOG_*` environment yet, so a CronJob does the work until the operator
+# absorbs it. This is the same pattern as CronJob `trino-group-sync` (platform#167):
+# stock `python:slim` image, the script on a ConfigMap volume that `make access-sync`
+# refreshes from `scripts/access-sync-job.py` on every apply (one source of truth), and
+# the Kubernetes API over the Pod's ServiceAccount — no kubectl in the image.
+#
+# Identity and least privilege:
+#   * Lakekeeper: the management API authenticated as `svc-catalog-operator` (Secret
+#     `svc-catalog-operator`, keys client-id/client-secret/token-url; the realm has no
+#     `lakekeeper` scope, so the job asks for `openid`). That client holds
+#     `project_admin` on the bootstrapped project — the minimum that creates a
+#     warehouse — and nothing broader. Its secret is read from the API, never mounted
+#     and never logged.
+#   * Kubernetes: ServiceAccount `access-sync` may only `get` those two Secrets,
+#     `get/list` catalogs and sqlwarehouses, and `patch` their `status` subresource.
+#     No create/delete anywhere: the CronJob never removes a warehouse or data, and a
+#     Catalog deleted by a person leaves its warehouse behind (design §2.5) — the job
+#     then logs `orphan warehouse <name>`.
+#   * Network: the catalog NetworkPolicy admits this pod on TCP 8181 by its
+#     `app.kubernetes.io/name: access-sync` label; nothing else widens.
+#
+# Every 2 minutes; `concurrencyPolicy: Forbid` so runs never overlap,
+# `activeDeadlineSeconds: 110` so a hung run is gone before the next tick, and
+# `backoffLimit: 1` so a failed tick is visible as a failed Job and retried once.
+#
+#   make access-sync       # create/refresh the script ConfigMap and apply this file
+#   make access-sync-now   # run one Job now, wait for it, print its log
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: access-sync
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: access-sync
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+rules:
+  # The catalog's own client (for a Lakekeeper token) and the platform bucket's key
+  # pair (for the create body) — read-only, these two Secrets only.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["svc-catalog-operator", "stardelt-s3-creds"]
+    verbs: ["get"]
+  # Read every Catalog; the names are chosen by users, so no resourceNames here.
+  - apiGroups: ["stardelt.io"]
+    resources: ["catalogs", "sqlwarehouses"]
+    verbs: ["get", "list"]
+  # Status only: the sync never edits a spec (a Catalog's spec is a person's input).
+  # SqlWarehouse status is here because part 2 of the sync owns it; this part only
+  # reads it.
+  - apiGroups: ["stardelt.io"]
+    resources: ["catalogs/status", "sqlwarehouses/status"]
+    verbs: ["patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: access-sync
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+subjects:
+  - kind: ServiceAccount
+    name: access-sync
+    namespace: stardelt
+roleRef:
+  kind: Role
+  name: access-sync
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: access-sync
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+spec:
+  # 2 minutes: a new Catalog is Ready (or Invalid) within 2 minutes of being applied.
+  schedule: "*/2 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 110
+      template:
+        metadata:
+          # The NetworkPolicy selects the pod by this label.
+          labels:
+            app.kubernetes.io/part-of: stardelt
+            app.kubernetes.io/name: access-sync
+        spec:
+          restartPolicy: Never
+          serviceAccountName: access-sync
+          automountServiceAccountToken: true
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile: { type: RuntimeDefault }
+          containers:
+            - name: sync
+              # Same pin as CronJob trino-group-sync: stdlib only, no build of ours.
+              image: python:3.13.16-slim-bookworm
+              command: ["python3", "/opt/job/job.py"]
+              env:
+                # Namespace-agnostic: the Pod reports where it runs.
+                - name: NAMESPACE
+                  valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
+                - name: LAKEKEEPER_URL
+                  value: "http://lakekeeper:8181"
+              volumeMounts:
+                - { name: job-script, mountPath: /opt/job, readOnly: true }
+              resources:
+                requests: { cpu: "50m", memory: "64Mi" }
+                limits: { cpu: "500m", memory: "256Mi" }
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: { drop: ["ALL"] }
+          volumes:
+            - name: job-script
+              configMap: { name: access-sync-script, defaultMode: 0444 }
