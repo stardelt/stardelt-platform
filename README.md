@@ -797,12 +797,9 @@ Alpha's dataset/datasource additions, and `database_access` on the `Trino Wareho
 with no database write, upload or `all_database_access`/`all_datasource_access` permission.
 That one `database_access` also exposes every dataset of that database, because Superset has
 no SQL-Lab-without-Explore split at database level. The role is synced at every login, so
-removing someone from the group removes it at their next sign-in. Queries still run as the
-shared `superset` service account (`impersonate_logged_in_user` is off), so Trino records that
-account for every Superset user; per-user execution is the impersonation step decided in
-platform#279. That step must enable `CACHE_IMPERSONATION` in the same change: with
-impersonation on and the flag off, the result cache serves one user's cached chart to another
-(measured in platform#279).
+removing someone from the group removes it at their next sign-in. Queries run as the person who
+signed in, not as the shared service account — see
+[Superset runs queries as the person](#superset-runs-queries-as-the-person).
 
 Two consequences worth knowing:
 
@@ -856,6 +853,66 @@ only when it does not exist yet, so later edits to the realm file are not applie
 realm — and a regenerated Secret is not either, which is what the sync/verify pair in
 [The client secrets are the source of truth too](#the-client-secrets-are-the-source-of-truth-too)
 repairs.
+
+### Superset runs queries as the person
+
+Every query Superset sends to Trino runs as the signed-in person, never as the shared
+`superset` service account. Superset still *authenticates* with the service account's
+password (PASSWORD authenticator, `SQLALCHEMY_CUSTOM_PASSWORD_STORE`), but the database row
+now carries `impersonate_user: true`
+(`helm-values/superset.yaml`, `extraConfigs/import_datasources.yaml`), so Superset sends the
+person as `X-Trino-User`; Trino's file access control authorizes that through exactly one
+`impersonation` rule (`helm-values/trino-identity.yaml`):
+
+```json
+{"original_user": "superset", "new_user": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", "allow": true}
+```
+
+Trino's access control denies impersonation by default, so the rule is the whole grant: the
+service account may act only for a UUID-shaped principal. `admin`, `stardelt-admins` and the
+service account itself stay refused, which is why the rule is a pattern and not `.*` — and why
+the break-glass local login (above) can administer Superset but cannot run SQL Lab on Trino.
+
+**Why the username is a UUID.** The person's Superset username is their Keycloak `sub`
+(`CUSTOM_SECURITY_MANAGER = StardeltSecurityManager` in the same values file, overriding FAB's
+Keycloak branch, which returns `preferred_username`). That is the identity the rest of the
+platform keys on: Trino's OAuth principal after the identity turn-on is the token's `sub` and
+the permission bridge maps a Trino principal to the Lakekeeper user `oidc~<sub>`, so the
+impersonated name must be that same string or catalog permissions would apply to a name nobody
+holds. Readable names do not disappear — `first_name`/`last_name` come from the same userinfo
+response and Superset renders those. People who signed in before this change keep their rows and
+their roles; their next sign-in renames the existing row to the `sub`, so their saved queries
+and dashboards stay attached. It is a rename, not a second row, because FAB's `ab_user.email`
+is unique *and* not null and the old row holds the person's address — a second row for the same
+address fails with `duplicate key value violates unique constraint "ab_user_email_key"` and the
+sign-in ends 401 (measured on the dev cluster). The local `admin` row is untouched: its address
+(`admin@stardelt.local`) differs from the realm user's.
+
+**The result cache is per person.** `FEATURE_FLAGS = {"CACHE_IMPERSONATION": True}`
+(`helm-values/superset.yaml`, applied in every mode) adds the impersonated identity to
+Superset's cache key. Without it, Superset keys a chart's cached result by the query alone and
+serves user A's chart to user B — measured in platform#279, Q6, and a real cross-user data
+leak once charts run as the viewer.
+
+**Who ran what.** Trino records the person, not the shared account:
+
+```sql
+SELECT query_id, "user", source, state, created
+FROM system.runtime.queries
+WHERE source LIKE '%Superset%'
+ORDER BY created DESC LIMIT 20;
+```
+
+`user` is the person's `sub`; Nova's query log resolves it to the display name from its own
+session. Administrator membership (`stardelt-admins`) is required to see other people's
+queries — everyone else sees only their own (`helm-values/trino-identity.yaml`, `queries`
+rules). Async SQL Lab (Celery worker) carries the same person, so a `runAsync` query and a
+chart load agree.
+
+Applying it to the live cluster is two rolled releases (`make trino` and the Superset upgrade
+in `make install`), with no manual SQL: the init Job's datasource import updates the existing
+`Trino Warehouse` row, because the v0 importer sets every known field on a row it finds by
+`database_name`.
 
 ### The realm-admin Secret is the source of truth
 
