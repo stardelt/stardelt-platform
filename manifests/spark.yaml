@@ -83,7 +83,7 @@ data:
     # Iceberg runtime and AWS bundle (images/spark/Dockerfile).
     # Single space before the digest: the pinned reference is 136 characters,
     # just inside the 140 the YAML lint allows.
-    spark.kubernetes.container.image ghcr.io/stardelt/spark:dev@sha256:bccb479114c60b1743645d389de418c9cafae1443ba4da8f0ac312153a0a5a52
+    spark.kubernetes.container.image ghcr.io/stardelt/spark:dev@sha256:53fc31f6ae9b7b776b41794bde98788f7022e01ab7d081ce51671d840ba69a5f
     spark.kubernetes.container.image.pullPolicy             IfNotPresent
     spark.kubernetes.container.image.pullSecrets            ghcr-creds
     spark.kubernetes.authenticate.executor.serviceAccountName spark-connect
@@ -179,7 +179,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: spark-connect
-          image: ghcr.io/stardelt/spark:dev@sha256:bccb479114c60b1743645d389de418c9cafae1443ba4da8f0ac312153a0a5a52
+          image: ghcr.io/stardelt/spark:dev@sha256:53fc31f6ae9b7b776b41794bde98788f7022e01ab7d081ce51671d840ba69a5f
           imagePullPolicy: IfNotPresent
           command: ["/opt/spark/bin/stardelt-connect-server"]
           env:
