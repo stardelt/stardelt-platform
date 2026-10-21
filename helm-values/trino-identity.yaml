@@ -12,7 +12,16 @@
 #   * Every statement needs credentials. OAUTH2 accepts the caller's **own**
 #     Keycloak access token — the browser flow, trino-cli, JDBC, and Nova's
 #     forwarded `Authorization: Bearer` — and names the query
-#     `current_user = preferred_username` of the token's subject.
+#     `current_user = sub` (platform#311, the Keycloak user id) of the token's
+#     subject. The rest of the platform is keyed on that id too: the catalog's
+#     role assignees are `oidc~<sub>`, the OPA bridge looks a person up as
+#     `oidc~<sub>`, and the group file in ConfigMap `trino-group-file` lists
+#     ids (scripts/sync-trino-groups.sh, GROUP_PRINCIPAL=sub).
+#     Until `make catalog-enforce` the principal is `preferred_username`
+#     (`helm-values/trino-identity-file-only.yaml` is the overlay that keeps
+#     it); query history then shows an opaque id instead of a name, which is
+#     the deliberate trade of the design (Nova renders the name from its own
+#     session).
 #     Trino trusts audience `trino` (its own client id) plus
 #     `http-server.authentication.oauth2.additional-audiences`; the realm's
 #     `aud-trino` mapper on client `nova` is what makes a Nova-issued token
@@ -154,7 +163,11 @@ server:
     http-server.authentication.oauth2.issuer=${ENV:TRINO_OIDC_ISSUER}
     http-server.authentication.oauth2.client-id=trino
     http-server.authentication.oauth2.client-secret=${ENV:TRINO_CLIENT_SECRET}
-    http-server.authentication.oauth2.principal-field=preferred_username
+    # The Keycloak user id (platform#311): the catalog's role assignees, the
+    # bridge's `adminUsers` and the group file are all keyed on it. See the
+    # header; the overlay that keeps `preferred_username` is
+    # helm-values/trino-identity-file-only.yaml (make catalog-enforce-rollback).
+    http-server.authentication.oauth2.principal-field=sub
     http-server.authentication.oauth2.scopes=openid
     # Validate access tokens locally against the realm JWKS (`exp`, `iss`, `aud`)
     # instead of asking Keycloak's /userinfo, which would accept any valid token
@@ -167,6 +180,25 @@ server:
     # so without these two lines the overlay would drop them.
     query.max-execution-time=10m
     query.max-run-time=15m
+    # Two system access controls at once (platform#311, Trino 480): the file
+    # rules below (query visibility, table guards, the impersonation grant) and
+    # the OPA bridge over the catalog (who may browse/read/write which catalog,
+    # from the `Catalog` objects' grants). Trino loads every file in this list
+    # and a statement must be allowed by all of them, so the bridge can only
+    # remove access, never hand out what the file rules refuse.
+    #
+    # `access-control.properties` is the chart's own file (accessControl.type:
+    # configmap below renders it, `access-control.name=file` +
+    # `security.config-file=/etc/trino/access-control/rules.json`);
+    # `access-control-opa.properties` is the file added under
+    # coordinator.additionalConfigFiles. Both land in the coordinator ConfigMap,
+    # inside the directory mounted at /etc/trino.
+    #
+    # Fail-closed by design: if the bridge is unreachable every statement is
+    # denied. `make verify-catalog-permissions` and `make bridge-replay` are the
+    # gates `make catalog-enforce` runs before it applies this; the documented
+    # rollback is `make catalog-enforce-rollback`.
+    access-control.config-files=/etc/trino/access-control.properties,/etc/trino/access-control-opa.properties
 
 # Query visibility (platform#125) — owner-only by default, admins exempted.
 # File-based system access control (Trino 480, no custom plugin): rule order
@@ -205,9 +237,10 @@ server:
 # match stays refused — `select current_user` still works for `superset` itself
 # (no impersonation happens when the names are equal) and every other account
 # is denied. The pattern is deliberately narrow: only UUID-shaped principals,
-# i.e. a Keycloak `sub` (the Superset username and the Trino principal after the
-# identity turn-on). `admin`, `stardelt-admins` and the service account itself
-# cannot be impersonated through it.
+# i.e. a Keycloak `sub` — which is exactly what Superset sends and what Trino
+# itself uses as the principal after the identity turn-on. `admin`,
+# `stardelt-admins` and the service account itself cannot be impersonated
+# through it.
 accessControl:
   type: configmap
   rules:
@@ -243,10 +276,12 @@ coordinator:
       secretName: trino-coordinator-tls
       path: /etc/trino/tls
   # Group provider (platform#125): Trino cannot read groups from the OIDC
-  # token, so the file provider maps `preferred_username` -> groups. The file
+  # token, so the file provider maps the principal -> groups. The file
   # itself comes from ConfigMap `trino-group-file` (one `group:user,...` line
   # per group), written by scripts/sync-trino-groups.sh from the live realm's
-  # `stardelt-admins` membership and refreshed by `make trino`.
+  # `stardelt-admins` membership and refreshed by `make trino`. Its strings are
+  # Keycloak user ids, matching `principal-field=sub` (platform#311;
+  # GROUP_PRINCIPAL=sub is the script's default).
   # `file.refresh-period` picks a remounted file up with no restart; a
   # coordinator restart (which drops running queries — pick a quiet moment) is
   # only needed when this values file itself changes.
@@ -256,10 +291,20 @@ coordinator:
       file.group-file=/etc/trino/groups/groups.txt
       file.refresh-period=30s
     # The bridge authorizer file the switch (platform#311) loads through
-    # `access-control.config-files` — deliberately NOT named there yet: Trino
-    # ignores a properties file no one lists, and turning the bridge on before
-    # the engine principal is a `sub` would deny every query. When the switch is
-    # applied this file is the one that takes effect.
+    # `access-control.config-files` in coordinatorExtraConfig above — before
+    # the switch it is mounted but not listed, so Trino ignores it (a
+    # properties file no one lists has no effect). Turning the bridge on
+    # before the engine principal is a `sub` would deny every query.
+    #
+    # The catalog's access control (platform#311): Trino asks the OPA bridge —
+    # a sidecar of the catalog on Service `lakekeeper-opa`, which answers from
+    # Lakekeeper's OpenFGA grants — before every catalog, schema, table, column
+    # and function operation. Trino 480 picks a plugin by
+    # `access-control.name`; the pair of URIs is the allow endpoint (one
+    # question) and the batch endpoint (a list of questions), both implemented
+    # by the bridge. The property is `batched-uri` — `opa.batch-uri` is not a
+    # Trino property and would be ignored, leaving the plugin to fail on the
+    # first batched filter Trino sends.
     #
     # `opa.policy.uri` and `opa.policy.batched-uri` are the stardelt front entry
     # points (platform#359): `data.stardelt.allow` answers every single question,
@@ -270,6 +315,11 @@ coordinator:
     # `scripts/lib/bridge.sh` holds — `make lint` (scripts/check-bridge-uri.sh)
     # fails if this file names another one, so the replay and the latency probe
     # keep asking what the engine asks.
+    #
+    # Both files must allow a statement. The bridge's own rules (which catalogs
+    # a person may see, the ImpersonateUser row, the session-property and
+    # function rules) live in helm-values/lakekeeper.yaml under `OPABridge`, not
+    # here.
     access-control-opa.properties: |
       access-control.name=opa
       opa.policy.uri=http://lakekeeper-opa.stardelt.svc.cluster.local:8282/v1/data/stardelt/allow

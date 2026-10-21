@@ -39,6 +39,18 @@ JUPYTER_IMAGE  := ghcr.io/stardelt/jupyter-singleuser:dev
 TRINO_EXTRA := $(if $(filter 1,$(SLIM)),-f helm-values/slim/trino.yaml,)
 # Query-log feed (stardelt-nova#116): Trino's event listener posts to Nova's internal port.
 TRINO_QUERYLOG := -f helm-values/trino-query-log.yaml
+# Which claim names the Trino principal (platform#311) and therefore what the
+# group file holds. `sub` is the switched state (`make catalog-enforce`);
+# `username` is the pre-switch state (`make catalog-enforce-rollback` passes it,
+# together with the overlay below). One knob for both so they cannot disagree:
+# a group file of ids while the engine compares usernames silently drops every
+# group, and an administrator quietly loses the query visibility it grants.
+GROUP_PRINCIPAL ?= sub
+# An extra `-f` for the identity branch of `make trino`, applied last. Empty in
+# the normal case; `make catalog-enforce-rollback` passes
+# helm-values/trino-identity-file-only.yaml, which keeps `preferred_username`
+# and the file access control alone.
+TRINO_IDENTITY_OVERLAY ?=
 
 # Extra `-f`/`--set` arguments for the umbrella chart, e.g.
 #   make chart-template CHART_EXTRA="-f chart/values-slim.yaml"
@@ -198,7 +210,8 @@ install: deps _context _helm-repos ## Install all stardelt components (idempoten
 	  --version $(LAKEKEEPER_VERSION) \
 	  $(HELM_FLAGS) \
 	  -f helm-values/lakekeeper.yaml \
-	  $$(NAMESPACE=$(NAMESPACE) bash scripts/render-catalogs.sh bridge-arg)
+	  $$(NAMESPACE=$(NAMESPACE) bash scripts/render-catalogs.sh bridge-arg) \
+	  $$(NAMESPACE=$(NAMESPACE) bash scripts/render-catalogs.sh admin-arg)
 
 	@echo "› [5/11] Lakekeeper bootstrap"
 	@kubectl apply -f manifests/lakekeeper-bootstrap.yaml
@@ -382,7 +395,7 @@ trino: deps _context ## Install/upgrade Trino, with OAuth2+TLS when a platform I
 	    echo "    reach the TLS listener." >&2; \
 	  fi; \
 	  echo "› Trino group file: sync stardelt-admins into ConfigMap trino-group-file (platform#125)"; \
-	  NAMESPACE=$(NAMESPACE) bash scripts/sync-trino-groups.sh; \
+	  NAMESPACE=$(NAMESPACE) GROUP_PRINCIPAL=$(GROUP_PRINCIPAL) bash scripts/sync-trino-groups.sh; \
 	  echo "› Trino group sync: refresh the job script and apply the 5-minute CronJob (platform#167)"; \
 	  kubectl -n $(NAMESPACE) create configmap trino-group-sync-script --from-file=job.py=scripts/trino-group-sync-job.py \
 	    --dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
@@ -392,6 +405,7 @@ trino: deps _context ## Install/upgrade Trino, with OAuth2+TLS when a platform I
 	    $(HELM_FLAGS) \
 	    -f helm-values/trino.yaml $(TRINO_EXTRA) $(TRINO_QUERYLOG) \
 	    -f helm-values/trino-identity.yaml \
+	    $(TRINO_IDENTITY_OVERLAY) \
 	    $$(NAMESPACE=$(NAMESPACE) bash scripts/render-catalogs.sh trino-args); \
 	else \
 	  echo "› Trino $(TRINO_VERSION) — no platform IdP, so no authentication (dev only)"; \
@@ -592,7 +606,8 @@ catalogs: _context ## Converge Catalogs into Trino catalogs + bridge mappings (r
 	  --version $(LAKEKEEPER_VERSION) \
 	  $(HELM_FLAGS) \
 	  -f helm-values/lakekeeper.yaml \
-	  $$(NAMESPACE=$(NAMESPACE) bash scripts/render-catalogs.sh bridge-arg)
+	  $$(NAMESPACE=$(NAMESPACE) bash scripts/render-catalogs.sh bridge-arg) \
+	  $$(NAMESPACE=$(NAMESPACE) bash scripts/render-catalogs.sh admin-arg)
 	@kubectl -n $(NAMESPACE) rollout status deploy/lakekeeper --timeout=5m
 	@$(MAKE) --no-print-directory trino
 
@@ -630,6 +645,97 @@ unseed-permission-fixtures: _context ## Remove the opt-in finance/product/sandbo
 
 verify-catalog-permissions: _context ## Prove the live Catalog grants against the OPA bridge (exit 1 on any mismatch)
 	@NAMESPACE=$(NAMESPACE) bash scripts/verify-catalog-permissions.sh
+
+# ---------------------------------------------------------------------------
+# The switch (platform#311, authz 8/8): Trino asks the OPA bridge, and the
+# engine's user becomes the Keycloak `sub`.
+#
+# Before this, Trino authorizes by helm-values/trino-identity.yaml's file rules
+# alone: every signed-in person may address every catalog, and a `Catalog`
+# object's grants are enforced only on the catalog side — visible in Nova and
+# Superset, which take their catalog list from the engine. After it, the
+# `Catalog` grants decide, and a catalog nobody granted is not listed at all.
+#
+# Fail-closed: with `access-control.config-files` naming the bridge, an
+# unreachable or wrong bridge denies every statement, including `SELECT 1`. So
+# the gates run first, in this order, and the target stops at the first
+# failure:
+#
+#   1. `make access-sync-now` — every Catalog's grants are on its warehouse,
+#      and the role assignees are `oidc~<sub>` (the ids Trino will present);
+#   2. `make verify-catalog-permissions` — the nine-question matrix answered by
+#      the bridge itself (the questions the engine will ask);
+#   3. `bash scripts/bridge-replay.sh --data-only` — the same answers against
+#      the *captured* Trino requests (platform#333), so a request shape the
+#      bridge mishandles fails here and not on a person's screen;
+#   4. `bash scripts/sync-trino-groups.sh` — the group file by `sub`, so
+#      `stardelt-admins` still matches what Trino compares against;
+#   5. the Lakekeeper release with `OPABridge.adminUsers` (the same group), so
+#      an administrator is not vetoed by the bridge;
+#   6. `make trino` — the new values, both access-control files, the principal.
+#
+# Then the verification table in the ticket, by hand: the matrix per seed
+# person, Superset, a notebook, Nova, Airflow, and the latency of one scan.
+# `make catalog-enforce-rollback` is the way back. It rewrites the group file
+# and re-applies Trino, so the two disagree between those steps; a failure in
+# between leaves the group file naming the wrong strings (every group lookup
+# silently matches nobody) until the target is run again. `deps` is therefore a
+# prerequisite and the CronJob is switched back first, so a tool check or the
+# five-minute writer cannot strand the rollback half-done (seen live on
+# 2026-10-21).
+#
+# Two knobs define the state, and they must agree — a group file of `sub`
+# strings while the engine compares usernames drops every group silently:
+#   GROUP_PRINCIPAL=sub (default)  what the group file holds and what the
+#                                  CronJob trino-group-sync keeps writing
+#   TRINO_IDENTITY_OVERLAY=        an extra `-f` for `make trino`; the rollback
+#                                  passes helm-values/trino-identity-file-only.yaml
+# ---------------------------------------------------------------------------
+.PHONY: catalog-enforce catalog-enforce-rollback
+catalog-enforce: deps _context ## Switch Trino to the permission bridge and the sub principal (gated; see the header)
+	@$(MAKE) --no-print-directory access-sync-now
+	@$(MAKE) --no-print-directory verify-catalog-permissions
+	@NAMESPACE=$(NAMESPACE) bash scripts/bridge-replay.sh --data-only
+	@NAMESPACE=$(NAMESPACE) GROUP_PRINCIPAL=sub bash scripts/sync-trino-groups.sh
+	@echo "› Lakekeeper: the bridge's administrators, from the group file"
+	@helm upgrade --install lakekeeper lakekeeper/lakekeeper \
+	  --version $(LAKEKEEPER_VERSION) \
+	  $(HELM_FLAGS) \
+	  -f helm-values/lakekeeper.yaml \
+	  $$(NAMESPACE=$(NAMESPACE) bash scripts/render-catalogs.sh bridge-arg) \
+	  $$(NAMESPACE=$(NAMESPACE) bash scripts/render-catalogs.sh admin-arg)
+	@kubectl -n $(NAMESPACE) rollout status deploy/lakekeeper --timeout=5m
+	@$(MAKE) --no-print-directory trino GROUP_PRINCIPAL=sub
+	@kubectl -n $(NAMESPACE) rollout status deploy/trino-coordinator --timeout=5m
+	@echo ""
+	@echo "stardelt: Trino now authorizes through the permission bridge (user = Keycloak sub)."
+	@echo "  Verify by hand (ticket #311): show catalogs / read / write / create per person,"
+	@echo "  Superset, a notebook, Nova, Airflow, and the latency of one scan."
+	@echo "  Roll back with: make catalog-enforce-rollback"
+
+catalog-enforce-rollback: deps _context ## Put Trino back on the file rules and the username principal (recovery; see the README)
+	@# Order matters, and every step before the Trino apply is a window in which the
+	@# group file and the engine compare different strings (see the header). The
+	@# recovery was exercised live on 2026-10-21 and the first version got this
+	@# wrong: it rewrote the group file, then `make trino` stopped in its `deps`
+	@# check, and the two disagreed until the target ran again. `deps` is a
+	@# prerequisite now, and the CronJob goes first so the five-minute writer can
+	@# never re-apply `sub` in the middle of the rollback.
+	@# Stop the CronJob first: `make trino` had applied it with GROUP_PRINCIPAL=sub,
+	@# and it rewrites the group file to ids within five minutes.
+	@kubectl -n $(NAMESPACE) set env cronjob/trino-group-sync GROUP_PRINCIPAL=username >/dev/null
+	@echo "› Group file back to usernames"
+	@NAMESPACE=$(NAMESPACE) GROUP_PRINCIPAL=username bash scripts/sync-trino-groups.sh
+	@echo "› Trino: helm-values/trino-identity-file-only.yaml (file access control only, preferred_username)"
+	@$(MAKE) --no-print-directory trino GROUP_PRINCIPAL=username \
+	  TRINO_IDENTITY_OVERLAY="-f helm-values/trino-identity-file-only.yaml"
+	@kubectl -n $(NAMESPACE) rollout status deploy/trino-coordinator --timeout=5m
+	@echo ""
+	@echo "stardelt: Trino is back on the file rules alone — every signed-in person"
+	@echo "  addresses every catalog again, and the Catalog grants enforce nothing."
+	@echo "  The bridge's adminUsers list still holds sub ids until the next Lakekeeper"
+	@echo "  apply; harmless while the bridge is not an authorizer."
+	@echo "  Switch on again with: make catalog-enforce"
 
 # ---------------------------------------------------------------------------
 # The bridge contract (platform#333): what Trino sends the OPA authorizer, and

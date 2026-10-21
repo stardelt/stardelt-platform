@@ -381,14 +381,15 @@ plain development default when it does not.
 | `http-server.authentication.type=PASSWORD,OAUTH2` | every statement needs credentials; anonymous `POST /v1/statement` answers `401` with no query id |
 | `web-ui.authentication.type=oauth2` | the Trino web UI redirects to Keycloak; `<trino host>/oauth2/callback` is the registered redirect |
 | `web-ui.preview.enabled=false` | the preview UI (`/ui/preview/`) is off; the classic UI at `/ui/` stays, for administrators |
-| `http-server.authentication.oauth2.issuer` / `client-id=trino` / `client-secret` | validates the caller's **own** Keycloak access token and sets `current_user` to its `preferred_username` |
+| `http-server.authentication.oauth2.issuer` / `client-id=trino` / `client-secret` | validates the caller's **own** Keycloak access token and sets `current_user` to its `sub` (the Keycloak user id — `principal-field`, platform#311) |
 | `…oidc.use-userinfo-endpoint=false` | local JWT validation against the realm JWKS, so the `aud` claim is enforced |
 | `server.config.https` (port 8443, PKCS12 keystore mounted from Secret `trino-coordinator-tls`) | the in-cluster TLS listener; clients carry the user's bearer token to it (`manifests/trino-tls.yaml`) |
 | `http-server.authentication.allow-insecure-over-http=false` | a plain-HTTP statement is refused (403, no query id) **before** any authenticator runs, so the insecure authenticator — the one that trusts `X-Trino-User` — is unreachable |
 | `http-server.process-forwarded=true` | the ingress still terminates Let's Encrypt TLS and forwards HTTP to 8080 with `X-Forwarded-Proto`, which Trino treats as secure; the public path is unchanged |
 | `internal-communication.shared-secret=${ENV:…}` | required as soon as an authenticator is enabled |
 | `accessControl` (file `rules.json`: `queries` and `tables`) | query visibility is owner-only: each user sees and kills only their own queries, members of `stardelt-admins` see and kill all (viewing/killing one's own needs no rule — it is built-in). The `tables` rules deny everyone but `stardelt-admins` the cluster-wide `system.runtime.tasks`, `.transactions` and `.optimizer_rule_stats` (`tasks` lists other users' queries) and grant every other table as before; `system.runtime.queries` (own queries only) and `.nodes` stay open (platform#181) |
-| `coordinator.additionalConfigFiles` (`group-provider.properties`) + `trino-groups` volume | the file group provider reads `stardelt-admins` membership from ConfigMap `trino-group-file` (written by `scripts/sync-trino-groups.sh`, never committed); `file.refresh-period=30s` picks remounts up with no restart |
+| `coordinatorExtraConfig: access-control.config-files` + `coordinator.additionalConfigFiles` (`access-control-opa.properties`) | the second access control, platform#311: Trino also asks the catalog's OPA bridge (`lakekeeper-opa:8282`) before every catalog/schema/table/column operation, so the `Catalog` grants decide who reads what — see "Who may read what" below. Both systems have to allow a statement; the bridge therefore only ever removes access. Fail-closed: an unreachable bridge denies every statement |
+| `coordinator.additionalConfigFiles` (`group-provider.properties`) + `trino-groups` volume | the file group provider reads `stardelt-admins` membership from ConfigMap `trino-group-file` (written by `scripts/sync-trino-groups.sh`, never committed); `file.refresh-period=30s` picks remounts up with no restart. The strings are Keycloak user ids, matching `principal-field=sub` |
 
 **What the public host serves (platform#181).** The `trino.<baseDomain>` Ingress
 (`dev/playground/ingress.yaml`, and `chart/templates/ingress.yaml` when `trino` is listed in
@@ -1464,6 +1465,98 @@ batch-check): the bridge fails closed before it calls Lakekeeper. The capture in
 repository is the request shape that avoids that.
 
 
+### Who may read what
+
+The permission model, in the words a person uses:
+
+- A **group** holds the permission, never a person. Keycloak groups (`stardelt-users`,
+  `stardelt-admins`, a customer's own like `finops`) are the only thing a `Catalog`'s
+  `grants` can name, and membership is changed in the IdP — one place, one audit trail.
+- A **catalog** is a domain (`finance`, `product`, `sandbox`, `warehouse`, …). Each one has
+  an owner group and a list of grants, one per group and verb.
+- Five verbs, and they are cumulative in the obvious way:
+
+  | verb | what a person may do |
+  |---|---|
+  | `browse` | see the catalog in a list, open it, list its schemas, tables and columns |
+  | `select` | read rows (`SELECT`) |
+  | `write` | insert, update, delete, and change a table |
+  | `create` | create and drop schemas and tables |
+  | `manage` | grant and revoke, transfer ownership, drop and rename the catalog — what the owner group holds; it does not imply `select` |
+
+  A group with `browse` and no `select` sees the catalog and gets a refusal as soon as it
+  reads a row: "may look, may not read" is a supported state (that is `product` for the
+  `finops` group in the dev seed).
+
+**Where it is enforced: at the query engine, for everybody.** Trino asks the permission
+bridge — the OPA sidecar of the catalog, which answers from Lakekeeper's OpenFGA store —
+before every catalog, schema, table and column operation (`make catalog-enforce`,
+`platform#311`). Two consequences worth knowing:
+
+- The engine's user is the person's **Keycloak user id** (`sub`), not a username, because
+  that is the string the catalog's role assignees are keyed on.
+- Every client goes through the same check, because every client goes through the same
+  engine with the person's own token: **Nova** (the SQL editor and every catalog call),
+  **Superset** (which impersonates the signed-in person from its service account,
+  `platform#310`), a **notebook** (`stardelt.sql()`, `stardelt.write_df()`), a `trino`
+  CLI with a Keycloak token, and **Airflow** pipelines (which run as their own service
+  account, a member of a group like any other principal — `STATIC_ASSIGNEES` covers
+  accounts that have no Keycloak user, like Superset's `superset`).
+- Both access controls apply at once: the bridge decides *which catalogs and rows of
+  metadata* a person may reach, the file rules in `helm-values/trino-identity.yaml`
+  decide *query visibility* (own queries only, administrators all) and keep the
+  cluster-internal tables away from ordinary users. A statement must be allowed by both.
+- Trino takes its catalog list from the same answer, so a person sees exactly the catalogs
+  their groups grant — in the SQL editor, in Nova's catalog switcher (a 30-second cache),
+  in Superset's catalog list and in a notebook's `SHOW CATALOGS`. `system`, `tpch` and
+  `tpcds` are the engine's own catalogs, not managed here, and stay visible to everyone.
+
+**What is not covered.**
+
+- **No row or column rules.** The bridge answers per object (catalog, schema, table,
+  column list); there are no filters or masks yet. A person with `select` reads every row
+  of every table in the catalog.
+- **Spark Connect has no authentication of its own.** The endpoint is ClusterIP-only,
+  the single-user pods are its clients (the egress rule in `helm-values/jupyterhub.yaml`,
+  `manifests/spark.yaml`), and `stardelt.spark()` hands the person's token to the catalog,
+  so the *catalog* decides what a Spark session may read (`platform#317`). The Connect
+  endpoint itself does not verify who is calling, though: do not expose it beyond the
+  namespace, and do not treat a Spark read as an audited read of the same standing as a
+  Trino one.
+- **The catalog's own API** is a second door. `svc-catalog-*` clients authenticate to
+  Lakekeeper directly (Nova writes uploads that way); the grants there are the same ones,
+  because it is the same store.
+
+**Recovery.** `make catalog-enforce-rollback` puts Trino back on the file rules alone and
+the username principal, in one command, and says so when it is done: every signed-in
+person addresses every catalog again and the `Catalog` grants enforce nothing. The reason
+to roll back is a cell of the verification table failing — including the latency cell, which
+is what a per-catalog authorizer round trip shows up in first. An unreachable bridge is
+*not* such a reason: fail-closed is the design, so fix the bridge rather than the switch
+(`SELECT 1` is denied while it is down). `make verify-catalog-permissions` and
+`make bridge-replay --data-only` answer the same questions the engine asks, without
+touching Trino, so they are the safe way to look before switching again.
+
+The rollback changes two things that must agree (the group file's strings and the principal
+Trino compares them with), so it has a window in which they do not. The target therefore
+runs `deps` first (a missing tool must not stop it half-way), switches the group-sync
+CronJob back before it touches the file (the five-minute writer must not re-apply `sub` in
+the middle), and waits for the coordinator rollout before it prints that it is done. A
+failure inside that window is recovered by running the same target again; it is idempotent.
+This was learned the hard way on 2026-10-21: the first shape rewrote the group file, then
+stopped in `make trino`'s `deps` check, and admins lost query visibility until the re-run.
+
+**One known limit.** The bridge's administrator list (`OPABridge.adminUsers`) is rendered
+from the `stardelt-admins` line of ConfigMap `trino-group-file` when a Lakekeeper release
+is applied. A person added to `stardelt-admins` afterwards becomes an administrator in
+Trino's file rules on the next sync (30 s), but sees everybody's queries in
+`system.runtime.queries` only after the next `make catalog-enforce` (or `make catalogs`,
+`make catalog-authz` — anything that re-renders the bridge). The bridge still refuses them
+nothing else: the file rules grant the same visibility and the catalog grants are
+unchanged.
+
+---
+
 ### Dev seed: the maintainer layout is the baseline, fixtures are opt-in
 
 The dev seed is a small permission set you can check by hand, for development and for
@@ -1913,8 +2006,10 @@ kubectl -n stardelt delete pods -l spark-role=executor
 | `bridge-capture` | Capture the authorization requests the Trino coordinator's image sends to an OPA authorizer, from a throwaway pod with a stub, into `scripts/tests/fixtures/trino-opa-requests.json`; refresh after a Trino upgrade (platform#333) |
 | `bridge-replay` | Replay the captured requests against the live bridge for the three seed people and an admin: contract, probes, must-work reads and the matrix; exit 1 on an error, empty answer or wrong row. `--data-only` is the matrix gate (platform#333) |
 | `bridge-latency` | `FilterCatalogs` with every catalog of the cluster plus system/tpch/tpcds, five cold runs per seed person and the admin: prints min/median/max and exits 1 above a 1.0 s median; asserts every answer equals the chart's per-catalog path (platform#359) |
+| `catalog-enforce` | **The switch** (platform#311): Trino asks the bridge and the engine user becomes the Keycloak `sub`. Gated in order — `access-sync-now`, `verify-catalog-permissions`, `bridge-replay --data-only`, the group file by `sub`, Lakekeeper with `OPABridge.adminUsers`, `make trino` — and stops at the first failure. See [Who may read what](#who-may-read-what) |
+| `catalog-enforce-rollback` | The recovery path: the group-sync CronJob back to `GROUP_PRINCIPAL=username` first (so the five-minute writer cannot re-apply `sub` mid-rollback), then the group file by usernames, then Trino on the file access control alone (`helm-values/trino-identity-file-only.yaml`), waiting for the rollout. `deps` is a prerequisite, so a missing tool cannot stop it after it has started changing state. One command, for a failed cell of the switch's verification |
 | `trino` | Install/upgrade Trino; adds `helm-values/trino-identity.yaml` (Keycloak OAuth2 + service-account password) when `stardelt-identity` exists |
-| `sync-trino-groups` | Sync the live realm's `stardelt-admins` membership into ConfigMap `trino-group-file` (Trino query visibility); idempotent, runs inside `make trino` (#125) |
+| `sync-trino-groups` | Sync the live realm's `stardelt-admins` membership into ConfigMap `trino-group-file` (Trino query visibility); `GROUP_PRINCIPAL=sub` (default) or `username` decides whether it holds Keycloak user ids or usernames, and must match Trino's `principal-field`; idempotent, runs inside `make trino` (#125, #311) |
 | `install-operator` | Install the stardelt Operator from `../stardelt-operator/chart` (dev path) |
 | `pin` | Pin a deployment to the newest published digest **and write it back into the manifest** (`make pin APP=nova`, `APP=spark DEPLOY=spark-connect`), so a later `kubectl apply` cannot put the mutable tag back |
 | `pin-images` | Pin Nova, the operator and Spark to their digests (the install targets do this themselves) |

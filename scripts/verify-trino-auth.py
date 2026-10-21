@@ -8,12 +8,18 @@ Called by scripts/verify-trino-auth.sh, which provides:
     TRINO_URL        public Trino origin, e.g. https://trino.<baseDomain>
     USER, PASSWORD   the realm user to prove
     CLIENT_SECRET_FILE   file holding the `trino` client secret (never argv)
+    GROUP_PRINCIPAL  which claim Trino uses as the engine user: `sub` (default,
+                     the Keycloak user id, the state after `make
+                     catalog-enforce`) or `username` (`preferred_username`,
+                     the state before it). platform#311.
 
 `MINT_ONLY=1` stops after the device grant and writes the access token to
 `TOKEN_FILE` (mode 600) instead of querying Trino — used by
 scripts/verify-trino-tls.sh, which sends the token from inside the cluster.
 
-Exits non-zero unless Trino answers `select current_user` with exactly USER.
+Exits non-zero unless Trino answers `select current_user` with exactly the
+principal the platform configured (the token's `sub`, or its
+`preferred_username`).
 
 Keycloak's device-approval page is plain HTML forms, so this drives it with
 urllib only: no browser and no direct-access grant (which the realm keeps off).
@@ -35,6 +41,7 @@ USER = os.environ["USER"]
 PASSWORD = os.environ["PASSWORD"]
 CLIENT_SECRET = open(os.environ["CLIENT_SECRET_FILE"]).read().strip()
 MINT_ONLY = os.environ.get("MINT_ONLY", "") not in ("", "0")
+PRINCIPAL = os.environ.get("GROUP_PRINCIPAL", "sub")
 TOKEN_FILE = os.environ.get("TOKEN_FILE", "")
 
 FORM = re.compile(r"<form[^>]*>.*?</form>", re.S)
@@ -146,5 +153,17 @@ while True:
     with opener.open(urllib.request.Request(body["nextUri"])) as r:
         body = json.load(r)
 print("  rows: %s" % rows)
-if rows != [[USER]]:
-    sys.exit(f"Trino did not authenticate the token as {USER!r}: {rows}")
+# The engine user is one string from this token (platform#311): the `sub` with
+# `principal-field=sub`, the `preferred_username` before it. Comparing with the
+# login name alone would fail the moment the switch is on — and pass a session
+# that authenticated as somebody else.
+if PRINCIPAL not in ("sub", "username"):
+    sys.exit(f"GROUP_PRINCIPAL must be 'sub' or 'username', not {PRINCIPAL!r}")
+expected = claims.get("sub") if PRINCIPAL == "sub" else claims.get("preferred_username")
+if not expected:
+    sys.exit(f"the token carries no {PRINCIPAL!r} claim")
+# `claims` is the undocumented, unverified payload: enough to name the expected
+# string, while Trino is the one that verified the signature.
+if rows != [[expected]]:
+    sys.exit(f"Trino did not authenticate the token as {expected!r} "
+             f"({PRINCIPAL} of {USER!r}): {rows}")

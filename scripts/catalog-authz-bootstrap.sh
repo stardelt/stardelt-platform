@@ -132,10 +132,14 @@ EOF
   ok "backup $backup completed"
 
   # --- d. helm upgrade --------------------------------------------------------
-  # shellcheck disable=SC2086
+  # The bridge's administrator list (`OPABridge.adminUsers`, platform#311) comes
+  # from ConfigMap trino-group-file, like every other Lakekeeper apply of ours —
+  # see scripts/render-catalogs.sh admin-arg.
+  admin_arg="$(NAMESPACE="$NAMESPACE" bash scripts/render-catalogs.sh admin-arg)"
+  # shellcheck disable=SC2086,SC2046
   helm upgrade --install lakekeeper lakekeeper/lakekeeper \
     --version "$LAKEKEEPER_VERSION" $HELM_FLAGS \
-    -f helm-values/lakekeeper.yaml
+    -f helm-values/lakekeeper.yaml $admin_arg
   kubectl -n "$NAMESPACE" rollout status deploy/lakekeeper --timeout=300s
   # The upgrade replaces the pod, so the port-forward from step c is stale.
   kill "$PF_PID" 2>/dev/null || true

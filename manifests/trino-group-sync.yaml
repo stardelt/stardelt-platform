@@ -9,6 +9,13 @@
 # re-runs the sync and writes the ConfigMap when membership changed,
 # idempotently and without printing principals (counts only).
 #
+# The principals it writes are Keycloak user ids (`id`), matching Trino's
+# `principal-field=sub` (platform#311): the file is compared against
+# `current_user`, so the shape has to follow the engine's principal field.
+# `GROUP_PRINCIPAL=username` is the pre-switch shape (`make
+# catalog-enforce-rollback` passes it to the script, by hand — this CronJob is
+# only correct with the switch on).
+#
 # Authentication, least-privilege by design:
 #   * Keycloak: the dedicated confidential client `trino-group-sync`
 #     (service-account only, every interactive flow off), granted exactly
@@ -118,6 +125,14 @@ spec:
                   value: "stardelt-admins"
                 - name: GROUP_CONFIGMAP
                   value: "trino-group-file"
+                # The principal the file has to match (platform#311): the Keycloak
+                # user id, because Trino authenticates with
+                # http-server.authentication.oauth2.principal-field=sub once the
+                # catalog enforces permissions (`make catalog-enforce`). A file of
+                # usernames while Trino compares ids finds no group for anyone, so
+                # an administrator silently loses the query visibility below.
+                - name: GROUP_PRINCIPAL
+                  value: "sub"
               volumeMounts:
                 - { name: job-script, mountPath: /opt/job, readOnly: true }
               resources:

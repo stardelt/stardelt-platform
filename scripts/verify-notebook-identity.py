@@ -15,7 +15,7 @@ What it does, in order:
      user, not against whatever was running;
   3. runs the quickstart inside the pod with `jupyter nbconvert --execute` and
      expects it to succeed — the notebook itself asserts
-     `SELECT current_user` equals the hub user;
+     `SELECT current_user` equals the identity in the hub user's token;
   4. runs the same notebook with `TRINO_TOKEN` removed from the environment and
      expects a 401: the rows come from the user's own token, not from anything
      baked into the image;
@@ -25,6 +25,13 @@ Environment:
   HUB_URL            hub base URL (default https://jupyter.alpha.dev.stardelt.io)
   NOTEBOOK_USER      hub user to prove (default analyst)
   NOTEBOOK_PASSWORD  that user's realm password (required)
+  GROUP_PRINCIPAL    which claim Trino uses as the engine user (platform#311):
+                     `sub` (default) — the Keycloak user id, the state after
+                     `make catalog-enforce`; `username` — `preferred_username`,
+                     the state before it. `SELECT current_user` is compared with
+                     that claim from the pod's own `TRINO_TOKEN`, so the check
+                     proves the engine used the person's token in the shape the
+                     platform configured.
   NAMESPACE          Kubernetes namespace (default stardelt)
   NOTEBOOK           path inside the pod (default /home/jovyan/warehouse-quickstart.ipynb)
   NOTEBOOK_RESTART   stop/start before checking (default 1)
@@ -34,6 +41,7 @@ Environment:
                      `hub.jupyter.org/username` label
   KUBECONFIG         inherited by kubectl
 """
+import base64
 import http.cookiejar
 import json
 import os
@@ -52,6 +60,7 @@ NAMESPACE = os.environ.get("NAMESPACE", "stardelt")
 NOTEBOOK = os.environ.get("NOTEBOOK", "/home/jovyan/warehouse-quickstart.ipynb")
 RESTART = os.environ.get("NOTEBOOK_RESTART", "1") not in ("0", "false", "no")
 TIMEOUT = int(os.environ.get("NOTEBOOK_TIMEOUT", "600"))
+PRINCIPAL = os.environ.get("GROUP_PRINCIPAL", "sub")
 
 if not PASSWORD:
     sys.exit("verify-notebook-identity: set NOTEBOOK_PASSWORD (the user's realm password)")
@@ -94,6 +103,23 @@ def only_form(url, html):
 def kubectl(*args, **kwargs):
     return subprocess.run(["kubectl", "-n", NAMESPACE, *args], text=True,
                           capture_output=True, **kwargs)
+
+
+def token_claim(name):
+    """One claim from the pod's own TRINO_TOKEN, without verifying it.
+
+    Trino verifies the token; this only answers "which string will Trino use as
+    the engine user" — the `sub` or the `preferred_username`, depending on the
+    platform's `principal-field` (platform#311). The token itself is never
+    printed.
+    """
+    raw = kubectl("exec", pod, "--", "printenv", "TRINO_TOKEN").stdout.strip()
+    if raw.count(".") != 2:
+        sys.exit(f"verify-notebook-identity: no usable TRINO_TOKEN in pod {pod} "
+                 "(the hub copies the signed-in user's token at spawn)")
+    payload = raw.split(".")[1]
+    payload += "=" * (-len(payload) % 4)
+    return json.loads(base64.urlsafe_b64decode(payload)).get(name) or ""
 
 
 def server_ready():
@@ -167,6 +193,14 @@ if not pod:
 kubectl("wait", "--for=condition=Ready", f"pod/{pod}", f"--timeout={TIMEOUT}s")
 print(f"    pod: {pod}")
 
+# The engine user the platform configured (`principal-field`), read from the same
+# token the pod uses — no second source of truth for who this person is.
+if PRINCIPAL not in ("sub", "username"):
+    sys.exit(f"verify-notebook-identity: GROUP_PRINCIPAL must be 'sub' or 'username', not {PRINCIPAL!r}")
+expected = token_claim("sub") if PRINCIPAL == "sub" else token_claim("preferred_username")
+if not expected:
+    sys.exit(f"verify-notebook-identity: the token in pod {pod} carries no {PRINCIPAL!r} claim")
+
 nbconvert = ["jupyter", "nbconvert", "--to", "markdown", "--execute", "--stdout",
              "--ExecutePreprocessor.timeout=300", NOTEBOOK]
 
@@ -176,7 +210,8 @@ output = positive.stdout
 print(output)
 check("quickstart executed", positive.returncode == 0,
       "" if positive.returncode == 0 else positive.stderr.strip()[-300:])
-check(f"Trino reports current_user = {USER}", f"signed_in_as" in output and USER in output)
+check(f"Trino reports current_user = {expected} (the token's {PRINCIPAL})",
+      "signed_in_as" in output and expected in output)
 check("warehouse.covid.covid_summary was queried", "warehouse.covid.covid_summary" in output)
 
 # 4. The negative: without the token there is nothing to authenticate with.
