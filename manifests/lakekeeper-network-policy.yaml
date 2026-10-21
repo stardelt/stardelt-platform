@@ -97,13 +97,20 @@ spec:
         - protocol: TCP
           port: 8181
     # The OPA bridge sidecar (platform#304) answers Trino's authorization
-    # questions on TCP 8282. Only the coordinator asks; Trino workers read data
-    # files and never call it.
+    # questions on TCP 8282. The coordinator asks (Trino workers read data files
+    # and never call it); since platform#359 the access-sync CronJob also WRITES
+    # the catalog-level decision table there (`PUT /v1/data/stardelt/access`,
+    # scripts/access-sync-job.py) — the accelerator the front rule reads before
+    # it falls back to Lakekeeper. Both are the same trust boundary: those two
+    # pods are exactly the ones that already hold a Lakekeeper credential.
     - from:
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: trino
               app.kubernetes.io/component: coordinator
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: access-sync
       ports:
         - protocol: TCP
           port: 8282

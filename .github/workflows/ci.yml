@@ -101,6 +101,19 @@ jobs:
             --namespace stardelt \
             -f helm-values/lakekeeper.yaml > /dev/null
 
+      # The bridge's catalog decision table (platform#359): renders the chart with
+      # this repo's values file, then asks the resulting policy every question
+      # against a stub Lakekeeper that counts calls. `make test-bridge-policies`
+      # runs the same thing locally; it needs the lakekeeper repo and the opa
+      # binary, which this job has (and the lint job does not).
+      - name: Bridge decision-table policy (stub Lakekeeper + opa eval)
+        run: |
+          # The OPA the chart's bridge sidecar runs (openpolicyagent/opa:1.16.1).
+          curl -sSL -o "$RUNNER_TEMP/opa" \
+            https://openpolicyagent.org/downloads/v1.16.1/opa_linux_amd64_static
+          chmod +x "$RUNNER_TEMP/opa"
+          OPA="$RUNNER_TEMP/opa" bash scripts/test-bridge-policies.sh
+
       - name: helm template — openfga
         run: |
           helm template openfga openfga/openfga \
@@ -172,7 +185,6 @@ jobs:
 
       - name: helm dependency update — umbrella chart
         run: helm dependency update chart
-
       - name: helm lint + template — umbrella chart
         run: |
           helm lint chart

@@ -1294,8 +1294,8 @@ hand-written request shape, no guess about what 480 sends (`platform#333`).
   operations (`user`).
 - **Batched.** With `opa.policy.batched-uri` set, as the bridge's chart config does,
   `FilterCatalogs`, `FilterSchemas`, `FilterTables` and `FilterColumns` arrive at
-  `/v1/data/trino/batch` as one request: `{"action": {"operation": "FilterCatalogs",
-  "filterResources": [{"catalog": {"name": "system"}}, …]}}`, answered with
+  `/v1/data/stardelt/batch` (the front entry point, below) as one request: `{"action": {"operation":
+  "FilterCatalogs", "filterResources": [{"catalog": {"name": "system"}}, …]}}`, answered with
   `{"result": [<allowed index>, …]}`. The index order is the order the resources were
   sent in, and it is not sorted — the answer is a set of positions, not a list of names.
   Without that URI the plugin sends one request per resource instead.
@@ -1311,6 +1311,69 @@ hand-written request shape, no guess about what 480 sends (`platform#333`).
   name under `resource.<kind>.catalogName` (or `resource.catalog.name`). A body that
   lacks either gets `false` **before** any call to Lakekeeper, which is why the
   Lakekeeper audit log shows no batch-check at all.
+
+**The front entry points and the catalog decision table** (`platform#359`). Every question
+that reaches Lakekeeper costs about 0.15 s *per distinct catalog* (PR #364 measured it: one
+check 0.11 s, eight distinct warehouses in one request 0.9 s), so `SHOW CATALOGS` cost 1 to
+2 s cold and every query paid about 350 ms — the reason `platform#311` rolled the switch
+back. The price is Lakekeeper's per-entity authorization, not transport, so batching cannot
+remove it; the answers have to come from somewhere else.
+
+They come from a table CronJob `access-sync` already computes every two minutes. After the
+grants of a tick are written, it publishes the catalog-level permissions as OPA data
+(`scripts/access-sync-job.py`, `PUT /v1/data/stardelt/access` on the bridge):
+
+```json
+{"generatedAt": 1761055200,
+ "catalogs": {"gold": {"drift": false, "all": ["<admin sub>"],
+                      "browse": ["<sub>", "superset"], "select": ["<sub>"],
+                      "write": [], "create": []}}}
+```
+
+Each list holds the exact string Trino sends as the user (the Keycloak `sub`, or a bare
+`STATIC_ASSIGNEES` principal such as `superset`), with Lakekeeper's verb implications
+already applied (`write` implies `select` implies `browse`; `create` implies `browse`), and
+`all` is the platform administrators, who hold `project_admin` in Lakekeeper. Trino is
+pointed at `data/stardelt/allow` (`opa.policy.uri`) and `data/stardelt/batch`
+(`opa.policy.batched-uri`) — `stardelt.front.rego` in `helm-values/lakekeeper.yaml` — and the
+two rules answer:
+
+- **the catalog-level questions** (`AccessCatalog`, `FilterCatalogs`) from the table, in both
+  directions, whenever the table is fresh and the catalog has no drift. That is the
+  acceleration: zero Lakekeeper calls;
+- **the hot object-level operations** (`SelectFromColumns`, `InsertIntoTable`, `CreateSchema`,
+  `CreateTable`, `CreateView`, `ShowSchemas`/`FilterSchemas`, `ShowTables`/`FilterTables`,
+  `ShowColumns`/`FilterColumns`) as an **allow-only** fast path. A denial is never the
+  table's: the chart's rules ask Lakekeeper, which also knows object ownership and any grant
+  below the catalog;
+- **everything else** — drops, renames, alters, `ExecuteQuery`, session properties,
+  impersonation, functions — by the chart's own rules, unchanged.
+
+The table is an accelerator, never the authority. It is ignored when it is older than six
+minutes (the sync publishes every two, so a normal table is at most ~2.5 minutes old), when a
+catalog is missing from it (a `Catalog` that became Ready since the last tick), and when that
+catalog carries `drift` — a grant on its warehouse held by a subject the sync does not
+manage, which it cannot enumerate and therefore must not answer for. A failed push is logged
+as `opa data: not published (<status>)` and never fails the sync tick: the bridge then falls
+back to Lakekeeper and only the latency changes.
+
+**The trust note.** The table is derived from the same `Catalog` objects the sync writes to
+Lakekeeper; Lakekeeper stays the authority. The table is valid for at most six minutes
+(usually 2.5), it can only widen answers at object level where Lakekeeper confirms them by
+default, and its write API is reachable only from the `access-sync` and Trino-coordinator
+pods (NetworkPolicy `lakekeeper-ingress`) — the same trust boundary as the bridge's own
+Lakekeeper credential.
+
+Three checks keep the accelerator honest. `make bridge-differential`
+(`scripts/bridge-replay.sh --differential`) asks the front
+entry points and the chart's own rules the same question for every catalog, every existing
+table and every principal (including one that is in no group) and fails on any difference —
+there is no "known difference". `scripts/test_bridge_policies.py` (CI, `make
+test-bridge-policies`) proves the same against a stub Lakekeeper that counts calls, so "a
+fresh table answers without asking" is a number, not a claim. `make bridge-latency` measures
+it. `make lint` (`scripts/check-bridge-uri.sh`) keeps the paths in this file,
+`scripts/lib/bridge.sh` and the values file identical, so the replay asks what the engine
+asks.
 
 **Who may impersonate whom** (`platform#342`). Exactly one principal may act as someone
 else, and only as a person: `superset`, the PASSWORD account Superset authenticates to
@@ -1339,6 +1402,11 @@ make bridge-capture    # throwaway Trino + a stub authorizer that allows and rec
 make bridge-replay     # the contract, the probes, the must-work reads, the matrix,
                        # the impersonation rows
 bash scripts/bridge-replay.sh --data-only   # only the matrix and impersonation (the gate)
+bash scripts/bridge-replay.sh --differential   # the front entry points against the
+                       # chart's own rules: every catalog, every table, every principal
+make bridge-latency    # FilterCatalogs with every catalog: five cold runs, the median
+                       # must stay <= 0.2 s, and one AccessCatalog/SelectFromColumns
+                       # question <= 0.05 s, with the old path's answers unchanged
 ```
 
 `make bridge-capture` runs the coordinator image with no authentication, the `tpch` catalog
@@ -1841,6 +1909,7 @@ kubectl -n stardelt delete pods -l spark-role=executor
 | `verify-catalog-permissions` | Prove the nine-row permission matrix against the OPA bridge, one PASS/FAIL per cell; exit 1 on any mismatch (platform#309) |
 | `bridge-capture` | Capture the authorization requests the Trino coordinator's image sends to an OPA authorizer, from a throwaway pod with a stub, into `scripts/tests/fixtures/trino-opa-requests.json`; refresh after a Trino upgrade (platform#333) |
 | `bridge-replay` | Replay the captured requests against the live bridge for the three seed people and an admin: contract, probes, must-work reads and the matrix; exit 1 on an error, empty answer or wrong row. `--data-only` is the matrix gate (platform#333) |
+| `bridge-latency` | `FilterCatalogs` with every catalog of the cluster plus system/tpch/tpcds, five cold runs per seed person and the admin: prints min/median/max and exits 1 above a 1.0 s median; asserts every answer equals the chart's per-catalog path (platform#359) |
 | `trino` | Install/upgrade Trino; adds `helm-values/trino-identity.yaml` (Keycloak OAuth2 + service-account password) when `stardelt-identity` exists |
 | `sync-trino-groups` | Sync the live realm's `stardelt-admins` membership into ConfigMap `trino-group-file` (Trino query visibility); idempotent, runs inside `make trino` (#125) |
 | `install-operator` | Install the stardelt Operator from `../stardelt-operator/chart` (dev path) |

@@ -4,6 +4,7 @@
 #
 #   make bridge-replay                 # the whole contract, the probes, the matrix
 #   bash scripts/bridge-replay.sh --data-only
+#   bash scripts/bridge-replay.sh --differential
 #
 # Reads scripts/tests/fixtures/trino-opa-requests.json (written by
 # `make bridge-capture`), substitutes one person's Keycloak `sub` for `<sub>`,
@@ -44,6 +45,19 @@
 # disagrees, or when a must-allow row is denied. `--data-only` asks tables 4 and
 # 5 only: they are the gate `make catalog-authz` and, after platform#311,
 # `make catalog-enforce` run before they trust the bridge.
+#
+# The questions go to the paths Trino is configured with (`scripts/lib/bridge.sh`:
+# `data/stardelt/allow` and `data/stardelt/batch` since platform#359), not to the
+# paths the fixture was captured with — the fixture is the evidence of what Trino
+# *sends*, and the replay must ask it where the engine will. A captured body is
+# unchanged; only its path is mapped. `--differential` is the correctness gate of
+# the catalog decision table (platform#359, ticket step 4): the front entry
+# points (`data.stardelt.*`, answered from the table access-sync publishes) and
+# the chart's own rules (`data.trino.*`, which ask Lakekeeper) must give the SAME
+# answer for every question — every Trino catalog, every table that actually
+# exists, the three seed people, an administrator and a principal that is in no
+# group. It needs no fixture and no expectations: the two paths are the oracle
+# for each other, and a single difference exits 1.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -53,21 +67,36 @@ REALM="${REALM:-stardelt}"
 BRIDGE="${BRIDGE:-http://lakekeeper-opa:8282}"
 PROBE_IMAGE="${PROBE_IMAGE:-curlimages/curl:8.10.1}"
 FIXTURE="scripts/tests/fixtures/trino-opa-requests.json"
+MODE="full"
+case "${1:-}" in
+  --data-only) MODE="data-only" ;;
+  --differential) MODE="differential" ;;
+  "") ;;
+  *) echo "usage: bridge-replay.sh [--data-only|--differential]" >&2; exit 2 ;;
+esac
 DATA_ONLY=0
-[ "${1:-}" = "--data-only" ] && DATA_ONLY=1
+[ "$MODE" = "data-only" ] && DATA_ONLY=1
+
+# The paths the engine is configured with, not copies of them (platform#359).
+# shellcheck source=lib/bridge.sh disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/lib/bridge.sh"
 
 fail() { echo "bridge-replay: $*" >&2; exit 1; }
 
 for tool in kubectl python3 curl jq base64; do
   command -v "$tool" >/dev/null 2>&1 || fail "$tool not found"
 done
-[ -f "$FIXTURE" ] || fail "$FIXTURE is missing — run 'make bridge-capture' on a cluster first"
+# The differential asks the two paths about each other and needs neither the
+# captured fixture nor the layout's expectations.
+[ "$MODE" = "differential" ] || [ -f "$FIXTURE" ] \
+  || fail "$FIXTURE is missing — run 'make bridge-capture' on a cluster first"
 
 umask 077
 tmp="$(mktemp -d)"
 pod=""
 cleanup() {
   keycloak_admin_stop
+  typeset -f bridge_tables_stop >/dev/null 2>&1 && bridge_tables_stop
   [ -z "$pod" ] || kubectl -n "$NAMESPACE" delete pod "$pod" --wait=false >/dev/null 2>&1 || true
   rm -rf "$tmp"
 }
@@ -111,12 +140,245 @@ admin_sub="$(kc --get "$API/groups/$admin_group/members" | jq -r '.[0].id // ""'
 add_person admin "$admin_sub"
 jq -s '.' "$person_jsonl" >"$tmp/principals.json"
 
+
+
 PRINCIPALS=(
   "dev-finops|${SUB[dev-finops]}"
   "dev-analytics|${SUB[dev-analytics]}"
   "dev-outsider|${SUB[dev-outsider]}"
   "admin|$admin_sub"
 )
+
+# The differential also asks as a principal that is in no group at all: a `sub`
+# Trino would happily receive from a token, holding nothing. It is the deny side
+# of the comparison — the table must deny it exactly where Lakekeeper does — and
+# it needs no Keycloak user, because nobody has to be able to sign in as it.
+if [ "$MODE" = "differential" ]; then
+  PRINCIPALS+=("nobody|$(python3 -c 'import uuid; print(uuid.uuid4())')")
+fi
+
+# 3. One throwaway pod labelled like the coordinator (the only label
+#    `lakekeeper-ingress` admits to 8282), used for every question.
+start_probe_pod() {
+  pod="qa-bridge-replay-$RANDOM"
+  kubectl -n "$NAMESPACE" run "$pod" --image="$PROBE_IMAGE" --restart=Never \
+    --labels='app.kubernetes.io/name=trino,app.kubernetes.io/component=coordinator' \
+    --command -- sleep 1800 >/dev/null || fail "cannot start the probe pod"
+  kubectl -n "$NAMESPACE" wait --for=condition=Ready "pod/$pod" --timeout=90s >/dev/null \
+    || fail "the probe pod never became ready"
+}
+
+# 4. Ask. One `kubectl exec` for the whole plan; the pod prints one
+#    `<id>\t<http status>\t<body>` line per question. The script is single-quoted
+#    on purpose: `$1`, `$path` and the rest are the pod's shell, not this file's.
+# shellcheck disable=SC2016
+PROBE='
+while IFS="$(printf "\t")" read -r id path body; do
+  [ -n "$id" ] || continue
+  raw=$(printf "%s" "$body" | curl --silent --show-error --max-time 30 \
+        --request POST "$1$path" --header "Content-Type: application/json" \
+        --data-binary @- --write-out "\n%{http_code}" 2>/dev/null) || raw=""
+  code=$(printf "%s" "$raw" | tail -n 1)
+  payload=$(printf "%s" "$raw" | sed "\$d" | tr -d "\n")
+  printf "%s\t%s\t%s\n" "$id" "$code" "$payload"
+done
+'
+
+ask_bridge() {
+  kubectl -n "$NAMESPACE" exec -i "$pod" -- sh -c "$PROBE" sh "$BRIDGE" \
+    <"$tmp/jobs.tsv" >"$tmp/answers.tsv" || fail "the probe pod could not ask the bridge"
+}
+
+# ---------------------------------------------------------------------------
+# --differential (platform#359, step 4): the front entry points against the
+# chart's own rules, for every catalog and every table that exists.
+# ---------------------------------------------------------------------------
+if [ "$MODE" = "differential" ]; then
+  # Every catalog Trino has: the platform catalog, the Ready `Catalog` objects
+  # (the same list `make catalogs` renders) and the three Trino built-ins.
+  CATALOGS=(warehouse)
+  while IFS= read -r name; do
+    [ -n "$name" ] && CATALOGS+=("$name")
+  done < <(NAMESPACE="$NAMESPACE" bash scripts/render-catalogs.sh list)
+  CATALOGS+=(system tpch tpcds)
+
+  # The tables that actually exist (scripts/lib/bridge-tables.sh): Lakekeeper
+  # denies a table that does not exist and Trino never asks about one, so a
+  # synthetic name would compare a real answer with an impossible question.
+  # shellcheck source=lib/bridge-tables.sh disable=SC1091
+  . "$(dirname "${BASH_SOURCE[0]}")/lib/bridge-tables.sh"
+  # shellcheck disable=SC2034  # read by scripts/lib/bridge-tables.sh
+  BRIDGE_TABLES_LOG="$tmp/port-forward.log"
+  bridge_tables_init || fail "cannot reach the catalog to list its tables"
+  object_catalogs=()
+  for catalog in "${CATALOGS[@]}"; do
+    case "$catalog" in
+      system|tpch|tpcds) ;;
+      *) object_catalogs+=("$catalog") ;;
+    esac
+  done
+  objects="$(bridge_tables "${object_catalogs[@]}")" || objects=""
+  [ -n "$objects" ] || echo "bridge-replay: no table found — the differential asks the catalog-level questions only" >&2
+  echo "bridge-replay: differential over ${#CATALOGS[@]} catalog(s) and $(printf '%s' "$objects" | grep -c . || true) table(s)"
+
+  printf '%s\n' "$objects" >"$tmp/objects.tsv"
+  pairs="$(python3 - "$tmp" "$tmp/objects.tsv" "$BRIDGE_ALLOW_PATH" "$BRIDGE_BATCH_PATH" \
+    "$BRIDGE_UPSTREAM_ALLOW_PATH" "$BRIDGE_UPSTREAM_BATCH_PATH" \
+    "${CATALOGS[@]}" -- "${PRINCIPALS[@]}" <<'PY'
+import json
+import sys
+
+out_dir, objects_path, front_allow, front_batch, upstream_allow, upstream_batch = sys.argv[1:7]
+args = sys.argv[7:]
+split = args.index("--")
+catalogs = args[:split]
+objects = [
+    line.split("\t")
+    for line in open(objects_path, encoding="utf-8").read().splitlines()
+    if line.strip()
+]
+principals = []
+for arg in args[split + 1:]:
+    name, sub = arg.rsplit("|", 1)
+    principals.append((name, sub))
+
+jobs = []
+meta = {}
+
+
+def add(label, body, batched=False):
+    """One question, asked twice: front entry point and the chart's own rule."""
+    job_id = "diff%04d" % len(meta)
+    meta[job_id] = label
+    if batched:
+        jobs.append((job_id + ".front", front_batch, body))
+        jobs.append((job_id + ".upstream", upstream_batch, body))
+    else:
+        jobs.append((job_id + ".front", front_allow, body))
+        jobs.append((job_id + ".upstream", upstream_allow, body))
+
+
+def envelope(user, action):
+    return json.dumps({"input": {
+        "context": {"identity": {"user": user, "groups": []},
+                    "softwareStack": {"trinoVersion": "480"}, "properties": {}},
+        "action": action,
+    }})
+
+
+for name, sub in principals:
+    for catalog in catalogs:
+        add("%s AccessCatalog %s" % (name, catalog),
+            envelope(sub, {"operation": "AccessCatalog",
+                           "resource": {"catalog": {"name": catalog}}}))
+        add("%s CreateSchema %s" % (name, catalog),
+            envelope(sub, {"operation": "CreateSchema",
+                           "resource": {"schema": {"catalogName": catalog,
+                                                   "schemaName": "replay_probe"}}}))
+        for catalog_name, namespace, table in objects:
+            if catalog_name != catalog:
+                continue
+            for operation in ("SelectFromColumns", "InsertIntoTable"):
+                add("%s %s %s.%s.%s" % (name, operation, catalog, namespace, table),
+                    envelope(sub, {"operation": operation,
+                                   "resource": {"table": {"catalogName": catalog,
+                                                          "schemaName": namespace,
+                                                          "tableName": table}}}))
+    add("%s FilterCatalogs" % name,
+        envelope(sub, {"operation": "FilterCatalogs",
+                       "filterResources": [{"catalog": {"name": catalog}}
+                                           for catalog in catalogs]}),
+        batched=True)
+
+with open(out_dir + "/jobs.tsv", "w", encoding="utf-8") as jobs_file:
+    for job_id, path, body in jobs:
+        jobs_file.write("%s\t%s\t%s\n" % (job_id, path, body))
+with open(out_dir + "/meta.json", "w", encoding="utf-8") as meta_file:
+    json.dump(meta, meta_file)
+print(len(meta))
+PY
+)"
+  [ "$pairs" -gt 0 ] || fail "the differential plan is empty"
+
+  start_probe_pod
+  ask_bridge
+
+  python3 - "$tmp" "${PRINCIPALS[@]}" <<'PY'
+import json
+import sys
+
+out_dir = sys.argv[1]
+names = [arg.rsplit("|", 1)[0] for arg in sys.argv[2:]]
+meta = json.load(open(out_dir + "/meta.json", encoding="utf-8"))
+
+answers = {}
+problems = []
+for line in open(out_dir + "/answers.tsv", encoding="utf-8"):
+    parts = line.rstrip("\n").split("\t")
+    if len(parts) != 3:
+        problems.append("malformed probe output: %r" % line[:120])
+        continue
+    job_id, code, payload = parts
+    if code != "200":
+        problems.append("%s: HTTP %s %s" % (job_id, code, payload[:120]))
+        continue
+    try:
+        parsed = json.loads(payload)
+    except ValueError:
+        problems.append("%s: answer is not JSON: %r" % (job_id, payload[:120]))
+        continue
+    if "result" not in parsed:
+        problems.append("%s: answer has no result: %r" % (job_id, payload[:120]))
+        continue
+    answers[job_id] = parsed["result"]
+
+
+def cell(value):
+    if value is True:
+        return "yes"
+    if value is False:
+        return "no"
+    if isinstance(value, list):
+        return "[" + ",".join(str(item) for item in value) + "]"
+    return json.dumps(value)
+
+
+print("\nThe differential — the front entry points against the chart's own rules")
+width = max([len(name) for name in names] + [9])
+question_width = max([len(label.split(" ", 1)[1]) for label in meta.values()] + [10])
+print("%-*s  %-*s  %-12s  %-12s  verdict" % (width, "principal", question_width, "question",
+                                             "front", "upstream"))
+
+differences = []
+for job_id, label in meta.items():
+    principal, question = label.split(" ", 1)
+    front = answers.get(job_id + ".front")
+    upstream = answers.get(job_id + ".upstream")
+    verdict = "ok" if front == upstream else "DIFFERS"
+    if front != upstream:
+        differences.append((label, front, upstream))
+    print("%-*s  %-*s  %-12s  %-12s  %s" % (
+        width, principal, question_width, question, cell(front), cell(upstream), verdict))
+
+if problems:
+    print("\nbridge-replay: the bridge did not answer cleanly:", file=sys.stderr)
+    for problem in problems:
+        print("  " + problem, file=sys.stderr)
+
+print("")
+if differences or problems:
+    for label, front, upstream in differences:
+        print("DIFFERENCE: %s — front %s, upstream %s" % (label, cell(front), cell(upstream)),
+              file=sys.stderr)
+    print("bridge-replay: the differential FAILED — %d question(s), %d difference(s)"
+          % (len(meta), len(differences)), file=sys.stderr)
+    sys.exit(1)
+print("bridge-replay: the differential is clean — %d question(s) asked twice, every answer equal"
+      % len(meta))
+PY
+  exit 0
+fi
+
 
 # 1b. The live layout: every Ready Catalog and the expectations the grants imply
 #    (platform#365). The matrix below is built from this file, not from a list of
@@ -132,14 +394,16 @@ python3 scripts/lib/catalog-layout.py \
 # 2. Build the plan: one job per (question, principal). The body is the
 #    captured input with `<sub>` (the asking person) and `<peer>` (the other
 #    person a query question is about) substituted; nothing else changes.
-jobs="$(python3 - "$FIXTURE" "$tmp" "$DATA_ONLY" "$tmp/layout.json" "${PRINCIPALS[@]}" <<'PY'
+jobs="$(python3 - "$FIXTURE" "$tmp" "$DATA_ONLY" "$tmp/layout.json" \
+  "$BRIDGE_BATCH_PATH" "$BRIDGE_ALLOW_PATH" "${PRINCIPALS[@]}" <<'PY'
 import json
 import sys
 
 fixture_path, out_dir, data_only, layout_path = (
     sys.argv[1], sys.argv[2], sys.argv[3] == "1", sys.argv[4])
+batch_path, allow_path = sys.argv[5], sys.argv[6]
 principals = []
-for arg in sys.argv[5:]:
+for arg in sys.argv[7:]:
     name, sub = arg.rsplit("|", 1)
     principals.append((name, sub))
 subs = [sub for _, sub in principals]
@@ -220,8 +484,11 @@ def add(job_id, section, operation, path, action, klass="grants", labels=None, e
         jobs.append({"id": "%s.%d" % (job_id, index), "path": path, "body": person_body})
 
 
-ALLOW = "/v1/data/trino/allow"
-BATCH = "/v1/data/trino/batch"
+# The two entry points Trino is configured with (scripts/lib/bridge.sh): the
+# stardelt front rules since platform#359. The chart's own rules are what
+# `--differential` compares them against.
+ALLOW = allow_path
+BATCH = batch_path
 MUST_ALLOW = {"ExecuteQuery", "ReadSystemInformation", "SetSystemSessionProperty", "ShowFunctions", "FilterFunctions"}
 OWNER_ONLY = {"ViewQueryOwnedBy", "FilterViewQueryOwnedBy", "KillQueryOwnedBy"}
 # ImpersonateUser is captured too, but its asking identity is the service
