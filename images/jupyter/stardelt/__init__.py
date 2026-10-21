@@ -444,7 +444,9 @@ def spark(app_name="stardelt-notebook"):
     its own and is ClusterIP-only, row/column masks are Trino-only (design
     ``multitenant-catalogs.md`` §5.8), and tables written through Spark use the
     cluster's shared storage credential — use Spark where Trino cannot, not to
-    bypass a policy. The token is never printed or returned.
+    bypass a policy. Public S3 buckets are readable anonymously (``s3a://`` and
+    ``s3://``); private buckets and the platform's own storage are not. The token is
+    never printed or returned.
     """
     from pyspark.sql import SparkSession
 

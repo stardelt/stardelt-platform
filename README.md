@@ -1545,6 +1545,32 @@ plus the Iceberg 1.12 runtime and AWS bundle. The jars are baked in at image bui
 time (checksum-verified from Maven Central), so a pod never downloads dependencies —
 the install stays air-gap-friendly when the registry is mirrored.
 
+### Reading public S3 with Spark
+
+A notebook can read a **public** S3 bucket directly — no catalog, no Iceberg table —
+with either URI form:
+
+```python
+spark = stardelt.spark()
+spark.read.csv("s3a://noaa-ghcn-pds/csv.gz/by_year/1763.csv.gz").count()
+spark.read.parquet("s3://ookla-open-data/parquet/performance/type=fixed/year=2023/quarter=1/").limit(5).show()
+```
+
+The image carries `hadoop-aws` 3.4.2 (Hadoop's S3A filesystem) and the AWS SDK v2
+bundle that version needs, so `s3a://` resolves; `s3://` is mapped to the same
+filesystem class (`spark.hadoop.fs.s3.impl`). Both are anonymous and **only**
+anonymous: `spark.hadoop.fs.s3a.aws.credentials.provider` is
+`AnonymousAWSCredentialsProvider`, so S3A never signs a request — a private bucket
+fails with an access error, and the platform's own storage (`s3a://lakehouse/`) is
+not readable this way. Read that data through Trino or an Iceberg table, where the
+catalog's grants apply.
+
+`spark.hadoop.fs.s3a.endpoint` is unset on purpose: S3A talks to AWS and resolves the
+bucket's region, so buckets in any region work. That also means the Spark pods use
+their internet egress. They have no NetworkPolicy (Spark is not part of the umbrella
+chart), so egress is open today; this feature adds no rule and no Secret. The jars
+ship in the image, so the only thing that leaves the cluster is the read itself.
+
 ### Shape and the memory budget
 
 One Deployment runs the Connect server as a long-running driver with **Kubernetes as

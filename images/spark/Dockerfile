@@ -36,9 +36,34 @@ ADD --checksum=sha256:dd7e49ffa4ac9b215bed846581991259e3aec9bb2fa08d6cec029c46cd
     https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-aws-bundle/${ICEBERG_VERSION}/iceberg-aws-bundle-${ICEBERG_VERSION}.jar \
     /opt/spark/jars/iceberg-aws-bundle.jar
 
+# Hadoop's S3A filesystem, so a notebook can read *public* S3 buckets with
+# `s3a://` (and `s3://`, mapped to the same class in manifests/spark.yaml).
+# The upstream image ships hadoop-client 3.4.2 without hadoop-aws, so
+# org.apache.hadoop.fs.s3a.S3AFileSystem does not exist. hadoop-aws must match
+# that client version exactly. S3A is pinned to the *anonymous* credentials
+# provider in manifests/spark.yaml: these jars never see the platform's S3 key —
+# that key belongs to Iceberg's S3FileIO, which is a different client.
+#
+# hadoop-aws 3.4.2 needs AWS SDK v2 at the version its pom names
+# (`aws-java-sdk-v2.version` of hadoop-project 3.4.2 = 2.29.52), shipped as the
+# single `software.amazon.awssdk:bundle` artifact; a different SDK version fails
+# at the first S3 call. The bundle is ~612 MiB uncompressed (under the 700 MiB
+# gate in platform#347; the per-module alternative was not needed).
+#
+# `--chmod=0644` on these two ADDs, not a `chmod` in the RUN below: the bundle
+# is large enough that a chmod would copy the whole file up into a second
+# ~536 MiB layer. The RUN still covers the Iceberg jars. Apache-2.0.
+ADD --checksum=sha256:d2d24e6b715b5656b9d238bf13b6682a07e2004dd36aad74a73aeb854319f4d9 --chmod=0644 \
+    https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.4.2/hadoop-aws-3.4.2.jar \
+    /opt/spark/jars/hadoop-aws-3.4.2.jar
+ADD --checksum=sha256:62638f33045690c6bc5e496b54b0b2e89a9ad38cbedacdf6e017fea6bc85f55c --chmod=0644 \
+    https://repo1.maven.org/maven2/software/amazon/awssdk/bundle/2.29.52/bundle-2.29.52.jar \
+    /opt/spark/jars/bundle-2.29.52.jar
+
 # `ADD <url>` lands the file as mode 0600; the container runs as the `spark`
 # user (uid 185), so make the jars world-readable or the JVM cannot load them.
-RUN chmod 0644 /opt/spark/jars/iceberg-spark-runtime.jar /opt/spark/jars/iceberg-aws-bundle.jar
+RUN chmod 0644 /opt/spark/jars/iceberg-spark-runtime.jar /opt/spark/jars/iceberg-aws-bundle.jar \
+    /opt/spark/jars/hadoop-aws-3.4.2.jar /opt/spark/jars/bundle-2.29.52.jar
 
 # Starts the Connect server in the foreground and fills in the one address that
 # only exists at runtime (the driver's pod IP). See the file for the details.
