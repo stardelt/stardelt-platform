@@ -39,7 +39,8 @@ subjects:
 # Nova lists `Pipeline` resources to show what is scheduled (J1, platform#254),
 # and Schedule creates, replaces (`PUT`, hence update not patch) and deletes them
 # (platform#270). It also reads `ServicePrincipal` resources to show which groups
-# have one.
+# have one, `Catalog` resources for the permission view, and `SqlWarehouse`
+# resources to show which compute class a person uses (nova#236).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -56,6 +57,9 @@ rules:
   - apiGroups: ["stardelt.io"]
     resources: ["catalogs"]
     verbs: ["get", "list", "patch"]
+  - apiGroups: ["stardelt.io"]
+    resources: ["sqlwarehouses"]
+    verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
