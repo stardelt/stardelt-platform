@@ -1396,19 +1396,40 @@ batch-check): the bridge fails closed before it calls Lakekeeper. The capture in
 repository is the request shape that avoids that.
 
 
-### Dev seed: four catalogs, three people, one matrix
+### Dev seed: the maintainer layout is the baseline, fixtures are opt-in
 
-A small permission set you can check by hand, for development and for demoing the model
-(platform#309). `make seed-dev-access YES=1` creates:
+The dev seed is a small permission set you can check by hand, for development and for
+demoing the model (platform#309). Its **baseline is the layout the maintainer runs** —
+`warehouse`, `shared`, `bronze`, `silver`, `gold`, each granted the four data verbs to
+`stardelt-users` (`dev/seed/catalogs.yaml`) — and the seed does not touch the Catalog
+objects at all unless you ask it to (layout decision, platform#365).
+
+`make seed-dev-access YES=1` creates the cheap, invisible half:
 
 | object | what it is |
 |---|---|
-| group `finops` | owns `finance`, reads and writes it |
-| group `analytics` | owns `product`, may read `finance` |
+| group `finops` | owns `finance` (when the fixtures are applied) |
+| group `analytics` | owns `product`, may read `finance` (when the fixtures are applied) |
 | users `dev-finops`, `dev-analytics`, `dev-outsider` | one person per row; all also in the default group `stardelt-users` |
 | the existing user `analyst` | added to `analytics` (a person, not a seed user) |
-| Catalogs `warehouse`, `finance`, `product`, `sandbox` | from `dev/seed/catalogs.yaml` |
-| schema `seed`, table `nation` (25 rows) | created in `finance`, `product` and `sandbox` through the Trino service account |
+
+It also runs one access-sync so the new memberships reach Lakekeeper now rather than on
+the next two-minute tick, and it prints that no Catalog was touched. It never recreates a
+Catalog that does not exist: if you deleted one, that was a decision, not drift. When you
+do want the file applied — a fresh cluster, or a deleted baseline catalog back — say so:
+
+```sh
+SEED_CATALOGS=1 make seed-dev-access YES=1   # apply dev/seed/catalogs.yaml (the five baseline Catalogs)
+```
+
+The **permission fixtures** are opt-in, for people who want group differences to exercise:
+`make seed-permission-fixtures YES=1` applies `dev/seed/fixtures/permission-fixtures.yaml`
+(Catalogs `finance`, `product`, `sandbox` with different grants per group) and creates the
+`schema seed`, `table nation` (25 rows from `tpch.tiny`) in each. They need the seed's
+people and groups, so run `make seed-dev-access YES=1` first; `make
+unseed-permission-fixtures YES=1` deletes exactly those three Catalogs and never a
+baseline one. Deleting a Catalog deletes no data, so the `seed` schema stays in the
+fixture warehouses (orphan warehouses to the next sync tick).
 
 `dev-outsider` gets no domain group: it is the row of `false`. All three seed users are
 marked in Keycloak with the attribute `stardelt-managed=seed`; that attribute is what
@@ -1425,47 +1446,58 @@ committed:
 kubectl -n stardelt get secret dev-seed-users -o jsonpath='{.data.dev-finops}' | base64 -d
 ```
 
-The matrix the grants encode, and the one `make verify-catalog-permissions` proves by
-asking the OPA bridge the same question Trino asks it (`POST
-http://lakekeeper-opa:8282/v1/data/trino/allow`, from a throwaway pod labelled like the
-Trino coordinator so `lakekeeper-ingress` admits it):
+`make verify-catalog-permissions` proves the permissions against the OPA bridge by asking
+it the same questions Trino asks (`POST http://lakekeeper-opa:8282/v1/data/trino/allow`,
+from a throwaway pod labelled like the Trino coordinator so `lakekeeper-ingress` admits
+it). Its expectation is **computed from the live Catalog objects and the live Keycloak
+group memberships**, not from a table in the script (platform#365): a person may do a
+verb when the union of their groups' grants holds it — `write ⇒ select ⇒ browse`,
+`create ⇒ browse` — and a member of `stardelt-admins` may do everything. Edit a grant in
+Nova and the next run follows it; no script change. Ownership is not a data verb: the
+owner group gets `manage_grants` only.
 
-| operation | `dev-finops` | `dev-analytics` | `dev-outsider` |
+| verb | question |
+|---|---|
+| `browse` | `AccessCatalog <catalog>` |
+| `select` | `SelectFromColumns <catalog>.seed.nation` |
+| `write` | `InsertIntoTable <catalog>.seed.nation` |
+| `create` | `CreateSchema <catalog>.seed_probe` |
+
+A table question on a table Lakekeeper does not have is answered `false` for everyone, so
+`select`/`write` rows are asked only where `<catalog>.seed.nation` exists (the fixtures
+create it in `finance`, `product` and `sandbox`) — the admin's own answer is the existence
+check. Everywhere else only `browse` and `create` rows are asked. With the fixtures the
+differentiated rows are the point:
+
+| catalog | `dev-finops` | `dev-analytics` | `dev-outsider` |
 |---|:--:|:--:|:--:|
-| `AccessCatalog finance` | true | true | false |
-| `SelectFromColumns finance.seed.nation` | true | true | false |
-| `InsertIntoTable finance.seed.nation` | true | false | false |
-| `AccessCatalog product` | true | true | false |
-| `SelectFromColumns product.seed.nation` | false | true | false |
-| `InsertIntoTable product.seed.nation` | false | true | false |
-| `AccessCatalog sandbox` | true | true | true |
-| `InsertIntoTable sandbox.seed.nation` | true | true | true |
-| `SelectFromColumns warehouse.covid.covid_summary` | true | true | true |
+| `finance` | browse, select, write, create | browse, select | — |
+| `product` | browse | browse, select, write, create | — |
+| `sandbox` | all four | all four | all four |
 
-`AccessCatalog` is `browse` (Lakekeeper `describe`) — on a catalog it is also the ability
-to address it, which is why it differs from a table's `select`. `warehouse` keeps today's
-behaviour for `stardelt-users` (browse, select, write, create); narrowing it is a later,
-announced change (internal note `design/multitenant-catalogs.md` §9 Q6). `sandbox` is the
-one new catalog every signed-in person may use.
+On the maintainer layout every grant is uniform, so every person passes every row — the
+oracle says so, and the equality itself is the check that group wiring works.
 
 ```sh
-make seed-dev-access YES=1        # idempotent: a second run reports everything as present
-make verify-catalog-permissions   # table of PASS/FAIL, exit 1 on any mismatch
-make unseed-dev-access YES=1      # delete the seed users, groups, catalogs and Secret
+make seed-dev-access YES=1              # groups, people, Secret; no Catalog touched
+SEED_CATALOGS=1 make seed-dev-access YES=1   # also apply dev/seed/catalogs.yaml
+make verify-catalog-permissions         # PASS/FAIL table from the live objects; exit 1 on a mismatch
+make seed-permission-fixtures YES=1     # opt-in finance/product/sandbox + seed.nation
+make unseed-permission-fixtures YES=1   # remove exactly those three Catalogs
+make unseed-dev-access YES=1            # delete the seed people, groups and Secret (keeps every Catalog)
 ```
 
-Both mutating targets need `YES=1` and refuse when ConfigMap `stardelt-identity` says
-`environment: production`: this is a development aid, not an install step. The seed runs
-`make access-sync-now` and `make catalogs`, so the first run restarts Trino once (the
-catalog set changed) and takes about a minute.
+Every mutating target needs `YES=1` and refuses when ConfigMap `stardelt-identity` says
+`environment: production`: this is a development aid, not an install step. `make
+seed-dev-access` does not roll Trino — only `SEED_CATALOGS=1`, the two fixture targets and
+a deleted catalog change the catalog set, and those converge through `make catalogs`
+(about a minute, and the coordinator restart drops running queries: pick a quiet moment).
 
-`unseed` deletes only what the seed created: the users and groups carrying
-`stardelt-managed=seed`, the Catalogs `finance`, `product` and `sandbox`, and Secret
-`dev-seed-users` (its passwords belong to users that no longer exist). It never deletes
-the `warehouse` Catalog, a Lakekeeper warehouse, a schema or a table — deleting a Catalog
-deletes no data. The `seed` schema stays, the seed warehouses stay (reported as orphan
-warehouses by the next sync tick), and `analyst` stays a person. Run `make catalogs` after
-an unseed if you want Trino to forget the removed catalogs before the next seed.
+`unseed-dev-access` deletes only what the seed created: the users and groups carrying
+`stardelt-managed=seed` and Secret `dev-seed-users` (its passwords belong to users that no
+longer exist). It never deletes a Catalog, a Lakekeeper warehouse, a schema or a table.
+`analyst` stays a person; the baseline Catalogs and the fixtures stay until you run the
+fixtures' own unseed.
 
 ---
 
@@ -1881,8 +1913,9 @@ scripts/
   identity-bootstrap.sh Generate the IdP Secrets + render realm/identity ConfigMaps
   keycloak-sync-trino-client.sh  Sync the live realm's Trino token settings (import skips an existing realm)
   lib/keycloak-admin.sh Shared Keycloak admin-API access (port-forward, forwarded headers, master token)
-  seed-dev-access.sh    Dev seed: groups, people, four Catalogs, the seed tables (platform#309)
-  verify-catalog-permissions.sh  Prove the permission matrix against the OPA bridge (platform#309)
+  seed-dev-access.sh    Dev seed: groups, people, Secret (baseline Catalogs only with SEED_CATALOGS=1); opt-in permission fixtures (platform#309, #365)
+  lib/catalog-layout.py The permission oracle: expected grants from the live Catalog objects and Keycloak groups (platform#365)
+  verify-catalog-permissions.sh  Prove the live Catalog grants against the OPA bridge (platform#309, #365)
   lint.sh               bash -n + ShellCheck the shell scripts (make lint)
   port-forwards.sh      Background port-forwards to all services
   protect-branches.sh   Apply `main` branch protection in all five stardelt repos

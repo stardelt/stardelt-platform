@@ -589,28 +589,38 @@ catalogs: _context ## Converge Catalogs into Trino catalogs + bridge mappings (r
 	@$(MAKE) --no-print-directory trino
 
 # ---------------------------------------------------------------------------
-# Dev seed (platform#309, authz 7/8) — a small, repeatable permission set a
-# person can check by hand: two domain groups (`finops`, `analytics`), three
-# seed people (plus the existing `analyst`), and four catalogs (warehouse,
-# finance, product, sandbox) whose grants are the matrix
-# `make verify-catalog-permissions` proves against the OPA bridge.
+# Dev seed (platform#309, layout platform#365) — a small, repeatable permission
+# set a person can check by hand: two domain groups (`finops`, `analytics`) and
+# three seed people (plus the existing `analyst`). The baseline layout is the
+# maintainer's five Catalogs (warehouse, shared, bronze, silver, gold); the seed
+# creates groups, people and their Secret but does NOT apply
+# dev/seed/catalogs.yaml unless SEED_CATALOGS=1 (that is how a deleted baseline
+# Catalog comes back). The differentiated fixtures (finance, product, sandbox,
+# with seed.nation) are opt-in: `make seed-permission-fixtures YES=1`.
 #
 # The seed is a development aid, never an install step: it refuses when
-# ConfigMap `stardelt-identity` says environment=production, and both targets
-# need YES=1. Passwords are generated at run time and stored only in Secret
-# `dev-seed-users` (one key per user name) — never printed, never committed.
-# A second seed run changes nothing; `unseed` deletes only what carries the
-# Keycloak attribute `stardelt-managed=seed`, the three seed Catalogs and that
-# Secret — never `warehouse`, a Lakekeeper warehouse, or data.
+# ConfigMap `stardelt-identity` says environment=production, and every mutating
+# target needs YES=1. Passwords are generated at run time and stored only in
+# Secret `dev-seed-users` (one key per user name) — never printed, never
+# committed. A second seed run changes nothing; `unseed` deletes only what
+# carries the Keycloak attribute `stardelt-managed=seed` and that Secret — never
+# a Catalog, a Lakekeeper warehouse, or data.
 # ---------------------------------------------------------------------------
-.PHONY: seed-dev-access unseed-dev-access verify-catalog-permissions
-seed-dev-access: _context ## Create the dev seed groups, people, four catalogs and the seed tables (needs YES=1)
-	@NAMESPACE=$(NAMESPACE) YES=$(YES) bash scripts/seed-dev-access.sh
+.PHONY: seed-dev-access unseed-dev-access seed-permission-fixtures unseed-permission-fixtures
+.PHONY: verify-catalog-permissions
+seed-dev-access: _context ## Create the dev seed groups, people and Secret (no Catalog unless SEED_CATALOGS=1; needs YES=1)
+	@NAMESPACE=$(NAMESPACE) YES=$(YES) SEED_CATALOGS=$(SEED_CATALOGS) bash scripts/seed-dev-access.sh
 
-unseed-dev-access: _context ## Remove the dev seed users, groups, seed catalogs and their Secret (needs YES=1)
+unseed-dev-access: _context ## Remove the dev seed users, groups and their Secret (keeps every Catalog; needs YES=1)
 	@NAMESPACE=$(NAMESPACE) YES=$(YES) bash scripts/seed-dev-access.sh --unseed
 
-verify-catalog-permissions: _context ## Prove the permission matrix against the OPA bridge (exit 1 on any mismatch)
+seed-permission-fixtures: _context ## Create the opt-in finance/product/sandbox Catalogs and their seed.nation tables (needs YES=1)
+	@NAMESPACE=$(NAMESPACE) YES=$(YES) bash scripts/seed-dev-access.sh --fixtures
+
+unseed-permission-fixtures: _context ## Remove the opt-in finance/product/sandbox Catalogs (never a baseline one; needs YES=1)
+	@NAMESPACE=$(NAMESPACE) YES=$(YES) bash scripts/seed-dev-access.sh --unseed-fixtures
+
+verify-catalog-permissions: _context ## Prove the live Catalog grants against the OPA bridge (exit 1 on any mismatch)
 	@NAMESPACE=$(NAMESPACE) bash scripts/verify-catalog-permissions.sh
 
 # ---------------------------------------------------------------------------

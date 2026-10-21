@@ -1,37 +1,49 @@
 #!/usr/bin/env bash
-# The dev seed: groups, people, four catalogs and the permission matrix
-# (authz 7/8, stardelt-platform#309).
+# The dev seed: groups, people, the baseline layout and the opt-in permission
+# fixtures (authz 7/8, stardelt-platform#309; layout platform#365).
 #
-#   make seed-dev-access YES=1
-#   make unseed-dev-access YES=1
+#   make seed-dev-access YES=1            # groups, people, Secret — no Catalog touched
+#   SEED_CATALOGS=1 make seed-dev-access YES=1   # also apply dev/seed/catalogs.yaml
+#   make unseed-dev-access YES=1          # delete the seed people, groups and Secret
+#   make seed-permission-fixtures YES=1   # opt-in: finance/product/sandbox + seed.nation
+#   make unseed-permission-fixtures YES=1 # delete exactly those three Catalogs
 #
-# `seed` creates the realm groups `finops` and `analytics`, three people
-# (`dev-finops`, `dev-analytics`, `dev-outsider`, all also in the default group
-# `stardelt-users`), adds the existing user `analyst` to `analytics`, applies
-# dev/seed/catalogs.yaml (four `Catalog` objects), runs the access sync, renders
-# the new catalogs into Trino and the bridge (`make catalogs`), and creates the
-# table `seed.nation` in finance, product and sandbox for the matrix to read.
+# The baseline is the maintainer's layout: `warehouse`, `shared`, `bronze`,
+# `silver`, `gold`, each granted the four data verbs to `stardelt-users`
+# (dev/seed/catalogs.yaml). The seed does NOT apply that file unless
+# `SEED_CATALOGS=1`, and it never recreates a Catalog that does not exist without
+# it: the Catalog objects belong to whoever runs the cluster, and a deleted one
+# may be a decision, not drift.
+#
+# What every seed run does create is cheap and invisible: the realm groups
+# `finops` and `analytics`, the people `dev-finops`, `dev-analytics`,
+# `dev-outsider` (all also in `stardelt-users`), the existing user `analyst` in
+# `analytics`, Secret `dev-seed-users` with their generated passwords, and one
+# access-sync run so the new memberships reach Lakekeeper now, not on the next
+# two-minute tick. That sync writes a Catalog status only when it drifted.
 #
 # Passwords: generated here, 24 random letters and digits, never printed. They
 # live only in Secret `dev-seed-users` (one key per user name). Read one with
 #
 #   kubectl -n stardelt get secret dev-seed-users -o jsonpath='{.data.dev-finops}' | base64 -d
 #
-# A second run changes nothing: every group, user, membership, catalog, schema
-# and table is created only when absent, and a user that already exists keeps
-# its password. The seed is marked in Keycloak with the attribute
+# A second run changes nothing: every group, user, membership, Catalog, schema
+# and table is created only when absent, and a user that already exists keeps its
+# password. The seed is marked in Keycloak with the attribute
 # `stardelt-managed=seed`, which is what `unseed` deletes — it never touches a
-# user, group or catalog it did not create (`analyst`, `warehouse`).
+# user or group it did not create (`analyst`), and it deletes no Catalog.
 #
-# `unseed` deletes the seed users and groups (by that attribute), the three seed
-# Catalog objects (never `warehouse`), and Secret `dev-seed-users`, whose
-# passwords belong to users that no longer exist. It never deletes a Lakekeeper
-# warehouse, a schema or a table: deleting a Catalog deletes no data (design
-# `design/multitenant-catalogs.md` §2.5), and `analyst` stays in `analytics`.
+# The permission fixtures are the old three-catalog matrix (finance, product,
+# sandbox) with different grants per group, plus the `seed.nation` table (25 rows
+# from tpch.tiny) in each: for people who want to exercise group differences.
+# They need the seed's people and groups, so run `make seed-dev-access YES=1`
+# first; `unseed-permission-fixtures` deletes exactly the three Catalogs and
+# never a baseline one. Deleting a Catalog deletes no data, so the seed schema
+# stays in the fixture warehouses (orphan warehouses to the next sync tick).
 #
 # Refuses when ConfigMap `stardelt-identity` says `environment: production`: a
 # seed of fake people and open catalogs is a development aid, not an install
-# step. Both modes need YES=1.
+# step. Every mutating mode needs YES=1.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -39,6 +51,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 NAMESPACE="${NAMESPACE:-stardelt}"
 REALM="${REALM:-stardelt}"
 YES="${YES:-0}"
+SEED_CATALOGS="${SEED_CATALOGS:-0}"
 
 SEED_GROUPS=(finops analytics)
 SEED_USERS=(dev-finops dev-analytics dev-outsider)
@@ -47,7 +60,9 @@ SEED_ATTRIBUTE=stardelt-managed
 SEED_VALUE=seed
 SEED_SECRET=dev-seed-users
 CATALOGS_FILE=dev/seed/catalogs.yaml
-SEED_CATALOGS=(finance product sandbox)
+BASELINE_CATALOGS=(warehouse shared bronze silver gold)
+FIXTURES_FILE=dev/seed/fixtures/permission-fixtures.yaml
+FIXTURES_CATALOGS=(finance product sandbox)
 SEED_SCHEMA=seed
 SEED_TABLE=nation
 
@@ -56,11 +71,13 @@ CURL=(curl --fail-with-body --silent --show-error --max-time 30)
 fail() { echo "seed-dev-access: $*" >&2; exit 1; }
 
 mode=seed
-if [ "${1:-}" = "--unseed" ]; then
-  mode=unseed
-  shift
-fi
-[ "$#" -eq 0 ] || fail "unexpected argument '$1' (only --unseed is accepted)"
+case "${1:-}" in
+  "") ;;
+  --unseed) mode=unseed ;;
+  --fixtures) mode=fixtures ;;
+  --unseed-fixtures) mode=unseed-fixtures ;;
+  *) fail "unexpected argument '$1' (accepted: --unseed, --fixtures, --unseed-fixtures)" ;;
+esac
 
 for tool in kubectl curl jq python3 base64; do
   command -v "$tool" >/dev/null 2>&1 || { echo "seed-dev-access: $tool not found" >&2; exit 1; }
@@ -73,21 +90,66 @@ environment="$(kubectl -n "$NAMESPACE" get configmap stardelt-identity -o jsonpa
   || fail "refusing: ConfigMap $NAMESPACE/stardelt-identity says environment=production — the dev seed is not for this cluster"
 
 if [ "$YES" != 1 ]; then
-  if [ "$mode" = unseed ]; then
-    echo "would delete the seed users and groups (attribute $SEED_ATTRIBUTE=$SEED_VALUE), the Catalogs ${SEED_CATALOGS[*]} and Secret $NAMESPACE/$SEED_SECRET — re-run with YES=1"
-  else
-    echo "would create the groups ${SEED_GROUPS[*]}, the users ${SEED_USERS[*]}, the Catalogs in $CATALOGS_FILE and the table $SEED_SCHEMA.$SEED_TABLE in ${SEED_CATALOGS[*]} — re-run with YES=1"
-  fi
+  case "$mode" in
+    unseed)
+      echo "would delete the seed users and groups (attribute $SEED_ATTRIBUTE=$SEED_VALUE) and Secret $NAMESPACE/$SEED_SECRET (no Catalog is deleted) — re-run with YES=1" ;;
+    fixtures)
+      echo "would apply $FIXTURES_FILE (Catalogs ${FIXTURES_CATALOGS[*]}) and create $SEED_SCHEMA.$SEED_TABLE in them — re-run with YES=1" ;;
+    unseed-fixtures)
+      echo "would delete the Catalogs ${FIXTURES_CATALOGS[*]} (never a baseline one) — re-run with YES=1" ;;
+    *)
+      if [ "$SEED_CATALOGS" = 1 ]; then
+        echo "would create the groups ${SEED_GROUPS[*]}, the users ${SEED_USERS[*]}, Secret $NAMESPACE/$SEED_SECRET, and apply $CATALOGS_FILE (SEED_CATALOGS=1) — re-run with YES=1"
+      else
+        echo "would create the groups ${SEED_GROUPS[*]}, the users ${SEED_USERS[*]} and Secret $NAMESPACE/$SEED_SECRET; no Catalog would be touched (set SEED_CATALOGS=1 to apply $CATALOGS_FILE) — re-run with YES=1"
+      fi ;;
+  esac
   exit 1
 fi
 
 umask 077
 tmp="$(mktemp -d)"
 cleanup() {
-  keycloak_admin_stop
+  # `unseed-fixtures` never sources the Keycloak helper, so the function is
+  # not defined in every mode.
+  if declare -F keycloak_admin_stop >/dev/null; then keycloak_admin_stop; fi
   rm -rf "$tmp"
 }
 trap cleanup EXIT
+
+# ---------------------------------------------------------------------------
+# unseed-fixtures — no Keycloak needed: delete exactly the fixture Catalogs,
+# then converge Trino and the bridge so they forget the removed names.
+# ---------------------------------------------------------------------------
+converge_catalogs() {
+  NAMESPACE="$NAMESPACE" make --no-print-directory catalogs
+  # `make catalogs` rolls the coordinator and the worker when the catalog set
+  # changed, and Helm's --wait returns before the worker listens again: a
+  # statement in that window dies with "too many errors talking to a worker
+  # node". Wait for both.
+  for deployment in trino-coordinator trino-worker; do
+    kubectl -n "$NAMESPACE" rollout status "deploy/$deployment" --timeout=5m >/dev/null \
+      || fail "Trino deployment $deployment did not become ready"
+  done
+}
+
+report_catalog_phases() {
+  local phases
+  phases="$(kubectl -n "$NAMESPACE" get catalogs.stardelt.io -o json \
+    | jq -r '[.items[] | "\(.metadata.name) \(.status.phase // "Pending")"] | join(", ")')"
+  echo "› catalogs: $phases"
+}
+
+if [ "$mode" = unseed-fixtures ]; then
+  kubectl -n "$NAMESPACE" delete catalog "${FIXTURES_CATALOGS[@]}" --ignore-not-found \
+    || fail "cannot delete the fixture Catalogs ${FIXTURES_CATALOGS[*]}"
+  converge_catalogs
+  report_catalog_phases
+  echo "› kept: the baseline Catalogs, every Lakekeeper warehouse and the $SEED_SCHEMA schema"
+  echo "  with its $SEED_TABLE tables — deleting a Catalog deletes no data."
+  echo "seed-dev-access: OK — the permission fixtures ${FIXTURES_CATALOGS[*]} are gone"
+  exit 0
+fi
 
 # 1. The admin API on loopback: port-forward, forwarded headers, master token and
 #    the realm check (scripts/lib/keycloak-admin.sh). Leaves KC/HEAD/AUTH/API.
@@ -98,7 +160,7 @@ KC_LOG_PREFIX=seed-dev-access
 
 kc() { "${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" "$@"; }
 
-# The groups the matrix is about, by name -> id. One read, both modes use it.
+# The groups the matrix is about, by name -> id. One read, every mode uses it.
 groups_json="$tmp/groups.json"
 kc --get --data-urlencode 'max=500' --data-urlencode 'briefRepresentation=false' "$API/groups" >"$groups_json" \
   || fail "cannot list the groups of realm $REALM"
@@ -112,8 +174,14 @@ seed_users_json() {
         'map(select((.attributes // {})[$attr] // [] | index($value)))'
 }
 
+user_id() { # user_id <username> -> the Keycloak id, empty when absent
+  kc --get --data-urlencode "username=$1" --data-urlencode 'exact=true' "$API/users" \
+    | jq -r '.[0].id // ""'
+}
+
 # ---------------------------------------------------------------------------
-# unseed
+# unseed — the people, their groups and the Secret. The Catalogs stay: the
+# baseline is the maintainer's layout and the fixtures have their own target.
 # ---------------------------------------------------------------------------
 if [ "$mode" = unseed ]; then
   users="$(seed_users_json)"
@@ -141,15 +209,107 @@ if [ "$mode" = unseed ]; then
         done
   fi
 
-  kubectl -n "$NAMESPACE" delete catalog "${SEED_CATALOGS[@]}" --ignore-not-found \
-    || fail "cannot delete the seed Catalogs"
   kubectl -n "$NAMESPACE" delete secret "$SEED_SECRET" --ignore-not-found >/dev/null \
     || fail "cannot delete Secret $NAMESPACE/$SEED_SECRET"
   echo "› secret $NAMESPACE/$SEED_SECRET: deleted (its passwords belonged to deleted users)"
-  echo "› kept: Catalog warehouse, every Lakekeeper warehouse and the $SEED_SCHEMA schema"
-  echo "  with its $SEED_TABLE tables — deleting a Catalog deletes no data. The existing user"
-  echo "  analyst is not a seed object and is left alone."
-  echo "seed-dev-access: OK — the dev seed is gone"
+  echo "› kept: every Catalog (the baseline ${BASELINE_CATALOGS[*]}, and the fixtures if applied),"
+  echo "  every Lakekeeper warehouse and every table — deleting a Catalog deletes no data anyway."
+  echo "  The existing user analyst is not a seed object and is left alone."
+  echo "seed-dev-access: OK — the dev seed people are gone"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# fixtures — the opt-in three catalogs. They reference the seed's groups and
+# the probe asks as the seed's people, so both must already exist.
+# ---------------------------------------------------------------------------
+if [ "$mode" = fixtures ]; then
+  missing=()
+  for group in "${SEED_GROUPS[@]}"; do
+    [ -n "$(group_id "$group")" ] || missing+=("group $group")
+  done
+  for user in "${SEED_USERS[@]}"; do
+    [ -n "$(user_id "$user")" ] || missing+=("user $user")
+  done
+  [ "${#missing[@]}" -eq 0 ] \
+    || fail "the permission fixtures need the dev seed's people and groups (missing: ${missing[*]}) — run 'make seed-dev-access YES=1' first"
+
+  [ -f "$FIXTURES_FILE" ] || fail "$FIXTURES_FILE is missing"
+  kubectl apply -f "$FIXTURES_FILE"
+  converge_catalogs
+
+  # The data the probe reads: schema `seed`, table `nation` (25 rows from
+  # tpch.tiny) in every fixture catalog, through the Trino service account.
+  kubectl -n "$NAMESPACE" get secret trino-password-db -o jsonpath='{.data.superset-password}' | base64 -d >"$tmp/superset-pw"
+  [ -s "$tmp/superset-pw" ] || fail "Secret $NAMESPACE/trino-password-db has no superset-password — run 'make install-identity'"
+
+  public_url="$(kubectl -n "$NAMESPACE" get configmap stardelt-identity -o jsonpath='{.data.publicUrl}' 2>/dev/null || true)"
+  TRINO_URL="${TRINO_URL:-https://trino.${public_url#https://}}"
+  [ -n "${TRINO_URL#https://trino.}" ] || TRINO_URL="https://trino.alpha.dev.stardelt.io"
+
+  # Runs one statement as `superset` and prints its rows as JSON.
+  trino_statement() {
+    python3 - "$TRINO_URL" "$tmp/superset-pw" "$1" <<'PY'
+import base64, json, sys, urllib.error, urllib.request
+url, password_file, sql = sys.argv[1].rstrip("/"), sys.argv[2], sys.argv[3]
+password = open(password_file).read().strip()
+auth = "Basic " + base64.b64encode(("superset:" + password).encode()).decode()
+headers = {"Authorization": auth, "Content-Type": "text/plain"}
+
+
+def call(endpoint, data=None):
+    request = urllib.request.Request(endpoint, data=data, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=180) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        sys.exit("HTTP %s from Trino: %s" % (error.code, error.read().decode()[:300]))
+
+
+body = call(url + "/v1/statement", sql.encode())
+rows = list(body.get("data") or [])
+while True:
+    if body.get("error"):
+        sys.exit("Trino: " + str(body["error"].get("message", ""))[:300])
+    if not body.get("nextUri"):
+        break
+    body = call(body["nextUri"])
+    rows.extend(body.get("data") or [])
+print(json.dumps(rows))
+PY
+  }
+
+  # Runs a statement, retrying a window in which a Trino pod is still coming back.
+  trino_retry() {  # trino_retry <sql>
+    local attempt=1 output
+    while :; do
+      if output="$(trino_statement "$1")"; then
+        printf '%s' "$output"
+        return 0
+      fi
+      if [ "$attempt" -ge 6 ]; then
+        fail "Trino refused this statement 6 times — the last error is above: $1"
+      fi
+      attempt=$((attempt + 1))
+      sleep 10
+    done
+  }
+
+  for catalog in "${FIXTURES_CATALOGS[@]}"; do
+    trino_retry "CREATE SCHEMA IF NOT EXISTS $catalog.$SEED_SCHEMA" >/dev/null
+    trino_retry "CREATE TABLE IF NOT EXISTS $catalog.$SEED_SCHEMA.$SEED_TABLE AS SELECT * FROM tpch.tiny.nation" >/dev/null
+    rows="$(trino_retry "SELECT count(*) AS rows FROM $catalog.$SEED_SCHEMA.$SEED_TABLE")"
+    count="$(printf '%s' "$rows" | jq -r '.[0][0] // ""')"
+    [ "$count" = 25 ] || fail "$catalog.$SEED_SCHEMA.$SEED_TABLE has $rows rows, expected 25"
+    echo "› table $catalog.$SEED_SCHEMA.$SEED_TABLE: 25 rows"
+  done
+
+  report_catalog_phases
+  echo ""
+  echo "seed-dev-access: OK — permission fixtures ${FIXTURES_CATALOGS[*]} with differentiated grants"
+  echo "  the baseline Catalogs are untouched; the marker $SEED_ATTRIBUTE=$SEED_VALUE applies to Keycloak only"
+  echo "  prove the live objects: make verify-catalog-permissions"
+  echo "  remove them: make unseed-permission-fixtures YES=1"
   exit 0
 fi
 
@@ -242,9 +402,9 @@ PY
     || fail "Keycloak refused unmanagedAttributePolicy=ADMIN_EDIT on the realm's user profile"
   echo "› realm user profile: unmanaged attributes ADMIN_EDIT (the seed marker needs it)"
 fi
-# Each seed user is in `stardelt-users` (so the legacy warehouse keeps working
+# Each seed user is in `stardelt-users` (so the baseline catalogs keep working
 # for them) plus its domain group. `dev-outsider` gets no domain: it is the row
-# of FALSE in the matrix.
+# of FALSE in the permission fixtures.
 user_groups() {
   case "$1" in
     dev-finops) echo "$DEFAULT_GROUP finops" ;;
@@ -254,8 +414,7 @@ user_groups() {
 }
 
 for user in "${SEED_USERS[@]}"; do
-  uid="$(kc --get --data-urlencode "username=$user" --data-urlencode 'exact=true' "$API/users" \
-    | jq -r '.[0].id // ""')"
+  uid="$(user_id "$user")"
   if [ -z "$uid" ]; then
     [ -f "$tmp/secret/$user" ] || new_password "$user"
     python3 - "$tmp/secret/$user" "$user" "$SEED_ATTRIBUTE" "$SEED_VALUE" >"$tmp/user-$user.json" <<'PY'
@@ -276,8 +435,7 @@ json.dump({
 PY
     kc -H 'Content-Type: application/json' -X POST --data @"$tmp/user-$user.json" "$API/users" >/dev/null \
       || fail "Keycloak refused to create user $user"
-    uid="$(kc --get --data-urlencode "username=$user" --data-urlencode 'exact=true' "$API/users" \
-      | jq -r '.[0].id // ""')"
+    uid="$(user_id "$user")"
     [ -n "$uid" ] || fail "user $user was created but cannot be read back"
     echo "› user $user: created"
   else
@@ -322,8 +480,7 @@ done
 # seed — 4. the existing user `analyst` joins analytics (ADR: the matrix has a
 # person whose login predates the seed)
 # ---------------------------------------------------------------------------
-analyst_id="$(kc --get --data-urlencode 'username=analyst' --data-urlencode 'exact=true' "$API/users" \
-  | jq -r '.[0].id // ""')"
+analyst_id="$(user_id analyst)"
 [ -n "$analyst_id" ] || fail "the realm has no user analyst — the realm import is incomplete"
 if kc "$API/users/$analyst_id/groups" | jq -r '.[].name' | grep -qx analytics; then
   echo "› existing user analyst: already a member of analytics"
@@ -336,102 +493,30 @@ fi
 apply_seed_secret
 
 # ---------------------------------------------------------------------------
-# seed — 5. the four catalogs, the sync and the engine
+# seed — 5. the baseline Catalogs, only when asked
 # ---------------------------------------------------------------------------
-[ -f "$CATALOGS_FILE" ] || fail "$CATALOGS_FILE is missing"
-kubectl apply -f "$CATALOGS_FILE"
-
-NAMESPACE="$NAMESPACE" make --no-print-directory access-sync-now
-NAMESPACE="$NAMESPACE" make --no-print-directory catalogs
-
-# `make catalogs` rolls the coordinator and the worker when the catalog set
-# changed, and Helm's --wait returns before the worker listens again: a statement
-# in that window dies with "too many errors talking to a worker node" (seen on
-# the first run of this seed). Wait for both, then let the statements retry a
-# restart away — a real error is not transient and still fails them all.
-for deployment in trino-coordinator trino-worker; do
-  kubectl -n "$NAMESPACE" rollout status "deploy/$deployment" --timeout=5m >/dev/null \
-    || fail "Trino deployment $deployment did not become ready"
-done
-
-# ---------------------------------------------------------------------------
-# seed — 6. the data the matrix reads: schema `seed`, table `nation` (25 rows
-# from tpch.tiny) in every seed catalog, through the Trino service account
-# (check 2 of scripts/verify-trino-auth.sh)
-# ---------------------------------------------------------------------------
-kubectl -n "$NAMESPACE" get secret trino-password-db -o jsonpath='{.data.superset-password}' | base64 -d >"$tmp/superset-pw"
-[ -s "$tmp/superset-pw" ] || fail "Secret $NAMESPACE/trino-password-db has no superset-password — run 'make install-identity'"
-
-public_url="$(kubectl -n "$NAMESPACE" get configmap stardelt-identity -o jsonpath='{.data.publicUrl}' 2>/dev/null || true)"
-TRINO_URL="${TRINO_URL:-https://trino.${public_url#https://}}"
-[ -n "${TRINO_URL#https://trino.}" ] || TRINO_URL="https://trino.alpha.dev.stardelt.io"
-
-# Runs one statement as `superset` and prints its rows as JSON.
-trino_statement() {
-  python3 - "$TRINO_URL" "$tmp/superset-pw" "$1" <<'PY'
-import base64, json, sys, urllib.error, urllib.request
-url, password_file, sql = sys.argv[1].rstrip("/"), sys.argv[2], sys.argv[3]
-password = open(password_file).read().strip()
-auth = "Basic " + base64.b64encode(("superset:" + password).encode()).decode()
-headers = {"Authorization": auth, "Content-Type": "text/plain"}
-
-
-def call(endpoint, data=None):
-    request = urllib.request.Request(endpoint, data=data, headers=headers)
-    try:
-        with urllib.request.urlopen(request, timeout=180) as response:
-            return json.load(response)
-    except urllib.error.HTTPError as error:
-        sys.exit("HTTP %s from Trino: %s" % (error.code, error.read().decode()[:300]))
-
-
-body = call(url + "/v1/statement", sql.encode())
-rows = list(body.get("data") or [])
-while True:
-    if body.get("error"):
-        sys.exit("Trino: " + str(body["error"].get("message", ""))[:300])
-    if not body.get("nextUri"):
-        break
-    body = call(body["nextUri"])
-    rows.extend(body.get("data") or [])
-print(json.dumps(rows))
-PY
-}
-
-# Runs a statement, retrying a window in which a Trino pod is still coming back.
-trino_retry() {  # trino_retry <sql>
-  local attempt=1 output
-  while :; do
-    if output="$(trino_statement "$1")"; then
-      printf '%s' "$output"
-      return 0
-    fi
-    if [ "$attempt" -ge 6 ]; then
-      fail "Trino refused this statement 6 times — the last error is above: $1"
-    fi
-    attempt=$((attempt + 1))
-    sleep 10
-  done
-}
-
-for catalog in "${SEED_CATALOGS[@]}"; do
-  trino_retry "CREATE SCHEMA IF NOT EXISTS $catalog.$SEED_SCHEMA" >/dev/null
-  trino_retry "CREATE TABLE IF NOT EXISTS $catalog.$SEED_SCHEMA.$SEED_TABLE AS SELECT * FROM tpch.tiny.nation" >/dev/null
-  rows="$(trino_retry "SELECT count(*) AS rows FROM $catalog.$SEED_SCHEMA.$SEED_TABLE")"
-  count="$(printf '%s' "$rows" | jq -r '.[0][0] // ""')"
-  [ "$count" = 25 ] || fail "$catalog.$SEED_SCHEMA.$SEED_TABLE has $rows rows, expected 25"
-  echo "› table $catalog.$SEED_SCHEMA.$SEED_TABLE: 25 rows"
-done
-trino_retry "SELECT count(*) FROM warehouse.covid.covid_summary" >/dev/null \
-  || fail "warehouse.covid.covid_summary is not readable with the service account — the warehouse catalog broke"
-
-phases="$(kubectl -n "$NAMESPACE" get catalogs.stardelt.io -o json \
-  | jq -r '[.items[] | "\(.metadata.name) \(.status.phase // "Pending")"] | join(", ")')"
-echo "› catalogs: $phases"
+if [ "$SEED_CATALOGS" = 1 ]; then
+  [ -f "$CATALOGS_FILE" ] || fail "$CATALOGS_FILE is missing"
+  kubectl apply -f "$CATALOGS_FILE"
+  converge_catalogs
+  report_catalog_phases
+else
+  # The people and their roles still have to reach Lakekeeper now, not on the
+  # next two-minute tick. The sync patches a Catalog status only when it drifted.
+  NAMESPACE="$NAMESPACE" make --no-print-directory access-sync-now
+  echo "› catalogs: not touched — the baseline layout is the maintainer's (${BASELINE_CATALOGS[*]});"
+  echo "  set SEED_CATALOGS=1 to apply $CATALOGS_FILE"
+fi
 
 echo ""
-echo "seed-dev-access: OK — groups ${SEED_GROUPS[*]}, users ${SEED_USERS[*]}, Catalogs warehouse finance product sandbox"
+echo "seed-dev-access: OK — groups ${SEED_GROUPS[*]}, users ${SEED_USERS[*]}, Secret $NAMESPACE/$SEED_SECRET"
 echo "  passwords are only in Secret $NAMESPACE/$SEED_SECRET (one key per user name); read one with:"
 echo "    kubectl -n $NAMESPACE get secret $SEED_SECRET -o jsonpath='{.data.dev-finops}' | base64 -d"
-echo "  the matrix: make verify-catalog-permissions"
-echo "  remove the seed: make unseed-dev-access YES=1"
+echo "  the permissions: make verify-catalog-permissions (expectations from the live Catalog objects)"
+if [ "$SEED_CATALOGS" = 1 ]; then
+  echo "  the baseline Catalogs ${BASELINE_CATALOGS[*]} were applied from $CATALOGS_FILE"
+else
+  echo "  no Catalog was created, changed or deleted"
+fi
+echo "  group differences to exercise: make seed-permission-fixtures YES=1"
+echo "  remove the people: make unseed-dev-access YES=1"

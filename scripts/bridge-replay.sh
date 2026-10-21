@@ -27,10 +27,12 @@
 #    asked with the shape the plugin builds for them.
 # 3. The reads that must keep working for an ordinary person: SELECT 1
 #    (ExecuteQuery), system.runtime.nodes, information_schema.
-# 4. The permission matrix: AccessCatalog/FilterCatalogs on finance, product,
-#    sandbox and warehouse, SelectFromColumns/InsertIntoTable/CreateSchema on
-#    the seed tables — one expectation per row and person, from the seed's
-#    grants (platform#309).
+# 4. The permission matrix: AccessCatalog/FilterCatalogs on every Ready Catalog
+#    in the namespace, CreateSchema on each, and SelectFromColumns/InsertIntoTable
+#    on `<catalog>.seed.nation` (skipped where that table is absent) and on
+#    `warehouse.covid.covid_summary` — one expectation per row and person,
+#    computed from the live Catalog objects and the persons' Keycloak groups
+#    (platform#365), not from a table in this script.
 # 5. Impersonation (platform#342): the captured `ImpersonateUser` body asked
 #    with a different asking identity per row. `superset` may act as a person
 #    (a lowercase Keycloak `sub`) and no one else may act as anyone — a person,
@@ -60,13 +62,6 @@ for tool in kubectl python3 curl jq base64; do
   command -v "$tool" >/dev/null 2>&1 || fail "$tool not found"
 done
 [ -f "$FIXTURE" ] || fail "$FIXTURE is missing — run 'make bridge-capture' on a cluster first"
-# The matrix is the dev seed's four catalogs (platform#309); on a cluster where
-# they are not installed there is nothing to assert against, and an unmapped
-# name would fail every row for the wrong reason.
-for catalog in finance product sandbox warehouse; do
-  kubectl -n "$NAMESPACE" get "catalogs.stardelt.io/$catalog" >/dev/null 2>&1 \
-    || fail "no Catalog $catalog in namespace $NAMESPACE — run 'make seed-dev-access YES=1' first"
-done
 
 umask 077
 tmp="$(mktemp -d)"
@@ -86,13 +81,26 @@ KC_LOG_PREFIX=bridge-replay
 kc() { curl --silent --show-error --max-time 30 "${HEAD[@]}" "${AUTH[@]}" "$@"; }
 
 # 1. The four principals: the three seed people and one member of the admin
-#    group. The bridge receives `sub`s, never usernames.
+#    group. The bridge receives `sub`s, never usernames. Each principal's
+#    Keycloak groups go with it: they are half of the live permission oracle
+#    (scripts/lib/catalog-layout.py).
 declare -A SUB=()
+person_jsonl="$tmp/principals.jsonl"
+: >"$person_jsonl"
+add_person() {  # add_person <name> <keycloak-id>
+  local person="$1" sub="$2" groups
+  [ -n "$sub" ] || fail "no user $person in realm $REALM — run 'make seed-dev-access YES=1' first"
+  groups="$(kc "$API/users/$sub/groups" | jq -c '[.[].name]')" \
+    || fail "cannot read the groups of $person"
+  SUB[$person]="$sub"
+  jq -cn --arg name "$person" --arg sub "$sub" --argjson groups "$groups" \
+    '{name: $name, sub: $sub, groups: $groups}' >>"$person_jsonl"
+}
+
 for user in dev-finops dev-analytics dev-outsider; do
   sub="$(kc --get --data-urlencode "username=$user" --data-urlencode 'exact=true' "$API/users" \
     | jq -r '.[0].id // ""')"
-  [ -n "$sub" ] || fail "no user $user in realm $REALM — run 'make seed-dev-access YES=1' first"
-  SUB[$user]="$sub"
+  add_person "$user" "$sub"
 done
 
 admin_group="$(kc --get --data-urlencode 'search=stardelt-admins' "$API/groups" \
@@ -100,6 +108,8 @@ admin_group="$(kc --get --data-urlencode 'search=stardelt-admins' "$API/groups" 
 [ -n "$admin_group" ] || fail "no group stardelt-admins in realm $REALM"
 admin_sub="$(kc --get "$API/groups/$admin_group/members" | jq -r '.[0].id // ""')"
 [ -n "$admin_sub" ] || fail "group stardelt-admins has no member to ask as"
+add_person admin "$admin_sub"
+jq -s '.' "$person_jsonl" >"$tmp/principals.json"
 
 PRINCIPALS=(
   "dev-finops|${SUB[dev-finops]}"
@@ -108,16 +118,28 @@ PRINCIPALS=(
   "admin|$admin_sub"
 )
 
+# 1b. The live layout: every Ready Catalog and the expectations the grants imply
+#    (platform#365). The matrix below is built from this file, not from a list of
+#    names in this script.
+kubectl -n "$NAMESPACE" get catalogs.stardelt.io -o json >"$tmp/catalogs.json" \
+  || fail "cannot list Catalogs in namespace $NAMESPACE"
+python3 scripts/lib/catalog-layout.py \
+  --catalogs "$tmp/catalogs.json" --principals "$tmp/principals.json" >"$tmp/layout.json" \
+  || fail "cannot compute the expectations from the live Catalog objects"
+[ "$(jq '.catalogs | length' "$tmp/layout.json")" -gt 0 ] \
+  || fail "no Ready Catalog in namespace $NAMESPACE — install the platform first"
+
 # 2. Build the plan: one job per (question, principal). The body is the
 #    captured input with `<sub>` (the asking person) and `<peer>` (the other
 #    person a query question is about) substituted; nothing else changes.
-jobs="$(python3 - "$FIXTURE" "$tmp" "$DATA_ONLY" "${PRINCIPALS[@]}" <<'PY'
+jobs="$(python3 - "$FIXTURE" "$tmp" "$DATA_ONLY" "$tmp/layout.json" "${PRINCIPALS[@]}" <<'PY'
 import json
 import sys
 
-fixture_path, out_dir, data_only = sys.argv[1], sys.argv[2], sys.argv[3] == "1"
+fixture_path, out_dir, data_only, layout_path = (
+    sys.argv[1], sys.argv[2], sys.argv[3] == "1", sys.argv[4])
 principals = []
-for arg in sys.argv[4:]:
+for arg in sys.argv[5:]:
     name, sub = arg.rsplit("|", 1)
     principals.append((name, sub))
 subs = [sub for _, sub in principals]
@@ -181,7 +203,7 @@ def query_input(action, query_id="", context=None):
 
 
 def add(job_id, section, operation, path, action, klass="grants", labels=None, expect=None,
-        query_id="", context=None):
+        query_id="", context=None, gated=False):
     meta[job_id] = {
         "section": section,
         "operation": operation,
@@ -189,6 +211,7 @@ def add(job_id, section, operation, path, action, klass="grants", labels=None, e
         "class": klass,
         "labels": labels,
         "expect": expect,
+        "gated": gated,
     }
     for index, (_name, sub) in enumerate(principals):
         peer = subs[(index + 1) % len(subs)]
@@ -223,53 +246,50 @@ if not data_only:
             labels=[resource_label(item) for item in filtered] if filtered else None,
             context=request["input"].get("context"))
 
-T = True
-F = False
+# -- table 4: the matrix, from the live Catalog objects --------------------
+# platform#365: the expectation comes from the grants on the Catalog objects and
+# the principals' Keycloak groups (scripts/lib/catalog-layout.py), so the
+# maintainer's five-catalog layout works without a catalog name in this script.
+layout = json.load(open(layout_path, encoding="utf-8"))
+catalog_names = [catalog["name"] for catalog in layout["catalogs"]]
+expect_by_catalog = {catalog["name"]: catalog["expect"] for catalog in layout["catalogs"]}
 
-# -- table 4: the matrix ---------------------------------------------------
-catalog_expected = {
-    "finance": {"dev-finops": T, "dev-analytics": T, "dev-outsider": F, "admin": T},
-    "product": {"dev-finops": T, "dev-analytics": T, "dev-outsider": F, "admin": T},
-    "sandbox": {"dev-finops": T, "dev-analytics": T, "dev-outsider": T, "admin": T},
-    "warehouse": {"dev-finops": T, "dev-analytics": T, "dev-outsider": T, "admin": T},
-}
-for catalog, expected in catalog_expected.items():
+
+def granted(verb, catalog):
+    return {name: expect_by_catalog[catalog][name][verb] for name in names}
+
+
+for catalog in catalog_names:
     add("mcat_" + catalog, "matrix", "AccessCatalog", ALLOW,
         {"operation": "AccessCatalog", "resource": {"catalog": {"name": catalog}}},
-        expect={name: expected[name] for name in names})
+        expect=granted("browse", catalog))
 
-filter_catalogs = ["finance", "product", "sandbox", "warehouse"]
 add("mfiltercatalogs", "matrix", "FilterCatalogs", BATCH,
     {"operation": "FilterCatalogs",
-     "filterResources": [{"catalog": {"name": catalog}} for catalog in filter_catalogs]},
-    labels=filter_catalogs,
-    expect={name: [catalog for catalog in filter_catalogs if catalog_expected[catalog][name]] for name in names})
+     "filterResources": [{"catalog": {"name": catalog}} for catalog in catalog_names]},
+    labels=catalog_names,
+    expect={name: [catalog for catalog in catalog_names
+                   if expect_by_catalog[catalog][name]["browse"]] for name in names})
 
-DATA_ROWS = [
-    ("SelectFromColumns", "finance", "seed", "nation", {"dev-finops": T, "dev-analytics": T, "dev-outsider": F, "admin": T}),
-    ("InsertIntoTable", "finance", "seed", "nation", {"dev-finops": T, "dev-analytics": F, "dev-outsider": F, "admin": T}),
-    ("SelectFromColumns", "product", "seed", "nation", {"dev-finops": F, "dev-analytics": T, "dev-outsider": F, "admin": T}),
-    ("InsertIntoTable", "product", "seed", "nation", {"dev-finops": F, "dev-analytics": T, "dev-outsider": F, "admin": T}),
-    ("SelectFromColumns", "sandbox", "seed", "nation", {"dev-finops": T, "dev-analytics": T, "dev-outsider": T, "admin": T}),
-    ("InsertIntoTable", "sandbox", "seed", "nation", {"dev-finops": T, "dev-analytics": T, "dev-outsider": T, "admin": T}),
-    ("SelectFromColumns", "warehouse", "covid", "covid_summary", {"dev-finops": T, "dev-analytics": T, "dev-outsider": T, "admin": T}),
-]
-for operation, catalog, schema, table, expected in DATA_ROWS:
-    add("mdata_%s_%s" % (operation, catalog), "matrix", operation, ALLOW,
-        {"operation": operation,
-         "resource": {"table": {"catalogName": catalog, "schemaName": schema, "tableName": table}}},
-        expect={name: expected[name] for name in names})
-
-for catalog, expected in (
-    ("finance", {"dev-finops": T, "dev-analytics": F, "dev-outsider": F, "admin": T}),
-    ("product", {"dev-finops": F, "dev-analytics": T, "dev-outsider": F, "admin": T}),
-    ("sandbox", {"dev-finops": T, "dev-analytics": T, "dev-outsider": T, "admin": T}),
-    ("warehouse", {"dev-finops": T, "dev-analytics": T, "dev-outsider": T, "admin": T}),
-):
+for catalog in catalog_names:
     add("mcreate_" + catalog, "matrix", "CreateSchema", ALLOW,
         {"operation": "CreateSchema",
          "resource": {"schema": {"catalogName": catalog, "schemaName": "replay_probe", "properties": {}}}},
-        expect={name: expected[name] for name in names})
+        expect=granted("create", catalog))
+
+# Data rows: the seed tables and the warehouse demo table. A table question on a
+# table Lakekeeper does not have is false for everyone (`error-on-not-found:
+# false`), so the judge asks these rows only where the admin's answer is true —
+# an admin holds `project_admin`, which makes that answer the existence oracle.
+DATA_TABLES = [(catalog, "seed", "nation") for catalog in catalog_names]
+if "warehouse" in catalog_names:
+    DATA_TABLES.append(("warehouse", "covid", "covid_summary"))
+for catalog, schema, table in DATA_TABLES:
+    for operation, verb in (("SelectFromColumns", "select"), ("InsertIntoTable", "write")):
+        add("mdata_%s_%s_%s" % (operation, catalog, table), "matrix", operation, ALLOW,
+            {"operation": operation,
+             "resource": {"table": {"catalogName": catalog, "schemaName": schema, "tableName": table}}},
+            expect=granted(verb, catalog), gated=True)
 
 # -- table 3: reads that must keep working --------------------------------
 if not data_only:
@@ -288,27 +308,32 @@ if not data_only:
 
 # -- table 2: operations Trino 480 did not send in this capture -----------
 if not data_only:
+    # platform#365: both per-catalog probes name a catalog from the live layout,
+    # not a fixture that may be absent. A function list follows the catalog's
+    # `browse` (the chart's rule) and creating a view follows the table's
+    # `select`; both are read from the live grants, not assumed.
     probes = [
         ("probe_filter_functions", "FilterFunctions", BATCH,
          {"operation": "FilterFunctions",
-          "filterResources": [{"function": {"catalogName": "finance", "schemaName": "seed", "functionName": "abs"}}]},
-         "grants", ["finance.seed(abs)"],
-         {"dev-finops": ["finance.seed(abs)"], "dev-analytics": ["finance.seed(abs)"],
-          "dev-outsider": [], "admin": ["finance.seed(abs)"]}),
+          "filterResources": [{"function": {"catalogName": "warehouse", "schemaName": "seed", "functionName": "abs"}}]},
+         "grants", ["warehouse.seed(abs)"],
+         {name: (["warehouse.seed(abs)"] if expect_by_catalog["warehouse"][name]["browse"] else [])
+          for name in names}, False),
         ("probe_create_view_select", "CreateViewWithSelectFromColumns", ALLOW,
          {"operation": "CreateViewWithSelectFromColumns",
-          "resource": {"table": {"catalogName": "sandbox", "schemaName": "seed",
-                                 "tableName": "nation", "columns": ["name"]}}},
-         "grants", None, {name: True for name in names}),
+          "resource": {"table": {"catalogName": "warehouse", "schemaName": "covid",
+                                 "tableName": "covid_summary", "columns": ["name"]}}},
+         "grants", None, {name: expect_by_catalog["warehouse"][name]["select"] for name in names}, True),
         ("probe_view_owned", "ViewQueryOwnedBy", ALLOW,
          {"operation": "ViewQueryOwnedBy", "resource": {"user": {"user": "<peer>"}}},
-         "owner-only", None, {name: False for name in names}),
+         "owner-only", None, {name: False for name in names}, False),
         ("probe_read_system", "ReadSystemInformation", ALLOW,
          {"operation": "ReadSystemInformation"},
-         "must-allow", None, {name: True for name in names}),
+         "must-allow", None, {name: True for name in names}, False),
     ]
-    for job, operation, path, action, klass, labels, expect in probes:
-        add(job, "probe", operation, path, action, klass=klass, labels=labels, expect=expect)
+    for job, operation, path, action, klass, labels, expect, gated in probes:
+        add(job, "probe", operation, path, action, klass=klass, labels=labels, expect=expect,
+            gated=gated)
 
 # -- table 5: impersonation (platform#342) --------------------------------
 # The captured body, asked with a different identity per row: ImpersonateUser
@@ -440,7 +465,7 @@ sections = [
     ("contract", "1. The contract — every shape Trino 480 sent, asked for four principals"),
     ("probe", "2. Operations Trino 480 did not send in this capture (shape from the plugin)"),
     ("required", "3. Reads that must keep working"),
-    ("matrix", "4. The permission matrix (seed grants, platform#309)"),
+    ("matrix", "4. The permission matrix (live Catalog grants and Keycloak groups, platform#365)"),
     ("impersonation", "5. Impersonation — only Superset may act as a person (platform#342)"),
 ]
 
@@ -485,6 +510,17 @@ for section, title in sections:
         cells = "".join("  %-24s" % cell(per_person[name]) for name in names)
         expect = request_meta["expect"]
         klass = request_meta["class"]
+        if request_meta.get("gated") and "admin" in names:
+            admin_answer = answers.get("%s.%d" % (job_id, names.index("admin")))
+            if admin_answer is False:
+                # The admin holds `project_admin`: a false table answer means the
+                # table does not exist, and Lakekeeper answers false for every
+                # person then. Skipping is the honest verdict, not a FAIL.
+                print("%-*s  %-40s%s  %-7s %s" % (
+                    width, request_meta["operation"], request_meta["label"][:40],
+                    "".join("  %-24s" % "-" for name in names), "skip",
+                    "(no such table — the fixtures create it)"))
+                continue
         verdict = "ok"
         note = ""
         if expect is not None:
