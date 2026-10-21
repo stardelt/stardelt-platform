@@ -3,6 +3,7 @@
 # (platform#125: query visibility is owner-only, admins exempted).
 #
 #   NAMESPACE=stardelt bash scripts/sync-trino-groups.sh
+#   GROUP_PRINCIPAL=username NAMESPACE=stardelt bash scripts/sync-trino-groups.sh
 #
 # Why this exists: Trino enforces query visibility itself (file-based system
 # access control in helm-values/trino-identity.yaml), but it cannot read groups
@@ -10,9 +11,24 @@
 # the bridge: it reads the members of group `stardelt-admins` from the live
 # realm and writes/refreshes ConfigMap `trino-group-file` with one line
 # `stardelt-admins:<user1>,<user2>` (the file group-provider format: one
-# `group:user,...` line per group). The usernames are Keycloak
-# `preferred_username` values — what Trino sees as the principal — not emails
-# or UUIDs.
+# `group:user,...` line per group).
+#
+# GROUP_PRINCIPAL is the Trino principal the file has to match, because the
+# file is compared against `current_user` — a string from the token, whichever
+# claim Trino was told to use:
+#
+#   * `sub` (default, platform#311): the Keycloak user `id`, a UUID. This is the
+#     principal with `http-server.authentication.oauth2.principal-field=sub`,
+#     i.e. once the catalog enforces permissions (`make catalog-enforce`). It is
+#     also what the OPA bridge needs (`oidc~<sub>`), and what the bridge's
+#     `adminUsers` list compares against.
+#   * `username`: the `preferred_username` claim. The principal before that
+#     switch (`make catalog-enforce-rollback` passes this).
+#
+# A group file whose strings do not match the configured principal fails
+# silently and *open*: Trino simply finds no group for anyone, so admins lose
+# the query visibility and the table rules they had. Keep the two in step —
+# `make catalog-enforce` and its rollback both write this file themselves.
 #
 # Idempotent: byte-identical content means no write (no-op, like
 # scripts/sync-oidc-clients.sh). `make trino` runs this before the helm upgrade
@@ -33,6 +49,10 @@ REALM="${REALM:-stardelt}"
 ADMIN_GROUP="${ADMIN_GROUP:-stardelt-admins}"
 GROUP_CONFIGMAP="${GROUP_CONFIGMAP:-trino-group-file}"
 MASTER_SECRET="${MASTER_SECRET:-keycloak-admin}"
+# Which claim names the user: `sub` (UUID, the principal with
+# http-server.authentication.oauth2.principal-field=sub) or `username`
+# (preferred_username). See the header.
+GROUP_PRINCIPAL="${GROUP_PRINCIPAL:-sub}"
 
 CURL=(curl --fail-with-body --silent --show-error --max-time 30)
 CURL_SOFT=(curl --silent --show-error --max-time 30)
@@ -51,6 +71,11 @@ cleanup() {
 trap cleanup EXIT
 
 fail() { echo "sync-trino-groups: $*" >&2; exit 1; }
+
+case "$GROUP_PRINCIPAL" in
+  sub|username) ;;
+  *) fail "GROUP_PRINCIPAL must be 'sub' or 'username', not '$GROUP_PRINCIPAL'" ;;
+esac
 
 # 1. Reach the admin API on loopback, through the Service.
 local_port=18220
@@ -101,26 +126,33 @@ done
 [ "$status" = 200 ] || fail "realm $REALM does not exist after 60s — check 'kubectl -n $NAMESPACE logs deploy/keycloak' for the import"
 
 # 3. Resolve the group, then list its members. `briefRepresentation=true` keeps
-#    the payload to what the group file needs: usernames.
+#    the payload to what the group file needs: the id and the username.
 group_json="$("${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" "$API/group-by-path/$ADMIN_GROUP")" \
   || fail "realm $REALM has no group '$ADMIN_GROUP' (re-apply the realm import / create it in the console)"
 group_id="$(printf '%s' "$group_json" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')"
 "${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" "$API/groups/$group_id/members?briefRepresentation=true" > "$tmp/members.json" \
   || fail "cannot list members of group '$ADMIN_GROUP'"
 
-# Usernames only, sorted for stable output. Prints the member count (the only
-# thing the operator sees — usernames stay out of the log, like the other sync
-# scripts, which never print values).
-count="$(python3 - "$tmp/members.json" "$tmp/groups.txt" "$ADMIN_GROUP" <<'PY'
+# The principals only (id for `sub`, username for `username`), sorted for stable
+# output. Prints the member count (the only thing the operator sees — principals
+# stay out of the log, like the other sync scripts, which never print values).
+count="$(python3 - "$tmp/members.json" "$tmp/groups.txt" "$ADMIN_GROUP" "$GROUP_PRINCIPAL" <<'PY'
 import json, sys
-members_path, out_path, group = sys.argv[1:]
+members_path, out_path, group, principal = sys.argv[1:]
+field = "id" if principal == "sub" else "username"
 members = json.load(open(members_path))
-names = sorted({user["username"] for user in members if user.get("username")})
+names = set()
+for user in members:
+    value = user.get(field)
+    if not value:
+        sys.exit("sync-trino-groups: a member of %s has no %r in the realm" % (group, field))
+    names.add(value)
 with open(out_path, "w") as handle:
-    handle.write("%s:%s\n" % (group, ",".join(names)))
+    handle.write("%s:%s\n" % (group, ",".join(sorted(names))))
 print(len(names))
 PY
 )"
+[ -n "$count" ] || fail "cannot build the group file from the members of $ADMIN_GROUP"
 
 # 4. Converge the ConfigMap. Byte-identical content means no write — the data
 #    fans out through a mounted volume, so a no-op write would still bounce the
@@ -134,18 +166,18 @@ import sys
 desired, live = (open(path).read().rstrip("\n") for path in sys.argv[1:])
 sys.exit(0 if desired == live else 1)
 PY
-    echo "› ConfigMap $GROUP_CONFIGMAP: already holds the $count member(s) of $ADMIN_GROUP — nothing to do"
-    echo "sync-trino-groups: OK — $ADMIN_GROUP ($count member(s)) in ConfigMap $GROUP_CONFIGMAP, unchanged"
+    echo "› ConfigMap $GROUP_CONFIGMAP: already holds the $count principal(s) of $ADMIN_GROUP by $GROUP_PRINCIPAL — nothing to do"
+    echo "sync-trino-groups: OK — $ADMIN_GROUP ($count member(s), principals by $GROUP_PRINCIPAL) in ConfigMap $GROUP_CONFIGMAP, unchanged"
     exit 0
   fi
   kubectl -n "$NAMESPACE" create configmap "$GROUP_CONFIGMAP" --from-file=groups.txt="$desired" \
     --dry-run=client -o yaml | kubectl -n "$NAMESPACE" apply -f - >/dev/null \
     || fail "cannot update ConfigMap $GROUP_CONFIGMAP"
-  echo "› ConfigMap $GROUP_CONFIGMAP: updated ($count member(s) of $ADMIN_GROUP)"
+  echo "› ConfigMap $GROUP_CONFIGMAP: updated ($count principal(s) of $ADMIN_GROUP by $GROUP_PRINCIPAL)"
 else
   kubectl -n "$NAMESPACE" create configmap "$GROUP_CONFIGMAP" --from-file=groups.txt="$desired" >/dev/null \
     || fail "cannot create ConfigMap $GROUP_CONFIGMAP"
-  echo "› ConfigMap $GROUP_CONFIGMAP: created ($count member(s) of $ADMIN_GROUP)"
+  echo "› ConfigMap $GROUP_CONFIGMAP: created ($count principal(s) of $ADMIN_GROUP by $GROUP_PRINCIPAL)"
 fi
 
 # 5. Prove it: read back and compare bytes, not intentions.
@@ -157,4 +189,4 @@ import sys
 desired, live = (open(path).read().rstrip("\n") for path in sys.argv[1:])
 sys.exit(0 if desired == live else 1)
 PY
-echo "sync-trino-groups: OK — $ADMIN_GROUP ($count member(s)) in ConfigMap $GROUP_CONFIGMAP, verified"
+echo "sync-trino-groups: OK — $ADMIN_GROUP ($count member(s), principals by $GROUP_PRINCIPAL) in ConfigMap $GROUP_CONFIGMAP, verified"

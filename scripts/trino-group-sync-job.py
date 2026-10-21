@@ -14,9 +14,18 @@ they changed — but with the in-cluster transports that script cannot use:
 
 The Keycloak query contract is defined by scripts/sync-trino-groups.sh and
 mirrored here on purpose: `group-by-path/{group}` to resolve the id, then
-`groups/{id}/members?briefRepresentation=true`, usernames sorted into one
+`groups/{id}/members?briefRepresentation=true`, the principals sorted into one
 `group:user,...` line with a trailing newline, comparison ignoring that
 newline. Change the query there and mirror it here.
+
+`GROUP_PRINCIPAL` (platform#311) says which claim names the user, and the file
+has to match whatever Trino compares against (`current_user`): `sub` (default)
+writes each member's Keycloak `id` — the principal with
+`http-server.authentication.oauth2.principal-field=sub`, once the catalog
+enforces permissions — and `username` writes `preferred_username`, the
+principal before that switch. A file in the wrong shape does not fail loudly:
+Trino finds no group for anyone and an administrator silently loses the query
+visibility the group grants.
 
 Standard library only (urllib/json/ssl/base64): the image is plain
 `python:slim-bookworm`, which has nothing else. Logging states counts, never
@@ -38,6 +47,8 @@ import urllib.parse
 import urllib.request
 
 NAMESPACE = os.environ.get("NAMESPACE", "stardelt")
+# `sub` (Keycloak user id) or `username` (preferred_username); see the docstring.
+GROUP_PRINCIPAL = os.environ.get("GROUP_PRINCIPAL", "sub")
 KC_URL = os.environ.get("KEYCLOAK_URL", "http://keycloak:8080").rstrip("/")
 REALM = os.environ.get("REALM", "stardelt")
 ADMIN_GROUP = os.environ.get("ADMIN_GROUP", "stardelt-admins")
@@ -150,11 +161,19 @@ members = keycloak_get(
     "%s/groups/%s/members?briefRepresentation=true" % (api, group_id),
     access_token,
 )
+if GROUP_PRINCIPAL not in ("sub", "username"):
+    fail("GROUP_PRINCIPAL must be 'sub' or 'username', not %r" % GROUP_PRINCIPAL)
+field = "id" if GROUP_PRINCIPAL == "sub" else "username"
 try:
-    names = sorted({user["username"] for user in members if user.get("username")})
+    names = set()
+    for user in members:
+        value = user.get(field)
+        if not value:
+            fail("a member of %s has no %r in the realm" % (ADMIN_GROUP, field))
+        names.add(value)
 except (TypeError, AttributeError):
     fail("members endpoint answered without a user list")
-desired = "%s:%s\n" % (ADMIN_GROUP, ",".join(names))
+desired = "%s:%s\n" % (ADMIN_GROUP, ",".join(sorted(names)))
 count = len(names)
 del access_token
 

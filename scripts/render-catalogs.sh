@@ -4,6 +4,7 @@
 #   bash scripts/render-catalogs.sh list        # Ready Catalogs, except `warehouse`, sorted
 #   bash scripts/render-catalogs.sh trino-args  # one `--set-file` per Catalog (Trino chart)
 #   bash scripts/render-catalogs.sh bridge-arg  # one `--set-json` for the OPA bridge (Lakekeeper)
+#   bash scripts/render-catalogs.sh admin-arg   # one `--set-json` for the bridge's adminUsers (Lakekeeper)
 #
 # `make catalogs` and `make trino` call this; `make lint` never does (it needs a
 # cluster). The Catalog objects are the single source of truth for what a catalog
@@ -36,6 +37,19 @@
 # static mapping stays. Only names, no ids: the bridge resolves the warehouse by
 # name (the chart writes `lakekeeper_id: default`).
 #
+# `admin-arg` is the bridge's other list (platform#311): the Trino principals
+# that are full-access administrators there — every system schema and table of
+# every catalog, and `FilterViewQueryOwnedBy` for *other* people. Without it the
+# bridge vetoes `stardelt-admins`, which the file rules grant, so an
+# administrator's `system.runtime.queries` would only show their own queries.
+# The list is the `stardelt-admins` line of ConfigMap `trino-group-file` — the
+# same membership Trino itself uses, one source, no second list to drift. Its
+# strings are the engine's principals: Keycloak user ids while
+# `principal-field=sub` (the switch), usernames before it. `--set-json` replaces
+# the array, so an empty group renders `[]` (the chart then emits no
+# `TRINO_ADMIN_USERS` at all, i.e. no administrator — which is correct and must
+# not be silently papered over).
+#
 # Files are rendered into .build/catalogs/ (git-ignored) and passed to Helm by
 # relative path, so the checkout is the only state — a stale file for a deleted
 # Catalog is never referenced.
@@ -60,11 +74,15 @@ OUT_DIR=".build/catalogs"
 NAME_RE='^[a-z][a-z0-9]{0,39}$'
 # The platform's first catalog: in the values files, never rendered from a Catalog.
 PLATFORM_CATALOG="warehouse"
+# The group whose members are the bridge's `adminUsers` (admin-arg).
+ADMIN_GROUP="${ADMIN_GROUP:-stardelt-admins}"
+# The group file `make trino` writes (scripts/sync-trino-groups.sh).
+GROUP_CONFIGMAP="${GROUP_CONFIGMAP:-trino-group-file}"
 
 mode="${1:-}"
 case "$mode" in
-  list|trino-args|bridge-arg) ;;
-  *) echo "usage: render-catalogs.sh list|trino-args|bridge-arg" >&2; exit 2 ;;
+  list|trino-args|bridge-arg|admin-arg) ;;
+  *) echo "usage: render-catalogs.sh list|trino-args|bridge-arg|admin-arg" >&2; exit 2 ;;
 esac
 
 for tool in kubectl jq; do
@@ -128,5 +146,37 @@ case "$mode" in
       | jq -Rsc 'split("\n") | map(select(length > 0))
                  | map({trinoCatalog: ., lakekeeperWarehouse: .})')"
     printf -- '--set-json OPABridge.catalogs=%s\n' "$catalogs"
+    ;;
+
+  admin-arg)
+    # The administrators, from the one place Trino's own group membership lives.
+    # A missing ConfigMap is a cluster without the identity install (no realm, no
+    # bridge): an empty list, not a failure — `make trino` has to keep working
+    # there; any other kubectl error is fatal.
+    if kubectl -n "$NAMESPACE" get configmap "$GROUP_CONFIGMAP" -o jsonpath='{.data.groups\.txt}' >"$tmp/groups.txt" 2>"$tmp/cm-err"; then
+      :
+    elif grep -qi "not found" "$tmp/cm-err"; then
+      echo "render-catalogs: no ConfigMap $NAMESPACE/$GROUP_CONFIGMAP — rendering no bridge administrators" >&2
+      : >"$tmp/groups.txt"
+    else
+      cat "$tmp/cm-err" >&2
+      echo "render-catalogs: cannot read ConfigMap $NAMESPACE/$GROUP_CONFIGMAP" >&2
+      exit 1
+    fi
+    admins="$(python3 - "$tmp/groups.txt" "$ADMIN_GROUP" <<'PY'
+import json, sys
+path, group = sys.argv[1:]
+members = []
+with open(path) as handle:
+    for line in handle:
+        name, _, rest = line.strip().partition(":")
+        if name != group:
+            continue
+        members = [member for member in rest.split(",") if member]
+        break
+print(json.dumps(sorted(set(members))))
+PY
+)"
+    printf -- '--set-json OPABridge.adminUsers=%s\n' "$admins"
     ;;
 esac
