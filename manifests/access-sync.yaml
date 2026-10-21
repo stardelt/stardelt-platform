@@ -1,5 +1,16 @@
-# Catalog access sync, part 1 (authz 4/8, stardelt-platform#305): every `Catalog`
-# object becomes a Lakekeeper warehouse, and the warehouse id lands in its status.
+# Catalog access sync (authz 4/8 and 5/8, stardelt-platform#305, #306): every `Catalog`
+# object becomes a Lakekeeper warehouse, the warehouse id lands in its status, and the
+# catalog's `owner`/`grants` become grants on that warehouse.
+#
+# Part 2 (#306) adds the identity plumbing to part 1's loop: a Keycloak group becomes
+# a Lakekeeper role of the same name, the group's members are the role's assignees by
+# OIDC `sub` (`oidc~<sub>`, valid before a person has ever signed in), our verbs become
+# Lakekeeper relations (`browse`→`describe`, `select`→`select`, `write`→`modify`,
+# `create`→`create`, `manage`→`manage_grants`; the owner group gets `manage_grants`
+# only), and the admin group's role holds `project_admin` on the project. The realm is
+# only read: client `trino-group-sync` (`view-users` on `realm-management`), the same
+# one CronJob `trino-group-sync` uses. The job never logs a subject, username, member
+# or token — counts only.
 #
 # The design (internal note `design/multitenant-catalogs.md` §4.2, §7.2 P2a) gives this
 # loop to the operator; the operator builds objects and Jobs only, has no HTTP client
@@ -16,13 +27,14 @@
 #     `project_admin` on the bootstrapped project — the minimum that creates a
 #     warehouse — and nothing broader. Its secret is read from the API, never mounted
 #     and never logged.
-#   * Kubernetes: ServiceAccount `access-sync` may only `get` those two Secrets,
+#   * Kubernetes: ServiceAccount `access-sync` may only `get` those three Secrets,
 #     `get/list` catalogs and sqlwarehouses, and `patch` their `status` subresource.
 #     No create/delete anywhere: the CronJob never removes a warehouse or data, and a
 #     Catalog deleted by a person leaves its warehouse behind (design §2.5) — the job
 #     then logs `orphan warehouse <name>`.
 #   * Network: the catalog NetworkPolicy admits this pod on TCP 8181 by its
-#     `app.kubernetes.io/name: access-sync` label; nothing else widens.
+#     `app.kubernetes.io/name: access-sync` label; Keycloak has no ingress policy, so
+#     the realm reads need nothing extra. Nothing else widens.
 #
 # Every 2 minutes; `concurrencyPolicy: Forbid` so runs never overlap,
 # `activeDeadlineSeconds: 110` so a hung run is gone before the next tick, and
@@ -46,19 +58,20 @@ metadata:
   namespace: stardelt
   labels: { app.kubernetes.io/part-of: stardelt }
 rules:
-  # The catalog's own client (for a Lakekeeper token) and the platform bucket's key
-  # pair (for the create body) — read-only, these two Secrets only.
+  # The catalog's own client (for a Lakekeeper token), the platform bucket's key pair
+  # (for the create body) and the read-only Keycloak client (for group members) —
+  # read-only, these three Secrets only.
   - apiGroups: [""]
     resources: ["secrets"]
-    resourceNames: ["svc-catalog-operator", "stardelt-s3-creds"]
+    resourceNames: ["svc-catalog-operator", "stardelt-s3-creds", "stardelt-oidc-clients"]
     verbs: ["get"]
   # Read every Catalog; the names are chosen by users, so no resourceNames here.
   - apiGroups: ["stardelt.io"]
     resources: ["catalogs", "sqlwarehouses"]
     verbs: ["get", "list"]
   # Status only: the sync never edits a spec (a Catalog's spec is a person's input).
-  # SqlWarehouse status is here because part 2 of the sync owns it; this part only
-  # reads it.
+  # SqlWarehouse status is here because a later part of the sync owns it; this job
+  # only reads it.
   - apiGroups: ["stardelt.io"]
     resources: ["catalogs/status", "sqlwarehouses/status"]
     verbs: ["patch"]
@@ -120,6 +133,22 @@ spec:
                   valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
                 - name: LAKEKEEPER_URL
                   value: "http://lakekeeper:8181"
+                # Keycloak reads (groups and their members) through the Service: the
+                # realm's `trino-group-sync` client has `view-users`, never the master
+                # credential.
+                - name: KEYCLOAK_URL
+                  value: "http://keycloak:8080"
+                - name: REALM
+                  value: "stardelt"
+                # Always managed: its role exists, holds the group's members, and is a
+                # project_admin of the catalog's project.
+                - name: ADMIN_GROUP
+                  value: "stardelt-admins"
+                # Assignees with no Keycloak user (platform#9): `superset` is the
+                # PASSWORD account Superset's Trino connection uses, so the role has to
+                # contain it even though no user row exists.
+                - name: STATIC_ASSIGNEES
+                  value: '{"stardelt-users":["superset"]}'
               volumeMounts:
                 - { name: job-script, mountPath: /opt/job, readOnly: true }
               resources:

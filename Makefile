@@ -523,19 +523,23 @@ delete-catalog-clients: _context ## Delete the seven svc-catalog-* service clien
 	@NAMESPACE=$(NAMESPACE) KIND=service NAME=catalog-operator YES=$(YES) bash scripts/keycloak-sync-principal.sh --delete
 
 # ---------------------------------------------------------------------------
-# Access sync (platform#305, authz 4/8) — `Catalog` objects become Lakekeeper
-# warehouses.
+# Access sync (platform#305, authz 4/8; platform#306, 5/8) — `Catalog` objects
+# become Lakekeeper warehouses, their `owner`/`grants` become grants on them.
 #
 # CronJob `access-sync` (every 2 minutes) converges every Catalog into one
-# Lakekeeper warehouse and writes `status.phase` / `status.warehouseId` back;
-# scripts/access-sync-job.py holds the rules, the design and the "what is not
-# built" list (per-catalog buckets). The script reaches the Pod on ConfigMap
-# `access-sync-script`, refreshed here from the file on every apply so there is
-# one source of truth — the pattern of CronJob trino-group-sync (platform#167).
+# Lakekeeper warehouse, turns each declared Keycloak group into a Lakekeeper role
+# whose assignees are the group's members, writes the catalog's grants onto the
+# warehouse, and writes `status.phase` / `status.warehouseId` plus the
+# `GrantsReady` / `Drift` conditions back; scripts/access-sync-job.py holds the
+# rules, the design and the "what is not built" list (per-catalog buckets). The
+# script reaches the Pod on ConfigMap `access-sync-script`, refreshed here from the
+# file on every apply so there is one source of truth — the pattern of CronJob
+# trino-group-sync (platform#167).
 #
 # Needs the identity install: the job signs in to the catalog as
-# `svc-catalog-operator` (project_admin), so a bare `install-core` — anonymous
-# catalog, no IdP — gets no CronJob.
+# `svc-catalog-operator` (project_admin) and reads groups from the realm as
+# `trino-group-sync`, so a bare `install-core` — anonymous catalog, no IdP — gets
+# no CronJob.
 # ---------------------------------------------------------------------------
 .PHONY: access-sync access-sync-now
 access-sync: _context ## Create/refresh the script ConfigMap and apply CronJob access-sync
