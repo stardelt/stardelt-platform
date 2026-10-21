@@ -1683,11 +1683,14 @@ service), so an idle platform pays for the driver only:
 | Driver (`spark-connect`) | 250m / 1 GiB | 1 CPU / 3 GiB | 0.5 GiB idle, 1.8 GiB under a large job (2026-10-21) |
 | Executor, each (max 2) | 1 CPU / 1.4 GiB | JVM heap `1g` + `384m` overhead | 0.6–1.4 GiB, only while querying |
 
-On the shared 16 GB dev node the driver idles at about 0.5 GiB and a large notebook job
-took it to 1.8 GiB of the 3 GiB limit on 2026-10-21, while the node stayed inside the
-headroom left by Trino, Airflow, Superset and JupyterHub. The request stays at 1 GiB
-(the node's requests are at 99 % of allocatable, so a larger request would leave the
-driver Pending); only the limit has room. Executors are released after
+On the shared 16 GB dev node (`cpx42`, 15613 Mi allocatable) the driver idles at about
+0.5 GiB, and a large notebook job took it to 1.8 GiB of the 3 GiB limit on 2026-10-21.
+The node itself was the tight part that day, with two executors running: pod requests
+15536 Mi (99 % of allocatable), limits 28954 Mi (185 %), and 13920 Mi really in use
+(89 %). The request stays at 1 GiB — at 99 % of allocatable a larger request would leave
+the driver Pending — only the limit has room. `make node-budget` prints the current
+numbers: requests, limits and use per pod, the pods above their request (the kubelet
+evicts those first) and the headroom left. Executors are released after
 `shuffleTracking.timeout` (180 s) plus the idle timeout, so a query leaves the
 node as it was a few minutes later.
 Change the numbers in `manifests/spark.yaml` (ConfigMap `spark-connect-config` +

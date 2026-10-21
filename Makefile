@@ -84,6 +84,14 @@ _context:
 lint: ## Syntax-check (bash -n) + ShellCheck the scripts under scripts/ and dev/
 	@bash scripts/lint.sh
 
+# The node's memory budget is the ceiling for every Spark size (platform#373): requests
+# decide what still fits (at 99 % of allocatable a new request stays Pending), and the
+# pods above their request are the ones the kubelet evicts first. Read-only, no cluster
+# change: three kubectl calls and a table.
+.PHONY: node-budget
+node-budget: ## Memory requests, limits and use on the node
+	@python3 scripts/node-budget.py
+
 # ---------------------------------------------------------------------------
 # Backup guards (issue #59): a client-side `kubectl apply` from a stale checkout
 # silently strips spec.backup from the live Cluster, which turns WAL archiving
