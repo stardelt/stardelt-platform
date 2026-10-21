@@ -576,8 +576,8 @@ delete-catalog-clients: _context ## Delete the seven svc-catalog-* service clien
 # file on every apply so there is one source of truth.
 #
 # The same tick renders every `SqlWarehouse` into ConfigMap `trino-warehouses`
-# (key `resource-groups.json`, loaded once by the coordinator — a change needs a
-# restart, ticket 2/3) and writes the `stardelt-admins` line plus one `wh-<name>`
+# (key `resource-groups.json`, loaded once by the coordinator — a change restarts
+# it, platform#313) and writes the `stardelt-admins` line plus one `wh-<name>`
 # line per warehouse into `trino-group-file` (key `groups.txt`, re-read within
 # 30 s). Both ConfigMaps are created empty here and never by the job: its Role has
 # no `create`, and applying an empty object over one access-sync owns would wipe
