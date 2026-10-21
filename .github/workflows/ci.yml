@@ -190,11 +190,14 @@ jobs:
           docs = [d for d in yaml.safe_load_all(open('/tmp/trino-rollback.yaml')) if d]
           cm = next(d for d in docs if d.get('kind') == 'ConfigMap' and d['metadata']['name'] == 'trino-coordinator')
           cfg = cm['data']['config.properties']
-          # One access control (the chart's file), the pre-switch principal, and the
-          # coordinator properties the overlay has to repeat (Helm replaces strings).
+          # One access control (the chart's file), the same principal as the switched
+          # state, and the coordinator properties the overlay has to repeat (Helm
+          # replaces strings). The principal stays `sub` since platform#312: the group
+          # file is written by CronJob access-sync by `sub`, so a rollback that changed
+          # the principal would leave every group lookup matching nobody.
           assert 'access-control.config-files=/etc/trino/access-control.properties\n' in cfg + '\n', cfg
           assert 'access-control-opa.properties' not in cfg.split('access-control.config-files=')[1].splitlines()[0], cfg
-          assert 'http-server.authentication.oauth2.principal-field=preferred_username' in cfg
+          assert 'http-server.authentication.oauth2.principal-field=sub' in cfg
           for needed in ('http-server.https.keystore.key=', 'http-server.authentication.oauth2.issuer=',
                          'http-server.authentication.allow-insecure-over-http=false', 'query.max-run-time=15m'):
               assert needed in cfg, needed

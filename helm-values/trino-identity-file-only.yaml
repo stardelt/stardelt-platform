@@ -7,24 +7,24 @@
 #     $(bash scripts/render-catalogs.sh trino-args)
 #
 # `make catalog-enforce-rollback` renders exactly this: the file access control
-# alone, and the principal back to `preferred_username`. It is the recovery
-# path, not a state to run in — without the bridge Trino authorizes by the file
-# rules only, so every person sees every catalog and the `Catalog` grants
-# enforce nothing.
+# alone. It is the recovery path, not a state to run in — without the bridge
+# Trino authorizes by the file rules only, so every person sees every catalog
+# and the `Catalog` grants enforce nothing.
 #
 # Why an overlay and not an edit: `helm upgrade` is the only writer, both files
 # are tracked, and a rollback has to be one command that a person under pressure
-# can run. The keys below are the only two that differ from
-# helm-values/trino-identity.yaml:
+# can run. The only key that differs from helm-values/trino-identity.yaml is
+# `access-control.config-files` (the chart's own file only). The OPA properties
+# file stays in the ConfigMap (harmless: nothing loads it), so the same release
+# can be switched back on without another ConfigMap change.
 #
-#   * `access-control.config-files` back to the chart's own file only. The OPA
-#     properties file stays in the ConfigMap (harmless: nothing loads it), so
-#     the same release can be switched back on without another ConfigMap change.
-#   * `principal-field=preferred_username`, matching the group file the rollback
-#     writes (`GROUP_PRINCIPAL=username bash scripts/sync-trino-groups.sh`) and
-#     the `stardelt-admins` principals the bridge's `adminUsers` list is
-#     rendered from — a group file of `sub` strings while Trino compares
-#     usernames silently drops every group.
+# The principal stays `sub` (from helm-values/trino-identity.yaml) on purpose:
+# since platform#312 the group file is written by CronJob access-sync by `sub`
+# and there is no writer that produces usernames, so a rollback that changed the
+# principal would leave every group lookup matching nobody — an administrator
+# would silently lose the query visibility the `stardelt-admins` line grants.
+# The rollback takes the bridge out of the authorization path; it does not change
+# who the engine thinks a person is.
 #
 # `helm-values/trino.yaml` and `helm-values/trino-identity.yaml` are still
 # applied (values merge key by key), and `server.coordinatorExtraConfig` is a
@@ -39,7 +39,7 @@ server:
     http-server.authentication.oauth2.issuer=${ENV:TRINO_OIDC_ISSUER}
     http-server.authentication.oauth2.client-id=trino
     http-server.authentication.oauth2.client-secret=${ENV:TRINO_CLIENT_SECRET}
-    http-server.authentication.oauth2.principal-field=preferred_username
+    http-server.authentication.oauth2.principal-field=sub
     http-server.authentication.oauth2.scopes=openid
     http-server.authentication.oauth2.oidc.use-userinfo-endpoint=false
     query.max-execution-time=10m

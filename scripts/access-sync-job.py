@@ -69,6 +69,52 @@ showed CopyObject bypasses bucket scoping), and users never hold storage credent
 Deleting a Catalog never deletes its warehouse or its data (design §2.5): a warehouse
 without a Catalog is only reported, as one `orphan warehouse <name>` line per tick.
 
+A `SqlWarehouse` is a named compute class inside the one Trino (design §3.2–§3.5,
+spike platform#273): the object becomes a **resource group** of the coordinator, its
+granted groups' members become the members of a `wh-<name>` group in the file group
+provider, and the person's class is then chosen by their identity — never by a header
+they send. Two ConfigMaps carry the result, and from this ticket on this job is the
+single writer of both:
+
+* `trino-warehouses`, key `resource-groups.json` — the file the coordinator loads
+  **once** (spike R6; a changed file needs a restart, ticket 2/3). Root group `global`
+  (90% memory, 100 running, 500 queued) holds one `wh-<name>` sub group per rendered
+  warehouse; root group `admin` (100%, 50, 100) is where the admin group lands; root
+  group `no-warehouse` (0%, 0, 0) is the catch-all when no warehouse is the default,
+  so an unassigned person gets Trino's explicit `Too many queued queries for
+  "no-warehouse"` instead of silently sharing a class.
+* `trino-group-file`, key `groups.txt` — the file group provider (re-read within 30 s,
+  no restart): the `stardelt-admins` line the query-visibility rules have always used,
+  plus one `wh-<name>:<subs>` line per rendered warehouse, members sorted.
+
+The class defaults are the architect decision of this ticket — `xs` 2/10/10%, `small`
+10/100/20%, `medium` 5/50/40%, `large` 6/70/70%, scheduling `fair` — and the spec's
+`concurrency` overrides each field. The classes partition the one coordinator and
+worker (2 GiB heaps each): they queue and share fairly, they do not add hardware.
+
+Selectors are **identity first** (spike R3/R5/R8): the admin group first, then one
+`userGroup: wh-<name>` selector per rendered warehouse from the largest size to the
+smallest (name order inside a size — the first selector that matches wins, so a person
+in two granted groups lands in the bigger class), then a catch-all to the one warehouse
+with `default: true`, or to `no-warehouse` when zero or two are marked default. A
+selector that carries `clientTags` without `userGroup` is spoofable and therefore
+refused here outright (`selector()` raises) — the renderer never writes one, and a unit
+test iterates the rendered document to prove it.
+
+Rules a `SqlWarehouse` breaks are verdicts, not failed ticks (the Catalog pattern): the
+name must be 1 to 40 lower-case letters, digits and dashes, starting with a letter and
+not ending in a dash (the operator's `SqlWarehouseSpec::validate`); a group may appear
+once in `grants`; `concurrency.running` is 1 to 100 and `queued` 0 to 10000;
+`memoryShare` is `1%` to `100%`; `size` is one of the four classes; a granted group
+must exist in the realm. Two `default: true` objects make **both** Invalid
+(`TwoDefaults`) rather than picking one. An invalid warehouse is skipped with a line on
+stdout, and every other warehouse still renders.
+
+The status is written through the `status` subresource as a merge-patch and only when it
+differs from the live one: `phase` `Ready`/`Invalid`, `renderedGroup` `wh-<name>` (null
+when Invalid), `engine` `trino@default`, and the condition `Rendered`. Conditions this
+job does not own are preserved.
+
 Standard library only (the image is plain `python:slim-bookworm`). The S3 secret
 travels only in the create body; logs carry catalog names, group names, counts and
 HTTP status codes, never principals, subjects, usernames, tokens, keys or response
@@ -127,7 +173,7 @@ ADMIN_GROUP = os.environ.get("ADMIN_GROUP", "stardelt-admins")
 STATIC_ASSIGNEES = os.environ.get("STATIC_ASSIGNEES", "{}")
 CLIENT_SECRET_NAME = os.environ.get("CLIENT_SECRET_NAME", "svc-catalog-operator")
 # The read-only Keycloak client (view-users on realm-management), the same one
-# CronJob `trino-group-sync` uses.
+# the warehouse half uses to read the granted groups' members.
 SYNC_SECRET_NAME = os.environ.get("SYNC_SECRET_NAME", "stardelt-oidc-clients")
 SYNC_SECRET_KEY = os.environ.get("SYNC_SECRET_KEY", "trino-group-sync")
 SYNC_CLIENT = os.environ.get("SYNC_CLIENT", "trino-group-sync")
@@ -136,6 +182,20 @@ S3_SECRET_NAME = os.environ.get("S3_SECRET_NAME", "stardelt-s3-creds")
 # The one project the catalog bootstraps (manifests/lakekeeper-bootstrap.yaml).
 PROJECT_ID = "00000000-0000-0000-0000-000000000000"
 CATALOG_PATH = "/apis/stardelt.io/v1alpha1/namespaces/%s/catalogs" % NAMESPACE
+SQLWAREHOUSE_PATH = "/apis/stardelt.io/v1alpha1/namespaces/%s/sqlwarehouses" % NAMESPACE
+CONFIGMAP_PATH = "/api/v1/namespaces/%s/configmaps" % NAMESPACE
+
+# The two ConfigMaps the warehouse half writes (platform#312). Both are created
+# empty by the Makefile (`make trino`, `make access-sync`) and never by this job:
+# the Role has no `create` on ConfigMaps, and `kubectl apply` of an empty object
+# would wipe the content this job owns. Ticket 2/3 mounts `trino-warehouses` into
+# the coordinator and restarts it on change; `trino-group-file` reloads live.
+WAREHOUSE_CONFIGMAP = os.environ.get("WAREHOUSE_CONFIGMAP", "trino-warehouses")
+WAREHOUSE_CONFIGMAP_KEY = os.environ.get("WAREHOUSE_CONFIGMAP_KEY", "resource-groups.json")
+GROUP_CONFIGMAP = os.environ.get("GROUP_CONFIGMAP", "trino-group-file")
+GROUP_CONFIGMAP_KEY = os.environ.get("GROUP_CONFIGMAP_KEY", "groups.txt")
+# Which engine implements a rendered class (design §4.3 `status.engine`).
+WAREHOUSE_ENGINE = os.environ.get("WAREHOUSE_ENGINE", "trino@default")
 
 # Trino catalog names taken by the engine or by the platform: the operator's
 # `RESERVED_CATALOG_NAMES` (stardelt-operator crates/stardelt-operator/src/crd.rs).
@@ -143,6 +203,44 @@ RESERVED_NAMES = ("system", "information_schema", "memory", "tpch", "tpcds", "jm
 # `metadata.name` becomes an unquoted SQL identifier: lower-case letters and digits,
 # starting with a letter, 1 to 40 characters (CatalogDomainSpec::validate).
 NAME_RE = re.compile(r"^[a-z][a-z0-9]{0,39}$")
+# A SqlWarehouse name becomes the resource group `wh-<name>` and a file group name:
+# 1 to 40 lower-case letters, digits and dashes, starting with a letter, not ending in
+# one (the operator's SqlWarehouseSpec::validate, platform#312).
+WAREHOUSE_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,39}$")
+# `concurrency.memoryShare` as the CRD's schema spells it (`^([1-9][0-9]?|100)%$`).
+MEMORY_SHARE_RE = re.compile(r"^([1-9][0-9]?|100)%$")
+
+# The class defaults (architect decision, ticket #312; the spike's numbers, #273):
+# how many queries run at once, how many may wait, and the share of the engine's
+# memory the class may use. `fair` scheduling by default: the classes share the one
+# coordinator and worker, they do not add hardware.
+CLASS_DEFAULTS = {
+    "xs": {"running": 2, "queued": 10, "memoryShare": "10%", "scheduling": "fair"},
+    "small": {"running": 10, "queued": 100, "memoryShare": "20%", "scheduling": "fair"},
+    "medium": {"running": 5, "queued": 50, "memoryShare": "40%", "scheduling": "fair"},
+    "large": {"running": 6, "queued": 70, "memoryShare": "70%", "scheduling": "fair"},
+}
+# Largest class first: the first selector that matches wins (design §3.4), so a
+# person in two granted groups lands in the bigger class.
+SIZE_ORDER = ("large", "medium", "small", "xs")
+# `schedulingPolicy` as Trino spells it; FIFO is Trino's default, so it is omitted.
+SCHEDULING_POLICY = {
+    "fifo": None,
+    "fair": "fair",
+    "weighted": "weighted",
+    "weighted_fair": "weighted_fair",
+}
+# The three root groups (spike R8): the catch-all cannot be a sub group of `global`
+# and point at `global.<name>` at the same time, so `admin` and `no-warehouse` are
+# roots of their own, and the admin group is routed before every warehouse selector.
+GLOBAL_GROUP = "global"
+ADMIN_ROOT_GROUP = "admin"
+NO_WAREHOUSE_GROUP = "no-warehouse"
+GLOBAL_LIMITS = {"softMemoryLimit": "90%", "hardConcurrencyLimit": 100, "maxQueued": 500}
+ADMIN_LIMITS = {"softMemoryLimit": "100%", "hardConcurrencyLimit": 50, "maxQueued": 100}
+NO_WAREHOUSE_LIMITS = {"softMemoryLimit": "0%", "hardConcurrencyLimit": 0, "maxQueued": 0}
+# The resource group name a warehouse renders to: `wh-<metadata.name>`.
+WAREHOUSE_GROUP_PREFIX = "wh-"
 
 # Our verbs (design §5.2) as Lakekeeper relations on the warehouse object. `manage`
 # is `manage_grants`, never `ownership`: ownership includes all data rights, and
@@ -179,6 +277,8 @@ MEMBER_PAGE = 100
 ROLE_PAGE = 100
 # The conditions this job writes; anything else in the status is preserved.
 OWNED_CONDITIONS = ("CatalogReady", "GrantsReady", "Drift")
+# The one condition a SqlWarehouse status gets (platform#312).
+WAREHOUSE_OWNED_CONDITIONS = ("Rendered",)
 
 TIMEOUT = 30
 SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
@@ -986,6 +1086,288 @@ def ensure_warehouse(name, spec, s3):
     return warehouse_id, "created"
 
 
+def list_warehouses():
+    """Every `SqlWarehouse` in the namespace (the CRD is installed)."""
+    status, listing = k8s_request("GET", SQLWAREHOUSE_PATH)
+    if status != 200 or listing is None:
+        fail("cannot list sqlwarehouses (HTTP %s)" % status)
+    return listing.get("items") or []
+
+
+def warehouse_pairs(warehouses):
+    """`[(name, spec)]` for every `SqlWarehouse`, in the API's order."""
+    return [
+        ((item.get("metadata") or {}).get("name") or "", item.get("spec") or {})
+        for item in warehouses
+    ]
+
+
+def granted_groups(spec):
+    """The groups a `SqlWarehouse`'s `grants` name, in spec order, duplicates included.
+
+    Raw: a duplicate is exactly what `warehouse_problem` refuses (the CRD carries the
+    same rule as `x-kubernetes-validations`), so this list must not silently de-duplicate
+    it. Every consumer that wants a set builds one.
+    """
+    return [
+        (grant or {}).get("group")
+        for grant in (spec or {}).get("grants") or []
+        if (grant or {}).get("group")
+    ]
+
+
+def warehouse_groups(warehouses):
+    """Every Keycloak group any `SqlWarehouse` grants (the read-only pass)."""
+    groups = set()
+    for _, spec in warehouses:
+        groups |= set(granted_groups(spec))
+    return groups
+
+
+def _int_in_range(value, low, high):
+    """True for a JSON integer between `low` and `high` (a bool is not an integer)."""
+    return isinstance(value, int) and not isinstance(value, bool) and low <= value <= high
+
+
+def warehouse_problem(name, spec):
+    """The first rule a `SqlWarehouse` breaks, as `(reason, message)`, or None.
+
+    The rules mirror the operator's `SqlWarehouseSpec::validate` (platform#312): the
+    name becomes the resource group `wh-<name>` and a line of the group file; a group
+    twice in `grants` would put one group twice into a `userGroup` selector; the caps,
+    the memory share and the scheduling name are what Trino accepts in
+    `resource-groups.json` (a bad value there makes the coordinator refuse to start, so
+    it is refused here). Two `default: true` objects are not a property of one object:
+    `two_defaults()` names them and the caller marks both `Invalid/TwoDefaults`.
+    """
+    if not WAREHOUSE_NAME_RE.match(name or "") or (name or "").endswith("-"):
+        return (
+            "InvalidName",
+            "warehouse name `%s` must be 1 to 40 lower-case letters, digits and dashes, "
+            "starting with a letter and not ending in a dash (it becomes the resource "
+            "group `wh-<name>`)" % name,
+        )
+    spec = spec or {}
+    size = spec.get("size") or "small"
+    if not isinstance(size, str) or size not in CLASS_DEFAULTS:
+        return (
+            "InvalidSize",
+            "size `%s` is not one of %s" % (size, ", ".join(sorted(CLASS_DEFAULTS))),
+        )
+    seen = set()
+    for group in granted_groups(spec):
+        if group in seen:
+            return ("DuplicateGroup", "group `%s` appears twice in grants" % group)
+        seen.add(group)
+    concurrency = spec.get("concurrency") or {}
+    running = concurrency.get("running")
+    if running is not None and not _int_in_range(running, 1, 100):
+        return (
+            "InvalidConcurrency",
+            "concurrency.running must be between 1 and 100, not %s" % running,
+        )
+    queued = concurrency.get("queued")
+    if queued is not None and not _int_in_range(queued, 0, 10000):
+        return (
+            "InvalidConcurrency",
+            "concurrency.queued must be between 0 and 10000, not %s" % queued,
+        )
+    share = concurrency.get("memoryShare")
+    if share is not None and (
+        not isinstance(share, str) or not MEMORY_SHARE_RE.match(share)
+    ):
+        return (
+            "InvalidConcurrency",
+            "concurrency.memoryShare must be `1%%` to `100%%`, not `%s`" % share,
+        )
+    scheduling = concurrency.get("scheduling")
+    if scheduling is not None and (
+        not isinstance(scheduling, str) or scheduling not in SCHEDULING_POLICY
+    ):
+        return (
+            "InvalidConcurrency",
+            "concurrency.scheduling must be one of %s, not `%s`"
+            % (", ".join(SCHEDULING_POLICY), scheduling),
+        )
+    return None
+
+
+def two_defaults(warehouses):
+    """The names marked `default: true` when more than one warehouse is (else empty).
+
+    Exactly one default class is the rule (design §4.3): the catch-all selector points
+    at it. With two, the catch-all cannot point anywhere, so both are
+    `Invalid/TwoDefaults` and the renderer's own rule sends the catch-all to
+    `no-warehouse` (`render_resource_groups`).
+    """
+    defaults = sorted(name for name, spec in warehouses if spec.get("default"))
+    return set(defaults) if len(defaults) > 1 else set()
+
+
+def class_numbers(size, overrides):
+    """The four numbers of one class: the class defaults with the spec's overrides.
+
+    `size` must be one of `CLASS_DEFAULTS` (the caller validates first). The keys are
+    the spec's own words (`running`, `queued`, `memoryShare`, `scheduling`), so the
+    class table and the object read alike; `render_resource_groups` maps them to
+    Trino's property names. An absent override keeps the class value.
+    """
+    numbers = dict(CLASS_DEFAULTS[size])
+    for field in numbers:
+        value = (overrides or {}).get(field)
+        if value is not None:
+            numbers[field] = value
+    return numbers
+
+
+def selector(entry):
+    """One `selectors` entry, with the identity-first rule enforced (spike R3/R5/R8).
+
+    A selector that matches on `clientTags` alone is spoofable — any client can set its
+    own tags — so it is refused here instead of rendered: a tag may only *narrow* what
+    the person's `userGroup` already allows. Raising is the last line of defence; the
+    renderer never builds such an entry, and a unit test iterates the rendered document
+    to prove none exists.
+    """
+    if entry.get("clientTags") and not entry.get("userGroup"):
+        raise ValueError(
+            "refusing to render a tag-only selector: `clientTags` must always be "
+            "narrowed by `userGroup` (a client sets its own tags)"
+        )
+    return entry
+
+
+def _group(name, limits, sub_groups=None):
+    """One root group document: its name, its three caps, then its sub groups."""
+    group = {"name": name}
+    group.update(limits)
+    if sub_groups is not None:
+        group["subGroups"] = sub_groups
+    return group
+
+
+def render_resource_groups(warehouses):
+    """The `resource-groups.json` text for the rendered warehouses (platform#312).
+
+    `warehouses` is `[(name, spec)]` of the objects that passed `warehouse_problem`, in
+    any order: the render is deterministic — largest class first, name order inside a
+    size, the same order for the sub groups and for the selectors. `json.dumps` with
+    `sort_keys=False` keeps the key order below and the text ends in a newline, so the
+    ConfigMap holds a file rather than a line.
+
+    The selectors are identity-first and read in this order: the admin group into its
+    own root group, one `userGroup` per warehouse (a person in two granted groups lands
+    in the bigger class, the first selector that matches wins), then the catch-all into
+    the one default warehouse — or into the zero-concurrency `no-warehouse` when zero or
+    two are marked default.
+    """
+    ordered = sorted(
+        warehouses,
+        key=lambda entry: (SIZE_ORDER.index(entry[1].get("size") or "small"), entry[0]),
+    )
+    sub_groups = []
+    selectors = [selector({"userGroup": ADMIN_GROUP, "group": ADMIN_ROOT_GROUP})]
+    for name, spec in ordered:
+        numbers = class_numbers(spec.get("size") or "small", spec.get("concurrency"))
+        group_name = WAREHOUSE_GROUP_PREFIX + name
+        sub_group = {
+            "name": group_name,
+            "softMemoryLimit": numbers["memoryShare"],
+            "hardConcurrencyLimit": numbers["running"],
+            "maxQueued": numbers["queued"],
+        }
+        policy = SCHEDULING_POLICY.get(numbers["scheduling"])
+        if policy:
+            sub_group["schedulingPolicy"] = policy
+        sub_groups.append(sub_group)
+        selectors.append(
+            selector(
+                {
+                    "userGroup": group_name,
+                    "group": "%s.%s" % (GLOBAL_GROUP, group_name),
+                }
+            )
+        )
+    defaults = sorted(name for name, spec in warehouses if spec.get("default"))
+    if len(defaults) == 1:
+        selectors.append(
+            {"group": "%s.%s%s" % (GLOBAL_GROUP, WAREHOUSE_GROUP_PREFIX, defaults[0])}
+        )
+    else:
+        selectors.append({"group": NO_WAREHOUSE_GROUP})
+    document = {
+        "rootGroups": [
+            _group(GLOBAL_GROUP, GLOBAL_LIMITS, sub_groups),
+            _group(ADMIN_ROOT_GROUP, ADMIN_LIMITS),
+            _group(NO_WAREHOUSE_GROUP, NO_WAREHOUSE_LIMITS),
+        ],
+        "selectors": selectors,
+    }
+    return json.dumps(document, sort_keys=False, indent=2) + "\n"
+
+
+def warehouse_members(warehouses, members):
+    """`{name: {sub}}` — each rendered warehouse's `wh-<name>` members.
+
+    The union of the members of every Keycloak group the warehouse grants (design §3.5,
+    the same read as the catalog roles): the class is granted to groups, and the group's
+    people are the `sub`s Trino will present. `members` is what the read-only pass
+    fetched, so a group the realm does not have is absent and contributes nobody.
+    """
+    return {
+        name: set().union(*(members.get(group, set()) for group in granted_groups(spec)))
+        for name, spec in warehouses
+    }
+
+
+def render_groups_txt(admin_subs, warehouse_members):
+    """The `groups.txt` text: the admin line, then one line per rendered warehouse.
+
+    `admin_subs` is the admin group's members — the line the query-visibility rules and
+    the bridge's administrator list have always read — and `warehouse_members` maps a
+    warehouse name to the members of its `wh-<name>` group. Members are sorted, and a
+    group with no members is left out: a line with an empty list would name an empty
+    principal. Deterministic: the admin line first, then the warehouses by name.
+    """
+    lines = []
+    for group, members in [(ADMIN_GROUP, admin_subs)] + [
+        (WAREHOUSE_GROUP_PREFIX + name, warehouse_members[name])
+        for name in sorted(warehouse_members)
+    ]:
+        members = sorted(members)
+        if members:
+            lines.append("%s:%s" % (group, ",".join(members)))
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
+def converge_configmap(name, key, text):
+    """Write one ConfigMap key when it differs from the live one; True when written.
+
+    GET first, PATCH only when different: the data fans out through mounted volumes (and
+    a Reloader restart for `trino-warehouses` in ticket 2/3), so a no-op write would
+    bounce a file the engine reads for nothing. A missing ConfigMap fails the tick with
+    the fix in the message — the Makefile creates both, this job's Role has no `create`,
+    and self-healing here would hide a broken install.
+    """
+    path = "%s/%s" % (CONFIGMAP_PATH, name)
+    status, live = k8s_request("GET", path)
+    if status == 404:
+        fail(
+            "ConfigMap %s does not exist — run 'make trino' or 'make access-sync' to "
+            "create it (this job may only update it)" % name
+        )
+    if status != 200 or not live:
+        fail("cannot read ConfigMap %s (HTTP %s)" % (name, status))
+    if (live.get("data") or {}).get(key, "") == text:
+        print("configmap %s: %s unchanged (%d bytes)" % (name, key, len(text)))
+        return False
+    status, _ = k8s_request("PATCH", path, {"data": {key: text}})
+    if status not in (200, 201):
+        fail("cannot update ConfigMap %s (HTTP %s)" % (name, status))
+    print("configmap %s: %s updated (%d bytes)" % (name, key, len(text)))
+    return True
+
+
 def _condition(condition_type, status, reason, message, generation):
     condition = {"type": condition_type, "status": status, "observedGeneration": generation}
     if reason:
@@ -1104,8 +1486,149 @@ def patch_status(name, phase, warehouse_id, reason, message, grants=None):
     return True
 
 
+def patch_warehouse_status(name, phase, rendered_group, engine, reason, message):
+    """Write the `SqlWarehouse` status as a merge-patch, only when it differs.
+
+    `phase` is `Ready` (the class is in `resource-groups.json`) or `Invalid` (a rule
+    failed, so nothing was rendered). `renderedGroup` is `wh-<name>` and `engine` is
+    `trino@default` for a rendered class; both are cleared (`null`) when Invalid, so a
+    status never advertises a group that is not in the file. The condition `Rendered`
+    carries the reason. Conditions this job does not own are preserved as they are, and
+    `lastTransitionTime` is set only on a write, so a converged tick leaves the object
+    (and its `resourceVersion`) alone.
+    """
+    path = "%s/%s" % (SQLWAREHOUSE_PATH, name)
+    status, live = k8s_request("GET", path)
+    if status != 200 or not live:
+        fail("cannot read SqlWarehouse %s (HTTP %s)" % (name, status))
+    generation = (live.get("metadata") or {}).get("generation")
+    current = live.get("status") or {}
+    desired = [
+        _condition(
+            "Rendered",
+            "True" if phase == "Ready" else "False",
+            reason,
+            message,
+            generation,
+        )
+    ]
+    live_owned = [
+        condition
+        for condition in current.get("conditions") or []
+        if condition.get("type") in WAREHOUSE_OWNED_CONDITIONS
+    ]
+    foreign = [
+        condition
+        for condition in current.get("conditions") or []
+        if condition.get("type") not in WAREHOUSE_OWNED_CONDITIONS
+    ]
+    unchanged = (
+        current.get("phase") == phase
+        and current.get("renderedGroup") == rendered_group
+        and current.get("engine") == engine
+        and current.get("observedGeneration") == generation
+        and [_signature(condition) for condition in live_owned]
+        == [_signature(condition) for condition in desired]
+    )
+    if unchanged:
+        return False
+
+    written = []
+    for condition in desired:
+        condition = dict(condition)
+        condition["lastTransitionTime"] = datetime.now(timezone.utc).isoformat(
+            timespec="seconds"
+        )
+        written.append(condition)
+    status, _ = k8s_request(
+        "PATCH",
+        path + "/status",
+        {
+            "status": {
+                "phase": phase,
+                "renderedGroup": rendered_group,
+                "engine": engine,
+                "observedGeneration": generation,
+                "conditions": written + foreign,
+            }
+        },
+    )
+    if status not in (200, 201):
+        fail("cannot write SqlWarehouse %s status (HTTP %s)" % (name, status))
+    return True
+
+
+def converge_warehouses(warehouses, members, unknown):
+    """Render the warehouses into both ConfigMaps and write their statuses.
+
+    Returns the number of failures (always 0 here: every problem is a verdict on the
+    object, and a refused write raises or fails the tick). The verdicts come first, so
+    one broken `SqlWarehouse` never stops the others; only the objects that passed reach
+    the two files. The group file is written even with no warehouse at all, because the
+    `stardelt-admins` line is what the query-visibility rules read.
+    """
+    defaults = two_defaults(warehouses)
+    valid, invalid = [], []
+    for name, spec in warehouses:
+        problem = warehouse_problem(name, spec)
+        if problem is None and name in defaults:
+            problem = (
+                "TwoDefaults",
+                "more than one SqlWarehouse is `default: true`; exactly one class may be "
+                "the default, so none of them is rendered",
+            )
+        if problem is None:
+            missing = sorted(group for group in granted_groups(spec) if group in unknown)
+            if missing:
+                problem = ("UnknownGroup", "the realm has no group `%s`" % missing[0])
+        if problem is None:
+            valid.append((name, spec))
+        else:
+            invalid.append((name, spec, problem))
+
+    for name, _, (reason, message) in invalid:
+        patch_warehouse_status(name, "Invalid", None, None, reason, message)
+        print("warehouse %s: invalid %s" % (name, reason))
+
+    try:
+        resource_groups = render_resource_groups(valid)
+    except ValueError as e:
+        # The identity-first rule (spike R8): a spoofable selector is worse than a
+        # failed tick, so nothing is written and the tick exits non-zero.
+        fail("cannot render resource-groups.json: %s" % e)
+    rendered_members = warehouse_members(valid, members)
+    converge_configmap(WAREHOUSE_CONFIGMAP, WAREHOUSE_CONFIGMAP_KEY, resource_groups)
+    converge_configmap(
+        GROUP_CONFIGMAP,
+        GROUP_CONFIGMAP_KEY,
+        render_groups_txt(members.get(ADMIN_GROUP, set()), rendered_members),
+    )
+    for name, _ in valid:
+        rendered_group = WAREHOUSE_GROUP_PREFIX + name
+        patch_warehouse_status(
+            name,
+            "Ready",
+            rendered_group,
+            WAREHOUSE_ENGINE,
+            "Ready",
+            "%d member(s) in the group file, resource group %s" % (
+                len(rendered_members[name]),
+                rendered_group,
+            ),
+        )
+        print(
+            "warehouse %s: rendered %s (%d member(s))"
+            % (name, rendered_group, len(rendered_members[name]))
+        )
+    print(
+        "warehouses: %d rendered, %d invalid (%d declared)"
+        % (len(valid), len(invalid), len(warehouses))
+    )
+    return 0
+
+
 def main():
-    """Converge every Catalog, then report warehouses no Catalog claims."""
+    """Converge every Catalog and SqlWarehouse, then report orphan warehouses."""
     global PLATFORM_BUCKET, _TABLE_DROPPED
     # One drop per tick is enough: a removal drops the table, nothing republishes it
     # until step 5, so a second removal needs no second DELETE (platform#384).
@@ -1113,8 +1636,9 @@ def main():
     s3 = s3_credentials()
     PLATFORM_BUCKET = s3["bucket"]
     catalogs = list_catalogs()
+    warehouses = warehouse_pairs(list_warehouses())
     static = static_assignees()
-    groups = managed_groups(catalogs)
+    groups = managed_groups(catalogs) | warehouse_groups(warehouses)
 
     # 1. Keycloak, read-only, before any write: a realm that refuses this client
     #    fails the tick with nothing written. A group that is not there at all is a
@@ -1245,7 +1769,15 @@ def main():
             % (name, action, len(desired), written, removed, drift)
         )
 
-    # 5. The catalog decision table (platform#359): after the grants were written,
+    # 5. Warehouses (platform#312): the classes become the coordinator's resource
+    #    groups and the granted groups' members become the group file's `wh-<name>`
+    #    lines. `trino-group-file` holds the admin line this job has always kept
+    #    fresh; `trino-warehouses` is loaded once by the coordinator, so a changed
+    #    file needs the restart of ticket 2/3 — writing only on a difference keeps
+    #    a converged tick from restarting the engine.
+    failures += converge_warehouses(warehouses, members, unknown)
+
+    # 6. The catalog decision table (platform#359): after the grants were written,
     #    so the bridge never sees a permission the warehouse does not have. A failed
     #    push leaves the previous table and the bridge falls back to Lakekeeper; a
     #    removal dropped the table before it happened (`invalidate_access_table`), so

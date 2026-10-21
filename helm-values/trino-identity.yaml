@@ -16,11 +16,9 @@
 #     subject. The rest of the platform is keyed on that id too: the catalog's
 #     role assignees are `oidc~<sub>`, the OPA bridge looks a person up as
 #     `oidc~<sub>`, and the group file in ConfigMap `trino-group-file` lists
-#     ids (scripts/sync-trino-groups.sh, GROUP_PRINCIPAL=sub).
-#     Until `make catalog-enforce` the principal is `preferred_username`
-#     (`helm-values/trino-identity-file-only.yaml` is the overlay that keeps
-#     it); query history then shows an opaque id instead of a name, which is
-#     the deliberate trade of the design (Nova renders the name from its own
+#     ids (CronJob access-sync, scripts/access-sync-job.py, platform#312).
+#     Query history shows an opaque id instead of a name, which is the
+#     deliberate trade of the design (Nova renders the name from its own
 #     session).
 #     Trino trusts audience `trino` (its own client id) plus
 #     `http-server.authentication.oauth2.additional-audiences`; the realm's
@@ -164,9 +162,10 @@ server:
     http-server.authentication.oauth2.client-id=trino
     http-server.authentication.oauth2.client-secret=${ENV:TRINO_CLIENT_SECRET}
     # The Keycloak user id (platform#311): the catalog's role assignees, the
-    # bridge's `adminUsers` and the group file are all keyed on it. See the
-    # header; the overlay that keeps `preferred_username` is
-    # helm-values/trino-identity-file-only.yaml (make catalog-enforce-rollback).
+    # bridge's `adminUsers` and the group file are all keyed on it, and the
+    # group file has been written by access-sync by `sub` since platform#312
+    # (the rollback overlay helm-values/trino-identity-file-only.yaml keeps it
+    # and only takes the bridge out of the chain).
     http-server.authentication.oauth2.principal-field=sub
     http-server.authentication.oauth2.scopes=openid
     # Validate access tokens locally against the realm JWKS (`exp`, `iss`, `aud`)
@@ -227,7 +226,7 @@ server:
 # /etc/trino/access-control, with `security.config-file` pointing at it (see
 # the coordinator ConfigMap the chart renders). Committed: it names only the
 # group, no usernames. The membership itself lives in ConfigMap
-# `trino-group-file`, written by scripts/sync-trino-groups.sh and never
+# `trino-group-file`, written by CronJob access-sync (platform#312) and never
 # committed.
 #
 # `impersonation` (#310) is what lets Superset act for a person instead of for
@@ -278,10 +277,11 @@ coordinator:
   # Group provider (platform#125): Trino cannot read groups from the OIDC
   # token, so the file provider maps the principal -> groups. The file
   # itself comes from ConfigMap `trino-group-file` (one `group:user,...` line
-  # per group), written by scripts/sync-trino-groups.sh from the live realm's
-  # `stardelt-admins` membership and refreshed by `make trino`. Its strings are
-  # Keycloak user ids, matching `principal-field=sub` (platform#311;
-  # GROUP_PRINCIPAL=sub is the script's default).
+  # per group), written by CronJob access-sync (platform#312) from the live
+  # realm: the `stardelt-admins` line the query rules read, and one `wh-<name>`
+  # line per SqlWarehouse, which is what the resource-group selectors match.
+  # Its strings are Keycloak user ids, matching `principal-field=sub`
+  # (platform#311).
   # `file.refresh-period` picks a remounted file up with no restart; a
   # coordinator restart (which drops running queries — pick a quiet moment) is
   # only needed when this values file itself changes.

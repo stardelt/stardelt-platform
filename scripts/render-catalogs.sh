@@ -76,7 +76,7 @@ NAME_RE='^[a-z][a-z0-9]{0,39}$'
 PLATFORM_CATALOG="warehouse"
 # The group whose members are the bridge's `adminUsers` (admin-arg).
 ADMIN_GROUP="${ADMIN_GROUP:-stardelt-admins}"
-# The group file `make trino` writes (scripts/sync-trino-groups.sh).
+# The group file `make trino` writes (CronJob access-sync, platform#312).
 GROUP_CONFIGMAP="${GROUP_CONFIGMAP:-trino-group-file}"
 
 mode="${1:-}"
