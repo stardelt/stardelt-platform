@@ -25,6 +25,9 @@
 # arbitrary code, so Jupyter Server's `frame-ancestors` list is a deliberate
 # choice: exactly `'self'` plus Nova's origin, which the hub passes at spawn
 # from the identity contract. The config file documents the mechanism.
+# Python 3.11 (3.11.10 in the 2024-10-07 base image). Keep both on the same
+# Python minor: Spark Connect UDFs fail otherwise — the Spark image installs its
+# own CPython 3.11 for the workers and must stay on this minor (platform#369).
 FROM quay.io/jupyter/scipy-notebook:2024-10-07
 
 USER ${NB_UID}
@@ -37,6 +40,9 @@ USER ${NB_UID}
 # dependency (`jupyterlab-git-core`) before it uninstalls the old package, and
 # that late uninstall deletes the new `package.json`, so `labextension list`
 # no longer shows `@jupyterlab/git`. Uninstall first, in its own invocation.
+# The Spark workers run these exact versions of pandas, pyarrow and numpy
+# (images/spark/Dockerfile installs them into its own Python 3.11): a pandas UDF
+# pickles pandas objects on this side and rebuilds them there (platform#369).
 RUN python3 -m pip uninstall -y jupyterlab-git \
     && python3 -m pip install --no-cache-dir --upgrade-strategy only-if-needed \
         pandas==2.2.3 \
