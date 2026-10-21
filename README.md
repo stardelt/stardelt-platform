@@ -1079,6 +1079,8 @@ Status fields:
 | `status.phase` | `Ready` (a warehouse of that name exists) or `Invalid` (a rule failed; no warehouse was created) |
 | `status.warehouseId` | The Lakekeeper warehouse id — Nova and the permission bridge read it instead of guessing by name |
 | `status.conditions[CatalogReady]` | `reason`/`message` name the rule when `Invalid`; `observedGeneration` says which spec the verdict is for |
+| `status.conditions[GrantsReady]` | `True` when every declared group's grants are on the warehouse; `False` with `reason` `UnknownGroup` (the realm has no such group) or `RoleConflict` (a Lakekeeper role of that name is not the sync's) |
+| `status.conditions[Drift]` | `True` with `reason: ForeignGrants` and a **count** when the warehouse carries grants held by a subject the sync does not manage (the platform's service accounts at project level, the bootstrap user's ownership, a person); `False`/`Clean` otherwise. No names |
 
 The job is idempotent: an existing warehouse is **adopted** (no storage change, no
 credential refresh — the bootstrap Job owns the platform warehouse's credential),
@@ -1098,6 +1100,52 @@ advertise an isolation that is not there.
 stay, and the job reports it as `orphan warehouse <name>` on each tick. Removing a
 catalog for good is a maintainer decision on the warehouse, not a side effect of
 `kubectl delete catalog`.
+
+### Grants: groups become roles, members become assignees
+
+The same CronJob writes the catalog's grants (platform#306). Grants are **groups**,
+never people (design `design/multitenant-catalogs.md` §5.1–§5.3), and Lakekeeper's
+OpenFGA authorizer stores role membership itself, so the job materialises the realm
+into the catalog:
+
+- every declared group (the `owner` and each `grants[].group`) becomes a Lakekeeper
+  **role of the same name**, description `stardelt group <group>`;
+- the group's Keycloak members are the role's **assignees**, by OIDC `sub`
+  (`oidc~<sub>`) — valid before a person has ever signed in, and removed on the next
+  tick when they leave the group;
+- each grant becomes a grant on the warehouse by the group's role, which Lakekeeper
+  inherits down to every namespace, table and view, existing and future:
+
+| `verb` | Lakekeeper relation | Means |
+|--------|--------------------|-------|
+| `browse` | `describe` | metadata and existence; also the ability to address the catalog |
+| `select` | `select` | read data |
+| `write` | `modify` | insert, update, delete, merge, alter; also drop and rename |
+| `create` | `create` | create schemas and tables inside it |
+| `manage` | `manage_grants` | grant and revoke on this warehouse — **not** `ownership`, which would include every data right |
+
+The owner group gets `manage_grants` and nothing else. The admin group
+(`stardelt-admins`) always gets a role, its members, and `project_admin` on the
+project, so every platform administrator holds that through the group. `superset` —
+the PASSWORD account Superset connects with — has no Keycloak user, so
+`STATIC_ASSIGNEES` (`manifests/access-sync.yaml`) adds it to `stardelt-users`.
+
+The job owns only what it created, and only where it was declared: a grant on a
+managed warehouse held by one of its own roles that the Catalog does not declare is
+removed; a grant held by anyone else is left alone and counted in `Drift`. A role
+whose description does not start with `stardelt group ` is never edited — a
+same-named role is reported as `RoleConflict` instead.
+
+```sh
+kubectl -n stardelt get catalog warehouse -o jsonpath='{.status.conditions}'
+make access-sync-now            # log: one line per role (counts only) and per catalog
+```
+
+**Not built: Trino enforcement.** Trino still authorises from its file rules
+(`helm-values/trino-identity.yaml`); the grants above are enforced where the catalog
+is asked — by Nova today, by the OPA bridge when Trino's `access-control` moves to it
+(a later authz step). Until then a person's Trino queries are not narrowed by
+`Catalog.spec.grants`.
 
 ---
 
@@ -1322,7 +1370,7 @@ kubectl -n stardelt delete pods -l spark-role=executor
 | `verify-oidc-clients` | Prove every client secret still authenticates at the token endpoint (`invalid_grant` vs `unauthorized_client`) and matches what the realm stores; names the drifting clients and the fix |
 | `sync-catalog-clients` | Create/converge the seven catalog-caller service clients (`svc-catalog-*`) and their Secrets, audience `lakekeeper`, no group; idempotent (#282, #303; Lakekeeper validates them since #285) |
 | `delete-catalog-clients` | Delete those seven clients and Secrets; only `stardelt-managed=service` clients, needs `YES=1` |
-| `access-sync` | Create/refresh ConfigMap `access-sync-script` and apply CronJob `access-sync` — one Lakekeeper warehouse per `Catalog` (platform#305) |
+| `access-sync` | Create/refresh ConfigMap `access-sync-script` and apply CronJob `access-sync` — one Lakekeeper warehouse per `Catalog`, its `owner`/`grants` on that warehouse (platform#305, #306) |
 | `access-sync-now` | Run that CronJob once as a Job now, wait for it and print its log |
 | `trino` | Install/upgrade Trino; adds `helm-values/trino-identity.yaml` (Keycloak OAuth2 + service-account password) when `stardelt-identity` exists |
 | `sync-trino-groups` | Sync the live realm's `stardelt-admins` membership into ConfigMap `trino-group-file` (Trino query visibility); idempotent, runs inside `make trino` (#125) |
@@ -1373,7 +1421,7 @@ manifests/            Plain Kubernetes manifests (kubectl apply)
   keycloak.yaml         Platform IdP: Keycloak + its CNPG Cluster (make install-identity)
   lakekeeper-bootstrap.yaml  Job: accept ToS + create default warehouse
   lakekeeper-network-policy.yaml  Catalog ingress: the callers that may reach 8181 / the bridge
-  access-sync.yaml      CronJob: one Lakekeeper warehouse per Catalog, status written back
+  access-sync.yaml      CronJob: one Lakekeeper warehouse per Catalog, its grants, status written back
   trino-group-sync.yaml CronJob: Trino query-visibility group file from the live realm
   nova-deployment.yaml  stardelt Nova UI + backend
   spark.yaml            Spark Connect endpoint + Spark configuration (make install-spark)
@@ -1388,6 +1436,7 @@ images/
 scripts/
   app-secrets.sh        Generate the Airflow/Superset Secrets (idempotent, never printed)
   access-sync-job.py    CronJob access-sync: Catalog objects become Lakekeeper warehouses
+                        and grants (groups become roles, members assignees)
   check-deps.sh         Verify required CLI tools
   identity-bootstrap.sh Generate the IdP Secrets + render realm/identity ConfigMaps
   keycloak-sync-trino-client.sh  Sync the live realm's Trino token settings (import skips an existing realm)
