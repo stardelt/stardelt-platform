@@ -60,4 +60,10 @@ bash scripts/check-catalog-template.sh
 echo "› script: check-bridge-uri"
 bash scripts/check-bridge-uri.sh
 
+# The notebook's Spark Connect client and the platform's Spark server are one Spark
+# line (platform#399): a newer client mis-parses the server's settings and every
+# createDataFrame in every notebook dies with an opaque int() error.
+echo "› script: check-spark-parity"
+bash scripts/check-spark-parity.sh
+
 echo "lint: OK"

@@ -564,6 +564,50 @@ def _install_rdd_hint() -> bool:
     return True
 
 
+def _client_server_spark_versions(session):
+    """The client and the server Spark versions, best effort (None when unknown)."""
+    client = None
+    try:
+        import pyspark
+
+        client = getattr(pyspark, "__version__", None)
+    except Exception:  # noqa: BLE001 - no pyspark means no check, not a failure
+        client = None
+    server = None
+    try:
+        server = session.version
+    except Exception:  # noqa: BLE001 - an unreadable version is not a mismatch
+        server = None
+    return client, server
+
+
+def _check_client_server_versions(session):
+    """Refuse to work when the client and the server are on different Spark lines.
+
+    A client newer than the server reads the server's settings in a spelling it
+    mis-parses: Spark 4.1.3 answers ``spark.sql.session.localRelationSizeLimit``
+    as ``3221225472b`` (Scala BigInt notation), the 4.2 client calls ``int()`` on
+    it, and every ``createDataFrame`` fails with ``invalid literal for int()``
+    (platform#399). The pair is checked at build time by
+    ``scripts/check-spark-parity.sh``; this is the runtime guard for an image
+    that was built against another server.
+    """
+    client, server = _client_server_spark_versions(session)
+    if not client or not server:
+        return
+
+    def line(version):
+        parts = str(version).split(".")
+        return ".".join(parts[:2]) if len(parts) >= 2 else str(version)
+
+    if line(client) != line(server):
+        raise RuntimeError(
+            "the notebook's Spark client is {client} but the platform's Spark server "
+            "is {server}: they must be on the same Spark line, or Spark's settings "
+            "break in unreadable ways (platform#399)".format(client=client, server=server)
+        )
+
+
 def spark(app_name="stardelt-notebook"):
     """Open a Spark Connect session for bulk work, as the signed-in person.
 
@@ -607,6 +651,7 @@ def spark(app_name="stardelt-notebook"):
     token = _token()
     cached = _cached_spark_session(token)
     if cached is not None:
+        _check_client_server_versions(cached)
         return cached
 
     catalog_uri = os.environ.get("STARDELT_CATALOG_URI", CATALOG_URI_DEFAULT).strip()
@@ -671,6 +716,10 @@ def spark(app_name="stardelt-notebook"):
             except Exception:  # noqa: BLE001 - the original failure is the one to report
                 pass
         raise RuntimeError(f"stardelt.spark failed: {_redact(_one_line(exc), token)}") from exc
+
+    # The client and the server must be on the same Spark line (platform#399);
+    # a newer client mis-parses the server's settings.
+    _check_client_server_versions(session)
 
     # After the session exists: `df.rdd` says what to use instead of an RDD
     # (platform#370). Guarded inside the installer, so a pyspark layout this
