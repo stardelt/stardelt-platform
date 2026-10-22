@@ -317,6 +317,18 @@ and, with it, a way to query the warehouse **as themselves**.
   `/opt/stardelt/notebooks/`. `jupyterlab-sql` is deliberately absent — its last release predates
   JupyterLab 4 and it cannot carry the per-user token. The package is private, like Superset, so
   the pod pulls with the `ghcr-creds` secret.
+* **The helper (`import stardelt`).** The notebook helper lives in its own repository,
+  [`stardelt/stardelt-python`](https://github.com/stardelt/stardelt-python) (MIT): the `stardelt`
+  package (`sql`, `write_df`, `spark`, `spark_tips`, `connection`), its tests and its releases.
+  The image installs **one pinned release** of it, not a vendored copy. The pin lives in the
+  `Makefile` — `STARDELT_LIB_REF` (the commit) and `STARDELT_LIB_TAG` (the release it belongs to,
+  `v0.1.0`) — and the Dockerfile installs that commit as a build arg. It is pinned by **commit
+  SHA, not by tag**: a moving tag is not an upgrade path, the same rule the image pins follow
+  (`scripts/pin-image.sh`). `scripts/check-stardelt-pin.sh` (run by `make lint`, and therefore by
+  CI) fails the build when the Dockerfile's pin and the Makefile's disagree, when the pin is not a
+  full SHA, or when the Dockerfile stops installing that pin. To bump it: change both places
+  (the Makefile and the `ARG` default in `images/jupyter/Dockerfile`), merge, and pin the new
+  image digest as described under [Jupyter single-user image](#jupyter-single-user-image).
 * **Framing.** The same image installs `/usr/local/etc/jupyter/jupyter_server_config.py`, which
   allows exactly Nova's origin to frame this server — the origin the hub passes as
   `STARDELT_NOVA_ORIGIN` at spawn (from the identity contract). With no IdP the variable is
@@ -1804,8 +1816,8 @@ Endpoint (ClusterIP only — there is deliberately no Ingress):
 sc://spark-connect.stardelt.svc.cluster.local:15002
 ```
 
-From a notebook, use the helper the single-user image ships. It sets the catalogs
-and the token for you:
+From a notebook, use the helper the single-user image ships (the pinned release of
+`stardelt/stardelt-python`). It sets the catalogs and the token for you:
 
 ```python
 import stardelt
@@ -1921,7 +1933,7 @@ memory up to its default cap of 1g plus about 0.4g of metaspace, code and thread
 2.4 GiB (arithmetic, not a measurement). When a call fails
 that way, write the result to a table (`df.writeTo("<catalog>.<schema>.<table>").createOrReplace()`)
 and read it back, or aggregate first; do not raise the limit. The
-[notebook cheat sheet](images/jupyter/stardelt/README.md#keeping-the-shared-driver-healthy)
+[notebook cheat sheet](https://github.com/stardelt/stardelt-python/blob/v0.1.0/stardelt/README.md#keeping-the-shared-driver-healthy)
 (platform#374) has the patterns that keep the driver small.
 
 ### Catalog wiring
@@ -2530,7 +2542,11 @@ publishes `ghcr.io/stardelt/superset:dev` (plus `sha-<short>`) on merge to `main
 ### Jupyter single-user image
 
 `images/jupyter/Dockerfile` adds `trino`, `pyspark[connect]`, `pandas` and `pyarrow` to
-`quay.io/jupyter/scipy-notebook` and ships `warehouse-quickstart.ipynb`. Same workflow:
+`quay.io/jupyter/scipy-notebook` and ships `warehouse-quickstart.ipynb`. It also installs
+the **pinned release** of the notebook helper (`stardelt/stardelt-python`): the pin lives in
+the `Makefile` (`STARDELT_LIB_REF`, the commit; `STARDELT_LIB_TAG`, the release) and the
+Dockerfile installs it as a build arg — `scripts/check-stardelt-pin.sh`, run by `make lint`,
+fails the build when the two disagree or when the pin is not a full commit SHA. Same workflow:
 CI publishes `ghcr.io/stardelt/jupyter-singleuser:dev` on merge to `main`, and
 `helm-values/jupyterhub.yaml` points `singleuser.image` at it with the `ghcr-creds`
 pull secret; `make build-jupyter-image` + `make push-jupyter-image` are for local

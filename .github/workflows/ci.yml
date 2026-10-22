@@ -330,7 +330,9 @@ jobs:
           ! grep -q 'name: seaweedfs-s3-secret' /tmp/umbrella.yaml || { echo "SeaweedFS must read seaweedfs-s3-config, not generate its own secret" >&2; exit 1; }
 
   # ---------------------------------------------------------------------------
-  # Notebook helper (images/jupyter/stardelt): install the package, run pytest
+  # Notebook helper (stardelt/stardelt-python): the library has its own
+  # repository; check it out at the release the platform pins, install it the
+  # way the notebook image does and run its tests
   # ---------------------------------------------------------------------------
   notebook-helper:
     name: Notebook helper (pytest)
@@ -338,18 +340,30 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Read the pinned library ref
+        id: pin
+        # The Makefile holds the pin (STARDELT_LIB_REF); the tag names the
+        # release it belongs to.
+        run: echo "ref=$(make -s print-stardelt-lib-ref)" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the pinned library release
+        uses: actions/checkout@v7
+        with:
+          repository: stardelt/stardelt-python
+          ref: ${{ steps.pin.outputs.ref }}
+          path: stardelt-python
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Install the package and its test dependencies
-        # Same pins the notebook image ships (images/jupyter/Dockerfile), so
-        # the tests run against what the notebooks import. Installing the
-        # package first also proves the build backend works.
+      - name: Install the library at the pinned ref
+        # The same install the notebook image runs (images/jupyter/Dockerfile),
+        # so this job proves the pin resolves and the library works at it.
         run: |
-          pip install ./images/jupyter
+          pip install "stardelt @ git+https://github.com/stardelt/stardelt-python@${{ steps.pin.outputs.ref }}"
           pip install pytest
 
-      - name: Run stardelt package tests
-        run: python -m pytest images/jupyter/tests -q
+      - name: Run the library's tests
+        run: python -m pytest stardelt-python/tests -q
