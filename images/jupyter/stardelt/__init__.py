@@ -495,6 +495,75 @@ def spark_tips() -> None:
         print(line)
 
 
+# What `df.rdd` says on Spark Connect, on top of pyspark's own message: classic
+# Spark's RDD API does not exist there, and the property installed below names
+# the two replacements people look for first (platform#370).
+RDD_HINT = (
+    "Spark Connect has no RDD API. For the number of partitions use "
+    "df.select(spark_partition_id()).distinct().count(); for per-partition Python use "
+    "mapInPandas or applyInPandas; see the Spark Connect notes in the stardelt helper README."
+)
+
+# The hint replaces a property on a process-wide class, so it is installed once
+# per process, not once per session.
+_RDD_HINT_INSTALLED = False
+
+
+def _install_rdd_hint() -> bool:
+    """Make ``df.rdd`` explain itself on Spark Connect, once per process.
+
+    ``pyspark.sql.connect.dataframe.DataFrame.rdd`` raises
+    ``PySparkNotImplementedError`` with ``[NOT_IMPLEMENTED] rdd is not implemented.``
+    — true, and useless to anyone who knows RDDs. The replaced property raises the
+    same class with the same ``NOT_IMPLEMENTED`` code and pyspark's own message,
+    one sentence longer (``RDD_HINT``): ``spark_partition_id()`` for the number of
+    partitions, ``mapInPandas``/``applyInPandas`` for per-partition Python.
+
+    Best effort, twice over: a pyspark whose modules moved (``ImportError`` or
+    ``AttributeError`` here) or whose error class stops taking these keywords
+    keeps its own property, and ``rdd`` then raises exactly what it raised
+    before. The hint is a convenience, never a reason for ``spark()`` to fail.
+    Returns whether the hint is installed.
+    """
+    global _RDD_HINT_INSTALLED
+    if _RDD_HINT_INSTALLED:
+        return True
+    try:
+        from pyspark.errors import PySparkNotImplementedError
+        from pyspark.sql.connect.dataframe import DataFrame
+
+        original = DataFrame.rdd
+    except (ImportError, AttributeError):
+        return False
+
+    def rdd(self):
+        # Let pyspark render its own error, then keep class, code, message
+        # parameters and wording and append the sentence. Any surprise in that
+        # class (a renamed keyword, a property that stops raising) falls back to
+        # the untouched property instead of a confusing TypeError.
+        try:
+            base = PySparkNotImplementedError(
+                errorClass="NOT_IMPLEMENTED", messageParameters={"feature": "rdd"}
+            )
+            condition = base.getCondition()
+            rendered = base.getMessage()
+            prefix = f"[{condition}] " if condition else ""
+            body = rendered[len(prefix):] if rendered.startswith(prefix) else rendered
+            error = PySparkNotImplementedError(
+                message=f"{body} {RDD_HINT}",
+                errorClass=condition,
+                messageParameters=base.getMessageParameters(),
+            )
+        except Exception:  # noqa: BLE001 - pyspark's own error beats a broken property
+            original.__get__(self)  # raises pyspark's error, unchanged
+            raise
+        raise error
+
+    DataFrame.rdd = property(rdd)
+    _RDD_HINT_INSTALLED = True
+    return True
+
+
 def spark(app_name="stardelt-notebook"):
     """Open a Spark Connect session for bulk work, as the signed-in person.
 
@@ -602,6 +671,11 @@ def spark(app_name="stardelt-notebook"):
             except Exception:  # noqa: BLE001 - the original failure is the one to report
                 pass
         raise RuntimeError(f"stardelt.spark failed: {_redact(_one_line(exc), token)}") from exc
+
+    # After the session exists: `df.rdd` says what to use instead of an RDD
+    # (platform#370). Guarded inside the installer, so a pyspark layout this
+    # does not know costs the hint and nothing else.
+    _install_rdd_hint()
 
     previous = _SPARK_SESSION
     _SPARK_SESSION, _SPARK_TOKEN = session, token

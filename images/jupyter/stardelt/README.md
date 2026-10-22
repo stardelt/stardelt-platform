@@ -63,6 +63,28 @@ calls fails with `[PYTHON_VERSION_MISMATCH] Python in worker has different versi
 than that in driver ...` while DataFrame and SQL keep working. Keep both on the same
 Python minor: Spark Connect UDFs fail otherwise (platform#369).
 
+## Spark Connect: what is different
+
+The notebook talks to Spark Connect, not to a driver you can reach into: there is no
+`sparkContext` and no RDD API, because both live inside the JVM on the other side of the
+connection. Coming from classic Spark, the first three calls of a rewrite tend to be the
+ones in the left column. `stardelt.spark()` installs a hint on `df.rdd` that says this in
+the error itself; the table is the rest of it.
+
+| RDD API (classic Spark) | On Spark Connect |
+|---|---|
+| `df.rdd`, `df.rdd.getNumPartitions()` | `df.select(spark_partition_id()).distinct().count()` — the number of partitions (`2` for `spark.range(10)`, `4` after `repartition(4)`); `df.rdd` raises `[NOT_IMPLEMENTED]` and names this |
+| `rdd.map(...)` | `df.select(...)` / `df.withColumn(...)` for column work, or `df.mapInPandas(...)` when the work is per-partition Python |
+| `rdd.foreach(...)` | `df.foreach(...)` (runs your Python on a worker — see below) — or write the result to a table and read it |
+| `sparkContext.parallelize(...)` | `spark.createDataFrame(...)` for a local list, `spark.range(...)` for numbers |
+| `sparkContext.broadcast(x)` | join the small DataFrame: `F.broadcast(small_df)` — there is no broadcast handle to pass around |
+| accumulators | one `groupBy(...).agg(...)` and read the row: an aggregate is the state |
+| `sparkContext.setLogLevel(...)` | not available — the log level belongs to the shared driver, not to your session |
+
+Extra libraries are not available on executors either: the workers run exactly the pandas,
+pyarrow and numpy versions of this image, so an `import` of anything you installed in the
+notebook fails inside a UDF (see "Python on executors" above).
+
 ## Keeping the shared driver healthy
 
 Every session `stardelt.spark()` opens runs against the same driver — 1 GiB heap in a

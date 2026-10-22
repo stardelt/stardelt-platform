@@ -747,3 +747,149 @@ def test_env_overrides_for_uri_and_s3(fake_spark, visible_catalogs, monkeypatch)
     session = stardelt.spark()
     assert session.configs["spark.sql.catalog.warehouse.uri"] == "http://catalog.example:8181/catalog"
     assert session.configs["spark.sql.catalog.bronze.s3.endpoint"] == "http://s3.example:8333"
+
+
+# spark: the RDD hint (platform#370) -------------------------------------------
+#
+# Spark Connect's DataFrame has no RDD, and the error says only
+# "[NOT_IMPLEMENTED] rdd is not implemented." — a data engineer coming from classic
+# Spark loses time there and then finds `spark_partition_id()` by hand. The hint
+# replaces the property once per process with the same class, the same code and
+# one extra sentence. The module tree below mirrors pyspark 4.2: `pyspark.errors`
+# with the class and its message format, `pyspark.sql.connect.dataframe` with the
+# property, and `pyspark.sql.connect.session` for the message that must not change.
+
+
+class FakePySparkNotImplementedError(NotImplementedError):
+    """pyspark 4.x's error shape: a condition, parameters, a rendered message."""
+
+    def __init__(self, message=None, errorClass=None, messageParameters=None):
+        self._condition = errorClass
+        self._messageParameters = messageParameters
+        feature = (messageParameters or {}).get("feature", "it")
+        self._message = message if message is not None else f"{feature} is not implemented."
+        super().__init__(self.getMessage())
+
+    def getCondition(self):
+        return self._condition
+
+    def getMessageParameters(self):
+        return self._messageParameters
+
+    def getMessage(self):
+        return f"[{self._condition}] {self._message}"
+
+    def __str__(self):
+        return self.getMessage()
+
+
+class FakePySparkAttributeError(AttributeError):
+    """``PySparkAttributeError``: the JVM-attribute message pyspark already gets right."""
+
+    def __init__(self, errorClass=None, messageParameters=None):
+        attr = (messageParameters or {}).get("attr", "attribute")
+        self._message = (
+            f"[{errorClass}] Attribute {attr} is not supported in Spark Connect "
+            "as it depends on the JVM."
+        )
+        super().__init__(self._message)
+
+    def __str__(self):
+        return self._message
+
+
+SPARK_CONTEXT_MESSAGE = (
+    "[JVM_ATTRIBUTE_NOT_SUPPORTED] Attribute sparkContext is not supported in "
+    "Spark Connect as it depends on the JVM."
+)
+
+
+class FakeConnectDataFrame:
+    """The property the hint replaces — and only that one."""
+
+    @property
+    def rdd(self):
+        raise FakePySparkNotImplementedError(
+            errorClass="NOT_IMPLEMENTED", messageParameters={"feature": "rdd"}
+        )
+
+
+class FakeConnectSession:
+    """Where ``spark.sparkContext`` lives: already clear, not ours to change."""
+
+    @property
+    def sparkContext(self):
+        raise FakePySparkAttributeError(
+            errorClass="JVM_ATTRIBUTE_NOT_SUPPORTED",
+            messageParameters={"attr": "sparkContext"},
+        )
+
+
+@pytest.fixture
+def fake_connect(fake_spark, monkeypatch):
+    """``fake_spark`` plus the modules the hint imports, and a pristine class."""
+    errors = types.ModuleType("pyspark.errors")
+    errors.PySparkNotImplementedError = FakePySparkNotImplementedError
+    connect = types.ModuleType("pyspark.sql.connect")
+    dataframe = types.ModuleType("pyspark.sql.connect.dataframe")
+    dataframe.DataFrame = FakeConnectDataFrame
+    session = types.ModuleType("pyspark.sql.connect.session")
+    session.SparkSession = FakeConnectSession
+    connect.dataframe = dataframe
+    connect.session = session
+    sys.modules["pyspark"].errors = errors
+    sys.modules["pyspark.sql"].connect = connect
+    for module in (errors, connect, dataframe, session):
+        monkeypatch.setitem(sys.modules, module.__name__, module)
+    monkeypatch.setattr(stardelt, "_RDD_HINT_INSTALLED", False)
+    # The hint assigns to the class; monkeypatch puts the original property back.
+    monkeypatch.setattr(FakeConnectDataFrame, "rdd", FakeConnectDataFrame.__dict__["rdd"])
+    return FakeConnectDataFrame
+
+
+def test_rdd_hint_raises_notimplemented_with_the_sentence(fake_connect, visible_catalogs):
+    stardelt.spark()  # every notebook gets the hint through this call
+    with pytest.raises(FakePySparkNotImplementedError) as exc:
+        fake_connect().rdd
+    message = str(exc.value)
+    assert type(exc.value) is FakePySparkNotImplementedError
+    assert exc.value.getCondition() == "NOT_IMPLEMENTED"
+    assert message.startswith("[NOT_IMPLEMENTED] rdd is not implemented.")
+    assert stardelt.RDD_HINT in message
+    assert "spark_partition_id()" in message and "mapInPandas" in message
+    assert "applyInPandas" in message
+
+
+def test_hint_is_installed_once(fake_connect, visible_catalogs, monkeypatch):
+    stardelt.spark()
+    installed = fake_connect.__dict__["rdd"]
+    assert stardelt._install_rdd_hint() is True
+    assert fake_connect.__dict__["rdd"] is installed
+    tokens = iter(["token-one-370", "token-two-370"])
+    monkeypatch.setattr(stardelt, "_token", lambda: next(tokens))
+    stardelt.spark()  # a second session (renewed token) runs the installer again
+    assert fake_connect.__dict__["rdd"] is installed
+    with pytest.raises(FakePySparkNotImplementedError) as exc:
+        fake_connect().rdd
+    assert str(exc.value).count(stardelt.RDD_HINT) == 1
+
+
+def test_missing_connect_module_does_not_break_spark(fake_spark, visible_catalogs, capsys):
+    # This tree has pyspark.sql only: no pyspark.errors, no connect dataframe.
+    session = stardelt.spark()
+    assert session is not None
+    assert session.configs["spark.app.name"] == "stardelt-notebook"
+    assert stardelt._RDD_HINT_INSTALLED is False
+    assert stardelt._install_rdd_hint() is False
+    assert stardelt.spark() is session  # and the session keeps working
+    assert capsys.readouterr().err == ""
+
+
+def test_spark_context_message_untouched(fake_connect, visible_catalogs):
+    with pytest.raises(FakePySparkAttributeError) as before:
+        FakeConnectSession().sparkContext
+    stardelt.spark()
+    with pytest.raises(FakePySparkAttributeError) as after:
+        FakeConnectSession().sparkContext
+    assert str(before.value) == SPARK_CONTEXT_MESSAGE
+    assert str(after.value) == SPARK_CONTEXT_MESSAGE
