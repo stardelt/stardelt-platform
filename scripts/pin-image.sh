@@ -15,13 +15,22 @@
 # in (the token is passed to the registry, never printed).
 set -euo pipefail
 
+# The deployment an app runs in, when it is not named after the app: Spark runs in
+# `spark-connect`. `DEPLOY=` still overrides it.
+deployment_for() {
+  case "$1" in
+    spark) echo "spark-connect" ;;
+    *)     echo "$1" ;;
+  esac
+}
+
 APP="${1:-${APP:-nova}}"
 NS="${2:-${NS:-stardelt}}"
 TAG="${3:-${TAG:-dev}}"
 REGISTRY="${REGISTRY:-ghcr.io}"
 OWNER="${OWNER:-stardelt}"
 REPO="$OWNER/$APP"
-DEPLOY="${DEPLOY:-$APP}"
+DEPLOY="${DEPLOY:-$(deployment_for "$APP")}"
 CONTAINER="${CONTAINER:-}"
 
 for tool in curl kubectl; do
@@ -65,18 +74,26 @@ if [ -z "$CONTAINER" ]; then
 fi
 
 current=$(kubectl -n "$NS" get deploy "$DEPLOY" -o jsonpath="{.spec.template.spec.containers[?(@.name=='$CONTAINER')].image}")
+# The reference keeps the tag for readability and adds the digest the kubelet resolves
+# (`repo:dev@sha256:…`), the same form the manifests carry: the two must agree, or
+# every `kubectl apply` flips the pod spec and rolls the pods for nothing.
+pinned="$REGISTRY/$REPO:$TAG@$digest"
 echo "› $NS/$DEPLOY $CONTAINER"
 echo "    now:  $current"
-echo "    new:  $REGISTRY/$REPO@$digest"
+echo "    new:  $pinned"
 
 # The deployment and the manifest are updated independently: skipping the first because the
 # cluster already matches must not skip the second, or the manifest keeps the old digest and
 # the next `kubectl apply` puts it back. (That hole shipped once — the early exit said
 # "already pinned" and left the file alone.)
-if [ "$current" = "$REGISTRY/$REPO@$digest" ]; then
+# Compare the digests, not the strings: a reference without the tag names the same
+# image, so it is already pinned and the pods are left alone.
+current_digest=$(printf '%s' "$current" | sed -n 's/.*@\(sha256:[0-9a-f]*\)$/\1/p')
+
+if [ "$current_digest" = "$digest" ]; then
   echo "already pinned"
 else
-  kubectl -n "$NS" set image "deploy/$DEPLOY" "$CONTAINER=$REGISTRY/$REPO@$digest" >/dev/null
+  kubectl -n "$NS" set image "deploy/$DEPLOY" "$CONTAINER=$pinned" >/dev/null
   kubectl -n "$NS" rollout status "deploy/$DEPLOY" --timeout="${TIMEOUT:-300s}"
 fi
 

@@ -1047,7 +1047,7 @@ chart-install: _context ## Install/upgrade the umbrella chart as release `starde
 # ---------------------------------------------------------------------------
 # Superset image
 # ---------------------------------------------------------------------------
-pin: _context ## Pin a deployment to the newest published digest: make pin APP=nova NS=stardelt TAG=dev
+pin: _context ## Pin a deployment to the newest published digest: make pin APP=nova|spark NS=stardelt TAG=dev
 	@APP="$(APP)" NS="$(NAMESPACE)" TAG="$(TAG)" bash scripts/pin-image.sh
 
 pin-images: _context ## Pin every stardelt image this cluster runs to its published digest
