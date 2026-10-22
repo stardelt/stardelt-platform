@@ -47,8 +47,8 @@ JUPYTER_IMAGE  := ghcr.io/stardelt/jupyter-singleuser:dev
 # A bump changes the ARG default in images/jupyter/Dockerfile as well (the
 # check script wants both), and that file is what makes CI rebuild the
 # notebook image.
-STARDELT_LIB_REF := 978c7d1a46beefe68f564349668ffb43f4cd86d0
-STARDELT_LIB_TAG := v0.1.0
+STARDELT_LIB_REF := 1d6c04f3cdd8f16b8c7b6a99b0d4c340aa6ee304
+STARDELT_LIB_TAG := v0.1.1
 
 # SLIM=1 applies the small-node overrides in helm-values/slim/ (for cx33 / 8 GB).
 TRINO_EXTRA := $(if $(filter 1,$(SLIM)),-f helm-values/slim/trino.yaml,)

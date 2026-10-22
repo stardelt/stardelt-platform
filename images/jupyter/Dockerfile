@@ -76,15 +76,15 @@ COPY --chown=${NB_UID}:${NB_GID} notebooks/ /opt/stardelt/notebooks/
 #
 # Pinned by commit SHA, not by tag: a moving tag is not an upgrade path — the
 # same rule the image pins follow (scripts/pin-image.sh). The SHA below is the
-# release v0.1.0
-# (https://github.com/stardelt/stardelt-python/releases/tag/v0.1.0).
+# release v0.1.1
+# (https://github.com/stardelt/stardelt-python/releases/tag/v0.1.1).
 #
 # The Makefile holds the pin (STARDELT_LIB_REF) and passes it as a build arg;
 # scripts/check-stardelt-pin.sh fails the build when this default and the
 # Makefile's ref disagree. Installed rather than copied so every notebook
 # imports it with no sys.path tweak; the import check fails the build here, not
 # in a user's first cell.
-ARG STARDELT_LIB_REF=978c7d1a46beefe68f564349668ffb43f4cd86d0
+ARG STARDELT_LIB_REF=1d6c04f3cdd8f16b8c7b6a99b0d4c340aa6ee304
 RUN python3 -m pip install --no-cache-dir --upgrade-strategy only-if-needed \
         "stardelt @ git+https://github.com/stardelt/stardelt-python@${STARDELT_LIB_REF}" \
     && python3 -c "import stardelt; print('stardelt', stardelt.__version__)" \
