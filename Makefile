@@ -58,7 +58,7 @@ BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 .PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator openfga trino catalogs upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-up dev-down dev-dns dev-dns-down
 .PHONY: chart-deps chart-template chart-install
 .PHONY: verify-backups verify-backups-identity verify-backups-nova verify-backups-openfga verify-backups-all verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
-.PHONY: backups verify-pgdump offsite-backup
+.PHONY: backups verify-pgdump offsite-backup export-recovery-secrets import-recovery-secrets
 .PHONY: sync-oidc-clients verify-oidc-clients verify-trino-tls verify-trino-auth sync-trino-group-sync-client sync-pipeline-runner-client sync-dev-client sync-catalog-audience openbao test-openbao-policies seaweedfs-admin
 .PHONY: external-secrets eso-stores
 
@@ -168,6 +168,23 @@ MAX_AGE_HOURS ?= 36
 
 verify-backups-all: _context ## Every PVC has a backup mechanism and a recent backup, or an accepted, ticketed exception (manual)
 	@NAMESPACE=$(NAMESPACE) MAX_AGE_HOURS=$(MAX_AGE_HOURS) bash scripts/verify-backups-all.sh
+
+# ---------------------------------------------------------------------------
+# Recovery keys (platform#396, design platform#368): a database backup is
+# useless without the keys that encrypted what is inside it, and those keys
+# exist only as Secrets in the cluster's own datastore. export writes them to
+# one encrypted file OUTSIDE this repository (the default is the operator's home
+# directory; the script refuses a path inside the work tree); import puts them
+# back, first, before the databases and the object store. See README "Backups"
+# → "Recovery keys".
+# ---------------------------------------------------------------------------
+FILE ?= $(HOME)/stardelt-recovery-secrets.enc
+
+export-recovery-secrets: _context ## Write the keys that make backups readable to an encrypted file (FILE=..., RECOVERY_PASSPHRASE in the environment)
+	@NAMESPACE=$(NAMESPACE) FORCE=$(FORCE) bash scripts/recovery-secrets.sh export "$(FILE)"
+
+import-recovery-secrets: _context ## Restore the recovery keys from the encrypted file (FILE=..., CHECK=1 decrypts and lists the names only)
+	@NAMESPACE=$(NAMESPACE) bash scripts/recovery-secrets.sh import $(if $(filter 1,$(CHECK)),--check,) "$(FILE)"
 
 # ---------------------------------------------------------------------------
 # Helm repo setup

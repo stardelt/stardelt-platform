@@ -2120,6 +2120,47 @@ schedules it; run it after the nightly window, or a fresh install fails until
 each mechanism has completed its first run. It also prints one `offsite copy`
 line for the off-cluster copy below.
 
+### Recovery keys
+
+A backup restores the rows; it does not restore the keys that encrypted them.
+Seven Secrets exist only in the cluster's own datastore, are generated at
+install time and are copied nowhere: `openbao-seal-key` and `openbao-init` (the
+secret store cannot be opened without the seal key), the
+`lakekeeper-postgres-encryption` key (warehouse secrets inside Lakekeeper's
+database), `airflow-fernet-key` (connections and variables inside Airflow's
+database), `stardelt-s3-creds` (the object store the backups live in) and
+`keycloak-admin` / `stardelt-realm-admin` (the identity provider's
+administrators). Lose the node and the databases come back; without these keys
+their contents do not.
+
+```sh
+# RECOVERY_PASSPHRASE in the environment; FILE is never inside this repository
+make export-recovery-secrets FILE=/media/usb/stardelt-recovery.enc
+make import-recovery-secrets FILE=/media/usb/stardelt-recovery.enc CHECK=1
+```
+
+`export` writes one `kind: List` document with only what `kubectl apply` needs
+(name, namespace, type, data — no uid, resourceVersion, ownerReferences or
+annotations), AES-256-CBC with PBKDF2 (600 000 iterations) and a random salt,
+into a file with mode `0600`. The passphrase comes only from
+`RECOVERY_PASSPHRASE`, must be at least 16 characters, and is never written next
+to the file or printed; `import` decrypts in memory. A Secret that does not
+exist in the namespace is reported and left out, never invented — a partial
+install exports what it has and says so. The target refuses a `FILE` inside the
+repository work tree, and an existing file without `FORCE=1`.
+
+Store that file **outside the cluster and outside the backup buckets**: the
+administrator's password manager, or a safe. Not on the machine whose loss it is
+meant to survive, and not in the object store that the platform itself restores
+from — a copy of the keys next to the ciphertext protects nothing. The
+passphrase is the other half: keep it somewhere else again, and not in this
+repository. Without it the file is noise.
+
+Restore order: the keys first (`make import-recovery-secrets`, `NAMESPACE=…`
+targets another namespace), then the databases, then the object store. A catalog
+restored before `lakekeeper-postgres-encryption` is back restores the rows, but
+every warehouse secret in them stays unreadable.
+
 ### Off-cluster copy
 
 `make offsite-backup` (also part of `make backups`) applies the
@@ -2162,11 +2203,11 @@ NOT CONFIGURED does not fail the run; FAIL does.
 
 ### Not covered (and why)
 
-- **OpenBao and the seal key.** `data-openbao-0` holds the secret store and
+- **The OpenBao data directory.** `data-openbao-0` holds the secret store and
   Secret `openbao-seal-key` unseals it; losing either makes the data unreadable.
-  Copying the store is not a `pg_dump`, and the key needs a sealed transfer —
-  that belongs to the backup design in platform#3 and is deliberately not
-  improvised here.
+  The keys are exported by `make export-recovery-secrets` (above), the store's
+  own data directory is not copied: that belongs to the backup design in
+  platform#368 and is deliberately not improvised here.
 - **Cluster state.** CRDs, Helm releases, RBAC, ConfigMaps and Secrets are in
   none of the mechanisms above — they are the output of `make install` plus this
   repository, so `main` recreates them. The rows above are what a rebuild cannot
@@ -2258,6 +2299,8 @@ aws --endpoint-url "$AWS_ENDPOINT_URL" s3 sync s3://lakehouse-backup s3://lakeho
 | `verify-backups-identity` | Same full WAL check for `keycloak-pg` (`s3://backups/keycloak-pg/wals/`) |
 | `verify-backups-openfga` | Same full WAL check for `openfga-pg` (`s3://backups/openfga-pg/wals/`) |
 | `backups` | Apply the two `pg_dump` CronJobs (`superset-pg-dump`, `airflow-pg-dump`) from `manifests/pg-dump-backup.yaml` |
+| `export-recovery-secrets` | Write the Secrets that make the backups readable — the OpenBao seal/init material, Lakekeeper's and Airflow's encryption keys, the object-store credentials, the IdP administrators — to one encrypted file (`FILE=…`, `RECOVERY_PASSPHRASE` in the environment, `0600`, refused inside the repository) |
+| `import-recovery-secrets` | Restore them with `kubectl apply` into `NAMESPACE` (`CHECK=1` decrypts and lists the names without applying) — first step of a restore |
 | `verify-pgdump` | Run those CronJob(s) once (`PG_DUMP=superset\|airflow\|all`), restore the newest dump into a scratch database with `pg_restore --exit-on-error`, and compare the table count with the live database |
 | `install-notebooks` | JupyterHub (notebooks) |
 | `install-spark` | Spark Connect endpoint (`manifests/spark.yaml`); catalogs are per person in the session (platform#317), no static catalog in the ConfigMap. Restarts the driver only when its ConfigMap changed |
