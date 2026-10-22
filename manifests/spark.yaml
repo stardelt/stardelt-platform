@@ -23,7 +23,7 @@
 #   sc://spark-connect.stardelt.svc.cluster.local:15002
 # There is deliberately no static catalog here: the catalog is per person, and
 # the notebook helper configures it with the person's token when it creates the
-# session (images/jupyter/stardelt, platform#317).
+# session (the stardelt library, stardelt/stardelt-python, platform#317).
 #
 # Two S3 clients live here, with separate credentials. Iceberg's S3FileIO reads
 # the platform's own storage with the Secret key the executors carry; Hadoop's
@@ -136,7 +136,7 @@ data:
 
     # --- Iceberg: one catalog per person, configured by the client ----------
     # Only the Iceberg extensions are static. The catalogs and the token are
-    # session configuration: `stardelt.spark()` (images/jupyter/stardelt) asks
+    # session configuration: `stardelt.spark()` (the stardelt library) asks
     # Trino which catalogs the signed-in person may see, then passes one catalog
     # configuration block with that person's token to the session it creates.
     # Lakekeeper, the authority, decides what the token may read.

@@ -66,4 +66,10 @@ bash scripts/check-bridge-uri.sh
 echo "› script: check-spark-parity"
 bash scripts/check-spark-parity.sh
 
+# The notebook image installs the stardelt library from a pinned release
+# (platform#417): the Dockerfile's pin and the Makefile's must be the same
+# commit, and a commit — a moving tag is not an upgrade path.
+echo "› script: check-stardelt-pin"
+bash scripts/check-stardelt-pin.sh
+
 echo "lint: OK"

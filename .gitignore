@@ -20,6 +20,6 @@ __pycache__/
 # they are built per release from the live Catalog objects.
 .build/
 
-# Python build output of the notebook helper (`pip install ./images/jupyter` writes it next to the sources)
-images/jupyter/build/
+# Python build output (the stardelt library is built in its own repository now,
+# but a local `pip install -e .` anywhere in the tree leaves these behind)
 *.egg-info/

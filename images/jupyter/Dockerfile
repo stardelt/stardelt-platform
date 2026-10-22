@@ -70,14 +70,23 @@ RUN python3 -m pip uninstall -y jupyterlab-git \
 COPY --chown=${NB_UID}:${NB_GID} notebooks/ /opt/stardelt/notebooks/
 
 # The stardelt notebook helper (`import stardelt`: sql, write_df, spark, and
-# the connection() stub). Pure Python, MIT, tested in CI (images/jupyter/tests/
-# plus the `notebook-helper` job in .github/workflows/ci.yml). Installed rather
-# than copied so every notebook imports it with no sys.path tweak; the import
-# check fails the build here, not in a user's first cell.
-COPY --chown=${NB_UID}:${NB_GID} stardelt/ /tmp/stardelt-pkg-build/stardelt/
-COPY --chown=${NB_UID}:${NB_GID} pyproject.toml /tmp/stardelt-pkg-build/pyproject.toml
-RUN python3 -m pip install --no-cache-dir /tmp/stardelt-pkg-build/ \
-    && rm -rf /tmp/stardelt-pkg-build \
+# the connection() stub) has its own repository (stardelt/stardelt-python) and
+# is installed here as a **pinned release**. Pure Python, MIT, versioned and
+# tested there; the platform consumes one release of it (platform#417).
+#
+# Pinned by commit SHA, not by tag: a moving tag is not an upgrade path — the
+# same rule the image pins follow (scripts/pin-image.sh). The SHA below is the
+# release v0.1.0
+# (https://github.com/stardelt/stardelt-python/releases/tag/v0.1.0).
+#
+# The Makefile holds the pin (STARDELT_LIB_REF) and passes it as a build arg;
+# scripts/check-stardelt-pin.sh fails the build when this default and the
+# Makefile's ref disagree. Installed rather than copied so every notebook
+# imports it with no sys.path tweak; the import check fails the build here, not
+# in a user's first cell.
+ARG STARDELT_LIB_REF=978c7d1a46beefe68f564349668ffb43f4cd86d0
+RUN python3 -m pip install --no-cache-dir --upgrade-strategy only-if-needed \
+        "stardelt @ git+https://github.com/stardelt/stardelt-python@${STARDELT_LIB_REF}" \
     && python3 -c "import stardelt; print('stardelt', stardelt.__version__)" \
     && python3 -c "import stardelt.notebook_run; print('stardelt.notebook_run: the notebook task wrapper is installed')"
 

@@ -35,6 +35,21 @@ HELM_FLAGS := --namespace $(NAMESPACE) --create-namespace --wait --timeout 10m
 SUPERSET_IMAGE := ghcr.io/stardelt/superset:dev
 JUPYTER_IMAGE  := ghcr.io/stardelt/jupyter-singleuser:dev
 
+# The stardelt notebook library (stardelt/stardelt-python) — the release the
+# notebook image installs (platform#417). The library lives in its own
+# repository, with its own versions and tests; the platform consumes one
+# pinned release of it.
+#
+# Pinned by commit SHA, not by tag: a moving tag is not an upgrade path, the
+# same rule the image pins follow (scripts/pin-image.sh). The tag names the
+# release the SHA belongs to, for humans — the SHA is what is installed.
+#
+# A bump changes the ARG default in images/jupyter/Dockerfile as well (the
+# check script wants both), and that file is what makes CI rebuild the
+# notebook image.
+STARDELT_LIB_REF := 978c7d1a46beefe68f564349668ffb43f4cd86d0
+STARDELT_LIB_TAG := v0.1.0
+
 # SLIM=1 applies the small-node overrides in helm-values/slim/ (for cx33 / 8 GB).
 TRINO_EXTRA := $(if $(filter 1,$(SLIM)),-f helm-values/slim/trino.yaml,)
 # Query-log feed (stardelt-nova#116): Trino's event listener posts to Nova's internal port.
@@ -1071,12 +1086,21 @@ push-superset-image: ## Push the Superset image to ghcr.io
 	@docker push $(SUPERSET_IMAGE)
 
 build-jupyter-image: ## Build the Jupyter single-user image (ghcr.io/stardelt/jupyter-singleuser:dev)
-	@echo "› building $(JUPYTER_IMAGE)"
-	@docker build -t $(JUPYTER_IMAGE) -f images/jupyter/Dockerfile images/jupyter
+	@echo "› building $(JUPYTER_IMAGE) (stardelt library $(STARDELT_LIB_TAG), $(STARDELT_LIB_REF))"
+	@docker build -t $(JUPYTER_IMAGE) \
+	  --build-arg STARDELT_LIB_REF=$(STARDELT_LIB_REF) \
+	  -f images/jupyter/Dockerfile images/jupyter
 
 push-jupyter-image: ## Push the Jupyter single-user image to ghcr.io
 	@echo "› pushing $(JUPYTER_IMAGE)"
 	@docker push $(JUPYTER_IMAGE)
+
+# The pinned library commit, on its own: the image build passes it as a build
+# arg, the notebook-helper CI job checks the library out at it, and
+# scripts/check-stardelt-pin.sh compares it with the Dockerfile's default.
+.PHONY: print-stardelt-lib-ref
+print-stardelt-lib-ref: ## Print the pinned stardelt library commit
+	@echo $(STARDELT_LIB_REF)
 
 # ---------------------------------------------------------------------------
 # Published notebooks — the versioned bucket Nova writes notebook versions to
