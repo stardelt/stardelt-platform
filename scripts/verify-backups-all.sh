@@ -27,6 +27,11 @@
 #      PVC is FAIL: no mechanism mapped and not in the ACCEPTED list, a mapped
 #      mechanism that is missing (no spec.backup, no ScheduledBackup, no
 #      CronJob), or a last backup older than MAX_AGE_HOURS (default 36).
+#   4. prints one more line for the off-cluster copy (platform#395): the rclone
+#      CronJob `offsite-backup` copies the three backup buckets to the S3 in
+#      Secret `backup-offsite` when one is configured. No destination is a
+#      documented state (NOT CONFIGURED, and it does not fail the run); a
+#      configured destination with no recent successful run is a FAIL.
 #
 # The table is the contract: a new PVC makes the target fail until someone adds
 # a mechanism or an accepted reason with a ticket. That is the point — silence
@@ -60,7 +65,8 @@
 # the pod is deleted on exit. Its output is the pod's own clock (`NOW`) and, per
 # source, the newest object's epoch and key — never a bucket listing.
 #
-# Exit status: 0 only if every PVC is PASS or ACCEPTED.
+# Exit status: 0 only if every PVC is PASS or ACCEPTED and the off-cluster copy
+# is PASS or NOT CONFIGURED.
 set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-stardelt}"
@@ -462,6 +468,40 @@ for pvc in "${pvcs[@]}"; do
   pvc_disp[$pvc]="$mech_disp"
 done
 
+# ---------------------------------------------------------------------------
+# Off-cluster copy (platform#395): one verdict, not a PVC row. It guards the
+# recency of the rclone CronJob that copies the three backup buckets out of
+# the cluster. An absent destination is a valid, documented state — the
+# operator may not have one — so it prints NOT CONFIGURED and does not fail.
+# ---------------------------------------------------------------------------
+offsite_failed=0
+offsite_reason=""
+if ! kubectl -n "$NAMESPACE" get secret backup-offsite >/dev/null 2>&1; then
+  offsite_verdict="NOT CONFIGURED (Secret backup-offsite absent)"
+else
+  has_cronjob="$(jq -r 'any(.items[]?; .metadata.name == "offsite-backup")' <<<"$cronjobs_json")"
+  last_run="$(jq -r '.items[] | select(.metadata.name == "offsite-backup") | (.status.lastSuccessfulTime // "")' <<<"$cronjobs_json")"
+  if [ "$has_cronjob" != true ]; then
+    offsite_verdict="FAIL (no CronJob offsite-backup — apply manifests/offsite-backup.yaml)"
+    offsite_reason="no CronJob $NAMESPACE/offsite-backup — apply manifests/offsite-backup.yaml (make offsite-backup)"
+    offsite_failed=1
+  elif ! offsite_age="$(ts_age "$last_run")"; then
+    offsite_verdict="FAIL (cannot parse status.lastSuccessfulTime '$last_run' on CronJob offsite-backup)"
+    offsite_reason="cannot parse status.lastSuccessfulTime '$last_run' on CronJob offsite-backup"
+    offsite_failed=1
+  elif [ -z "$offsite_age" ]; then
+    offsite_verdict="FAIL (CronJob offsite-backup has never completed a run)"
+    offsite_reason="CronJob offsite-backup has no successful run yet (status.lastSuccessfulTime is empty) — Secret backup-offsite is configured but nothing has been copied"
+    offsite_failed=1
+  elif [ "$offsite_age" -gt "$MAX_AGE_SECONDS" ]; then
+    offsite_verdict="FAIL (last successful run $(fmt_age "$offsite_age") old — older than MAX_AGE_HOURS=$MAX_AGE_HOURS)"
+    offsite_reason="the last successful run of CronJob offsite-backup is $(fmt_age "$offsite_age") old — older than MAX_AGE_HOURS=$MAX_AGE_HOURS (did it fail? see 'kubectl -n $NAMESPACE get jobs')"
+    offsite_failed=1
+  else
+    offsite_verdict="PASS ($(fmt_age "$offsite_age"))"
+  fi
+fi
+
 failed=0
 accepted=0
 rows=()
@@ -489,6 +529,7 @@ printf '\n'
       printf "%-*s | %-*s | %-*s | %s\n", w[1], f[1], w[2], f[2], w[3], f[3], f[4]
     }
   }'
+printf 'offsite copy | %s\n' "$offsite_verdict"
 
 if [ "$accepted" -gt 0 ]; then
   printf '\naccepted gaps (no mechanism by design, each with a ticket):\n'
@@ -498,12 +539,19 @@ if [ "$accepted" -gt 0 ]; then
   done
 fi
 
-if [ "$failed" -gt 0 ]; then
+if [ "$failed" -gt 0 ] || [ "$offsite_failed" -gt 0 ]; then
   printf '\n'
   for failure in "${failures[@]}"; do
     err "$failure"
   done
-  echo "verify-backups-all: FAIL ($failed of ${#pvcs[@]} PVC(s))" >&2
+  if [ "$offsite_failed" -gt 0 ]; then
+    err "offsite copy: $offsite_reason"
+  fi
+  if [ "$failed" -gt 0 ]; then
+    echo "verify-backups-all: FAIL ($failed of ${#pvcs[@]} PVC(s))" >&2
+  else
+    echo "verify-backups-all: FAIL (offsite copy)" >&2
+  fi
   exit 1
 fi
 

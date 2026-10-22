@@ -2117,7 +2117,48 @@ prints `PVC | mechanism | last backup age | verdict`. A PVC fails when it has no
 mechanism and no written-down exception, when a mapped mechanism is missing, or
 when its newest backup is older than 36 h. It is a manual target — nothing
 schedules it; run it after the nightly window, or a fresh install fails until
-each mechanism has completed its first run.
+each mechanism has completed its first run. It also prints one `offsite copy`
+line for the off-cluster copy below.
+
+### Off-cluster copy
+
+`make offsite-backup` (also part of `make backups`) applies the
+`offsite-backup` CronJob: at 04:15 daily, `rclone copy` pushes the three
+backup buckets — `backups` (the CloudNative-PG WAL/base backups and the
+`pgdump/` objects), `lakehouse-backup` (the object-store archive) and
+`notebooks` (published notebooks) — to an S3 destination the operator chooses.
+It is `copy`, never `sync`: nothing is deleted at the destination, so an object
+removed from the source stays recoverable there. The versioned `notebooks`
+bucket is copied as its current object versions only — rclone does not read
+versions.
+
+The destination is **the operator's own S3** (their object store, another
+region, another provider), configured in Secret `backup-offsite` with keys
+`endpoint`, `region`, `bucket`, `access-key`, `secret-key` and an optional
+`prefix`. The values are typed by the administrator and never committed to this
+repository:
+
+```sh
+kubectl -n stardelt create secret generic backup-offsite \
+  --from-literal=endpoint=https://s3.example.net \
+  --from-literal=region=us-east-1 \
+  --from-literal=bucket=stardelt-backup \
+  --from-literal=access-key=... --from-literal=secret-key=... \
+  --from-literal=prefix=alpha          # optional
+```
+
+Without that Secret the CronJob still applies, runs, prints
+`offsite: not configured (Secret backup-offsite)` and exits 0 — a destination
+is a decision, never a default. Without one, every backup shares the cluster's
+failure domain: losing the SeaweedFS volumes loses the backups with them. To
+restore, run the copy in the other direction — from the off-cluster bucket back
+into the platform's store (`rclone copy` destination remote → source remote; the
+env shape is in `manifests/offsite-backup.yaml`).
+
+`make verify-backups-all` prints `offsite copy | NOT CONFIGURED (Secret
+backup-offsite absent)` when no destination is set, `PASS (<age>)` when the
+last successful run is younger than 36 h, and `FAIL (<reason>)` otherwise.
+NOT CONFIGURED does not fail the run; FAIL does.
 
 ### Not covered (and why)
 
@@ -2143,9 +2184,11 @@ each mechanism has completed its first run.
   survives overwrites and deletes inside the bucket, not the bucket itself.
 - **Caches.** `superset-redis` holds no PVC; it rebuilds itself.
 
-And the limit that applies to all of it: the backups live in the same SeaweedFS
-cluster as the data they protect. Losing the SeaweedFS volumes loses the backups
-with them — an off-cluster copy is the open half of platform#3.
+And the limit that applies to all of it: by default the backups live in the
+same SeaweedFS cluster as the data they protect. Losing the SeaweedFS volumes
+loses the backups with them — that is what the off-cluster copy above is for.
+Without a configured destination, every backup shares the cluster's failure
+domain.
 
 ### Restoring
 

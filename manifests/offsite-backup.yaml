@@ -1,0 +1,122 @@
+# Off-cluster copy: rclone copies the backup buckets to the operator's own S3.
+#
+# Every other mechanism in this repo writes into the same SeaweedFS that holds
+# the data it protects (README "Backups"): CNPG WAL + base backups and the
+# pg_dump files under `s3://backups/`, the object archive in `lakehouse-backup`.
+# That covers mistakes and corruption; it does not survive losing the cluster,
+# the node or the store's volumes. This CronJob copies those three buckets
+# (`backups`, `lakehouse-backup`, `notebooks`) to a second S3 destination the
+# operator chooses — another bucket, another region, another provider
+# (platform#395, design platform#368).
+#
+#   kubectl apply -f manifests/offsite-backup.yaml   # or: make offsite-backup
+#   kubectl -n stardelt create secret generic backup-offsite \
+#     --from-literal=endpoint=... --from-literal=region=... --from-literal=bucket=... \
+#     --from-literal=access-key=... --from-literal=secret-key=... [--from-literal=prefix=...]
+#   kubectl -n stardelt create job --from=cronjob/offsite-backup offsite-backup-now
+#
+# Without Secret `backup-offsite` the job still applies, runs, prints
+# `offsite: not configured` and exits 0 — a destination is the operator's
+# decision, never a default (the dev cluster has none; see README "Backups").
+#
+# `copy`, never `sync`: nothing is deleted at the destination, so an object
+# removed from the source stays recoverable there. The versioned `notebooks`
+# bucket is copied as current object versions only — rclone does not read
+# versions. One failing bucket does not stop the others; the job exits 1 if
+# any failed. The log carries rclone's stats lines and bucket names, never a
+# credential: both endpoints and both key pairs arrive as env from
+# `secretKeyRef`s, and the script never prints an env value.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: offsite-backup
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+spec:
+  # 04:15 daily: after the CNPG base backups (02:30), the pg_dump jobs (02:30,
+  # 02:45) and the object-store archive (03:15), so one run copies a settled day.
+  schedule: "15 4 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels: { app.kubernetes.io/part-of: stardelt }
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          containers:
+            - name: rclone
+              # Pinned: 1.68.2 and 1.75.2 were re-verified against this S3
+              # endpoint and 1.69.1 hangs (stardelt-docs#61); digest from the
+              # registry 2026-10-21.
+              image: rclone/rclone:1.75.2@sha256:2687085f718d3c628f7fdfb77c52a1d344332aed543110bb88088f2c70d43eb5
+              command: ["/bin/sh", "-ec"]
+              args:
+                - |
+                  if [ -z "${RCLONE_CONFIG_DST_ENDPOINT:-}" ] || [ -z "${DST_BUCKET:-}" ]; then
+                    echo "offsite: not configured (Secret backup-offsite)"
+                    exit 0
+                  fi
+                  failed=0
+                  for bucket in backups lakehouse-backup notebooks; do
+                    dest="DST:${DST_BUCKET}/${DST_PREFIX:+$DST_PREFIX/}${bucket}"
+                    # `--stats-log-level NOTICE`: a container log is not a TTY
+                    # and rclone logs stats at INFO by default — without this
+                    # the run leaves no stats line in `kubectl logs` at all
+                    # (verified with 1.75.2, 2026-10-22).
+                    if rclone copy "SRC:${bucket}" "$dest" \
+                      --transfers 4 --checkers 8 --stats-one-line --stats 30s --fast-list=false \
+                      --stats-log-level NOTICE; then
+                      echo "› offsite: ${bucket} copied"
+                    else
+                      echo "✗ offsite: ${bucket} copy failed" >&2
+                      failed=1
+                    fi
+                  done
+                  exit "$failed"
+              env:
+                # Source remote (`SRC:`): the platform's own store, the same
+                # credentials every S3 consumer reads (Secret stardelt-s3-creds).
+                # No config file: rclone builds the remote from these variables.
+                - { name: RCLONE_CONFIG_SRC_TYPE,             value: s3 }
+                - { name: RCLONE_CONFIG_SRC_PROVIDER,         value: Other }
+                - { name: RCLONE_CONFIG_SRC_FORCE_PATH_STYLE, value: "true" }
+                - name: RCLONE_CONFIG_SRC_ENDPOINT
+                  valueFrom: { secretKeyRef: { name: stardelt-s3-creds, key: endpoint } }
+                - name: RCLONE_CONFIG_SRC_ACCESS_KEY_ID
+                  valueFrom: { secretKeyRef: { name: stardelt-s3-creds, key: access-key } }
+                - name: RCLONE_CONFIG_SRC_SECRET_ACCESS_KEY
+                  valueFrom: { secretKeyRef: { name: stardelt-s3-creds, key: secret-key } }
+                - name: RCLONE_CONFIG_SRC_REGION
+                  valueFrom: { secretKeyRef: { name: stardelt-s3-creds, key: region } }
+                # Destination remote (`DST:`): Secret backup-offsite, created by
+                # the administrator. Every reference is optional so the pod runs
+                # (and reports "not configured") before a destination exists.
+                - { name: RCLONE_CONFIG_DST_TYPE,             value: s3 }
+                - { name: RCLONE_CONFIG_DST_PROVIDER,         value: Other }
+                - { name: RCLONE_CONFIG_DST_FORCE_PATH_STYLE, value: "true" }
+                - name: RCLONE_CONFIG_DST_ENDPOINT
+                  valueFrom: { secretKeyRef: { name: backup-offsite, key: endpoint, optional: true } }
+                - name: RCLONE_CONFIG_DST_ACCESS_KEY_ID
+                  valueFrom: { secretKeyRef: { name: backup-offsite, key: access-key, optional: true } }
+                - name: RCLONE_CONFIG_DST_SECRET_ACCESS_KEY
+                  valueFrom: { secretKeyRef: { name: backup-offsite, key: secret-key, optional: true } }
+                - name: RCLONE_CONFIG_DST_REGION
+                  valueFrom: { secretKeyRef: { name: backup-offsite, key: region, optional: true } }
+                - { name: DST_BUCKET, valueFrom: { secretKeyRef: { name: backup-offsite, key: bucket, optional: true } } }
+                - { name: DST_PREFIX, valueFrom: { secretKeyRef: { name: backup-offsite, key: prefix, optional: true } } }
+                # The destination credential may not be allowed to create
+                # buckets: do not probe or create the target bucket.
+                - { name: RCLONE_S3_NO_CHECK_BUCKET, value: "true" }
+              resources:
+                requests: { cpu: "50m", memory: "128Mi" }
+                limits:   { cpu: "1",   memory: "512Mi" }
+              securityContext:
+                # The rclone image has no non-root user and needs no root
+                # privileges: no runAsNonRoot, but nothing can be escalated.
+                allowPrivilegeEscalation: false
+                capabilities: { drop: ["ALL"] }

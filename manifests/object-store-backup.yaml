@@ -18,16 +18,15 @@
 # Known limit, stated rather than hidden: the job uses one credential set, because
 # `aws s3 sync` speaks to one endpoint per invocation. The default destination is a
 # second bucket in the same store, which covers the realistic accidents (a dropped
-# bucket, a bad lifecycle rule, `aws s3 rm --recursive`). For an archive that survives
-# losing the cluster, use SeaweedFS' own replication to a remote cluster, or run the
-# sync from whatever holds the off-site credentials.
+# bucket, a bad lifecycle rule, `aws s3 rm --recursive`) but not losing the store.
+# The off-cluster copy is manifests/offsite-backup.yaml (rclone to a second S3
+# destination from Secret backup-offsite); README "Backups" → "Off-cluster copy".
 #
 # Correction (stardelt-docs#61): this comment used to say rclone "hangs against this
 # S3 endpoint". Re-verified 2026-10-18: rclone 1.68.2 and 1.75.2 both work against
 # this endpoint — small PUTs in 3-5 s, multipart uploads too; the hang was observed
-# with rclone 1.69.1 specifically. The shipped job uses `aws s3 sync` (one endpoint
-# per invocation), so the two-endpoint copy stays possible via rclone from whatever
-# host holds the off-site credentials.
+# with rclone 1.69.1 specifically. This job keeps `aws s3 sync` (one endpoint per
+# invocation); the two-endpoint copy runs as rclone 1.75.2 in offsite-backup.yaml.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
