@@ -455,6 +455,13 @@ the zero-concurrency `no-warehouse` root group instead, which answers `Too many 
 Keycloak user outside `stardelt-users` — runs in `wh-small` rather than in a queue that never
 moves.
 
+Nova repeats that answer instead of deciding it (`GET /api/warehouses`, nova#236): the SQL editor
+shows `Warehouse: <name> (<class>)` next to **Run**, and your Profile page shows the same line as
+`SQL warehouse` — the largest class your groups are granted, the default class when none is, and
+`Administrators` for a member of `stardelt-admins`, who lands in the `admin` root group. Nova reads
+the `SqlWarehouse` objects and says what the selector will do; calling Trino directly still lands
+you in the same class, because the choice reads the identity and never a header.
+
 Which class a query ran in is visible in `system.runtime.queries` as an administrator — the
 catalog is administrator-only since platform#363 (an ordinary person's query log is Nova's,
 which reads its own store):
