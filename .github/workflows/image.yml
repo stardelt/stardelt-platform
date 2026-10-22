@@ -19,12 +19,10 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
-    # The Makefile holds the notebook image's library pin (STARDELT_LIB_REF):
-    # a pin bump must publish a new image, so it is a trigger of its own.
-    paths: ["images/**", "Makefile", ".github/workflows/image.yml"]
+    paths: ["images/**", ".github/workflows/image.yml"]
   pull_request:
     branches: [main]
-    paths: ["images/**", "Makefile", ".github/workflows/image.yml"]
+    paths: ["images/**", ".github/workflows/image.yml"]
   workflow_dispatch:
 
 permissions:
@@ -39,11 +37,6 @@ jobs:
   superset:
     name: Build and push ghcr.io/stardelt/superset
     runs-on: ubuntu-latest
-    # Job-level filters: the workflow runs for a Makefile change (the notebook
-    # image's library pin lives there), but only the notebook image is affected.
-    paths:
-      - "images/superset/**"
-      - ".github/workflows/image.yml"
     steps:
       - uses: actions/checkout@v7
 
@@ -100,12 +93,6 @@ jobs:
   jupyter:
     name: Build and push ghcr.io/stardelt/jupyter-singleuser
     runs-on: ubuntu-latest
-    # The Makefile is in the filter: it holds the pinned stardelt library the
-    # image installs (STARDELT_LIB_REF), so a pin bump must rebuild this image.
-    paths:
-      - "images/jupyter/**"
-      - "Makefile"
-      - ".github/workflows/image.yml"
     steps:
       - uses: actions/checkout@v7
 
@@ -168,11 +155,6 @@ jobs:
   spark:
     name: Build and push ghcr.io/stardelt/spark
     runs-on: ubuntu-latest
-    # Job-level filters: the workflow runs for a Makefile change (the notebook
-    # image's library pin lives there), but only the notebook image is affected.
-    paths:
-      - "images/spark/**"
-      - ".github/workflows/image.yml"
     steps:
       - uses: actions/checkout@v7
 

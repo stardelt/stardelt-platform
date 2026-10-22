@@ -43,6 +43,10 @@ JUPYTER_IMAGE  := ghcr.io/stardelt/jupyter-singleuser:dev
 # Pinned by commit SHA, not by tag: a moving tag is not an upgrade path, the
 # same rule the image pins follow (scripts/pin-image.sh). The tag names the
 # release the SHA belongs to, for humans — the SHA is what is installed.
+#
+# A bump changes the ARG default in images/jupyter/Dockerfile as well (the
+# check script wants both), and that file is what makes CI rebuild the
+# notebook image.
 STARDELT_LIB_REF := 978c7d1a46beefe68f564349668ffb43f4cd86d0
 STARDELT_LIB_TAG := v0.1.0
 
