@@ -253,7 +253,7 @@ singleuser:
     # helm-values/airflow.yaml, which is the image a notebook task pod runs
     # (scripts/check-notebook-image-pin.sh, run by `make lint`, fails the build
     # when the two differ).
-    tag: "dev@sha256:f506c7ba23c1ab2c652d95f24d5200968ea9653fa0af8484b8490bd71b2ef46a"
+    tag: "dev@sha256:37c248b4446842fdc9473abeaae5b2646395bb7c195345c3ea8e1dbf44c31bae"
     pullSecrets:
       - name: ghcr-creds
   defaultUrl: /lab
