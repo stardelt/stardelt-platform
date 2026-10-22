@@ -461,6 +461,7 @@ class FakeSparkCatalog:
 
 class FakeSparkSession:
     def __init__(self, module, options):
+        self.module = module
         self.configs = dict(options)
         self.conf = FakeSparkConf(self.configs)
         self.catalog = FakeSparkCatalog(module)
@@ -478,7 +479,7 @@ class FakeSparkSession:
     def version(self):
         if self.broken:
             raise RuntimeError("closed")
-        return "4.2.0"
+        return self.module.server_version
 
     def stop(self):
         self.stopped = True
@@ -512,6 +513,8 @@ class FakeSparkModule:
         self.sessions = []
         self.fail_with = None
         self.refused = set()
+        # The Spark line the server answers with; the client below is 4.1.3 too.
+        self.server_version = "4.1.3"
 
     @property
     def builder(self):
@@ -522,6 +525,8 @@ class FakeSparkModule:
 def fake_spark(monkeypatch):
     module = FakeSparkModule()
     pyspark = types.ModuleType("pyspark")
+    # The client's own Spark version: the same line as the server's (platform#399).
+    pyspark.__version__ = "4.1.3"
     pyspark_sql = types.ModuleType("pyspark.sql")
     pyspark_sql.SparkSession = module
     pyspark.sql = pyspark_sql
@@ -845,6 +850,27 @@ def fake_connect(fake_spark, monkeypatch):
     # The hint assigns to the class; monkeypatch puts the original property back.
     monkeypatch.setattr(FakeConnectDataFrame, "rdd", FakeConnectDataFrame.__dict__["rdd"])
     return FakeConnectDataFrame
+
+
+def test_client_and_server_on_the_same_spark_line_are_fine(fake_spark, visible_catalogs):
+    assert stardelt.spark() is not None
+
+
+def test_a_newer_client_against_an_older_server_says_so(fake_spark, visible_catalogs):
+    # The failure this replaces: a 4.2 client against a 4.1.3 server answers
+    # `int("3221225472b")` inside createDataFrame, far from the cause (platform#399).
+    fake_spark.server_version = "4.2.0"
+    with pytest.raises(RuntimeError) as exc:
+        stardelt.spark()
+    message = str(exc.value)
+    assert "4.1.3" in message
+    assert "4.2.0" in message
+    assert "platform#399" in message
+
+
+def test_an_unknown_client_version_does_not_block_spark(fake_spark, visible_catalogs, monkeypatch):
+    monkeypatch.delattr(sys.modules["pyspark"], "__version__", raising=False)
+    assert stardelt.spark() is not None
 
 
 def test_rdd_hint_raises_notimplemented_with_the_sentence(fake_connect, visible_catalogs):
