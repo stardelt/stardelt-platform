@@ -82,6 +82,12 @@ ensure_secret airflow-fernet-key fernet-key=@fernet
 ensure_secret airflow-webserver-key webserver-secret-key=@rand api-secret-key=@rand
 ensure_secret airflow-jwt-secret jwt-secret=@rand
 ensure_secret airflow-admin username=admin password=@rand
+# The `nova-api` service user Nova signs in to Airflow with (J1, platform#254). The
+# Nova Deployment references it unconditionally (NOVA_AIRFLOW_PASSWORD), so a
+# namespace without it leaves Nova in CreateContainerConfigError — `install-core`
+# does not install Airflow, but it does install Nova. Generated once and kept, like
+# the rest; the matching Airflow user is created when Airflow is installed.
+ensure_secret airflow-nova-api username=nova-api password=@rand
 
 # Superset. `superset 0.15.5` has no Secret-name field for its secret key; the
 # chart passes extraEnvRaw through to every pod including the init Job.
