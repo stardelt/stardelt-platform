@@ -1,0 +1,21 @@
+# cert-manager for a home cluster: DNS-01 against public resolvers.
+#
+# The DNS-01 self-check asks a resolver whether the TXT record it just wrote is
+# visible. By default that is the cluster resolver (CoreDNS), which caches the
+# negative answer it gave before the record existed — Cloudflare's SOA minimum is
+# 30 minutes, so the check keeps saying "not yet propagated" long after the record
+# is public, and a certificate sits pending with no error to act on.
+#
+# Pointing the check at public resolvers removes the cluster's caches from the
+# path. `--dns01-recursive-nameservers-only` makes it use only these, so a cached
+# answer from CoreDNS cannot sneak back in.
+#
+# Install:
+#   helm upgrade --install cert-manager jetstack/cert-manager \
+#     --namespace cert-manager --create-namespace \
+#     -f dev/home-k3s/cert-manager-values.yaml --wait
+crds:
+  enabled: true
+extraArgs:
+  - --dns01-recursive-nameservers=1.1.1.1:53,8.8.8.8:53
+  - --dns01-recursive-nameservers-only

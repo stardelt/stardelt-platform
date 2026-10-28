@@ -1,0 +1,137 @@
+# Keeps the platform's A records pointed at this line's public IPv4.
+#
+# Why not a CNAME to the router's DDNS name: a MyFRITZ/DDNS name publishes an
+# AAAA record for the router itself, and every IPv6-capable client prefers it.
+# The port forward we need is IPv4-only, so those clients land on the router's
+# web UI ("certificate does not match the hostname") instead of the cluster.
+# A records with no AAAA keep every client on the IPv4 path.
+#
+# The address is dynamic, so a CronJob refreshes it. It runs as the same token
+# cert-manager uses for DNS-01: Zone → DNS → Edit, nothing else.
+#
+# Apply (the Secret carries the token, so it is created from a shell that has it):
+#
+#   kubectl -n stardelt create secret generic cloudflare-dns \
+#     --from-literal=api-token="$CLOUDFLARE_API_TOKEN"
+#   kubectl apply -f dev/home-k3s/ddns.yaml
+#
+# RECORD_NAME is the base domain; the wildcard is updated with it.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ddns
+  namespace: stardelt
+  labels:
+    app.kubernetes.io/part-of: stardelt
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ddns-script
+  namespace: stardelt
+  labels:
+    app.kubernetes.io/part-of: stardelt
+data:
+  ddns.py: |
+    import json, os, urllib.request
+
+    API = "https://api.cloudflare.com/client/v4"
+    token = os.environ["CLOUDFLARE_API_TOKEN"]
+    zone_name = os.environ.get("ZONE_NAME", "example.com")
+    base = os.environ["RECORD_NAME"]
+    names = [base, "*." + base]
+
+
+    def cf(method, path, body=None):
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(
+            API + path,
+            data=data,
+            method=method,
+            headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=20) as response:
+            return json.load(response)
+
+
+    def public_ipv4():
+        # api.ipify.org answers over IPv4; ifconfig.me is the fallback.
+        for url in ("https://api.ipify.org", "https://ifconfig.me/ip"):
+            try:
+                value = urllib.request.urlopen(url, timeout=10).read().decode().strip()
+                if value.count(".") == 3:
+                    return value
+            except OSError:
+                continue
+        raise SystemExit("cannot determine the public IPv4 address")
+
+
+    zone_id = cf("GET", "/zones?name=" + zone_name)["result"][0]["id"]
+    ip = public_ipv4()
+    for name in names:
+        records = cf("GET", f"/zones/{zone_id}/dns_records?type=A&name={name}")["result"]
+        if records and records[0]["content"] == ip:
+            print(f"{name}: {ip} (unchanged)")
+            continue
+        body = {"type": "A", "name": name, "content": ip, "ttl": 300, "proxied": False}
+        if records:
+            cf("PUT", f"/zones/{zone_id}/dns_records/{records[0]['id']}", body)
+            print(f"{name}: updated -> {ip}")
+        else:
+            cf("POST", f"/zones/{zone_id}/dns_records", body)
+            print(f"{name}: created -> {ip}")
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ddns
+  namespace: stardelt
+  labels:
+    app.kubernetes.io/part-of: stardelt
+spec:
+  schedule: "*/10 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 120
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: ddns
+            app.kubernetes.io/part-of: stardelt
+        spec:
+          serviceAccountName: ddns
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            seccompProfile: { type: RuntimeDefault }
+          containers:
+            - name: ddns
+              image: python:3.13.16-slim-bookworm
+              command: ["python3", "/opt/ddns/ddns.py"]
+              # The record name is the platform's base domain; change both lines
+              # together or the job stops maintaining the entry the Ingresses use.
+              env:
+                - { name: ZONE_NAME, value: "example.com" }
+                - { name: RECORD_NAME, value: "alpha.example.com" }
+                - name: CLOUDFLARE_API_TOKEN
+                  valueFrom:
+                    secretKeyRef: { name: cloudflare-dns, key: api-token }
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: ["ALL"] }
+              resources:
+                requests: { cpu: 10m, memory: 32Mi }
+                limits: { memory: 128Mi }
+              volumeMounts:
+                - { name: script, mountPath: /opt/ddns, readOnly: true }
+          volumes:
+            - name: script
+              configMap:
+                name: ddns-script

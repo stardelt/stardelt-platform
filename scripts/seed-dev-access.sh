@@ -525,7 +525,32 @@ done
 # person whose login predates the seed)
 # ---------------------------------------------------------------------------
 analyst_id="$(user_id analyst)"
-[ -n "$analyst_id" ] || fail "the realm has no user analyst — the realm import is incomplete"
+if [ -z "$analyst_id" ]; then
+  # A fresh realm has no `analyst`: the imported realm cannot carry a password
+  # (no default credential may live in this repository), so the seed creates the
+  # account the permission matrix needs and puts its generated password in the
+  # same Secret. It carries no seed marker on purpose — `--unseed` leaves it
+  # alone, exactly like a person whose login predates the seed.
+  [ -f "$tmp/secret/analyst" ] || new_password analyst
+  python3 - "$tmp/secret/analyst" >"$tmp/user-analyst.json" <<'PY'
+import json, sys
+json.dump({
+    "username": "analyst",
+    "enabled": True,
+    "email": "analyst@dev.stardelt.io",
+    "emailVerified": True,
+    "firstName": "Ana",
+    "lastName": "Lyst",
+    "requiredActions": [],
+    "credentials": [{"type": "password", "value": open(sys.argv[1]).read(), "temporary": False}],
+}, sys.stdout)
+PY
+  kc -H 'Content-Type: application/json' -X POST --data @"$tmp/user-analyst.json" "$API/users" >/dev/null \
+    || fail "Keycloak refused to create user analyst"
+  analyst_id="$(user_id analyst)"
+  [ -n "$analyst_id" ] || fail "user analyst was created but cannot be read back"
+  echo "› user analyst: created (fresh realm; password in Secret $SEED_SECRET)"
+fi
 if kc "$API/users/$analyst_id/groups" | jq -r '.[].name' | grep -qx analytics; then
   echo "› existing user analyst: already a member of analytics"
 else
