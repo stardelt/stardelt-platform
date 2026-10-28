@@ -27,12 +27,15 @@ log() { printf '\n\033[1;36m› %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m  ! %s\033[0m\n' "$*" >&2; }
 
 [ "${EUID}" -eq 0 ] || { echo "run me with sudo: sudo bash $0" >&2; exit 1; }
-[ -n "$OWNER_USER" ] && id "$OWNER_USER" >/dev/null 2>&1 || {
-  echo "cannot resolve the login user (set OWNER_USER=<name>)" >&2; exit 1; }
+if [ -z "$OWNER_USER" ] || ! id "$OWNER_USER" >/dev/null 2>&1; then
+  echo "cannot resolve the login user (set OWNER_USER=<name>)" >&2
+  exit 1
+fi
 
 OWNER_HOME="$(getent passwd "$OWNER_USER" | cut -d: -f6)"
 
 # --- 1. host facts ---------------------------------------------------------
+# shellcheck source=/dev/null
 . /etc/os-release
 case "${ID:-}" in
   ubuntu|debian) ;;
@@ -55,7 +58,7 @@ apt-get install -y -qq --no-install-recommends \
   apache2-utils shellcheck >/dev/null
 # apache2-utils: `htpasswd` hashes the Trino service-account password
 # (scripts/identity-bootstrap.sh refuses to run without it).
-# shellcheck: `make lint` uses it when present.
+# lint uses ShellCheck when it is present, so install it here.
 
 # --- 3. swap off (kubelet's default is fail-swap-on) -----------------------
 if swapon --show=NAME --noheadings 2>/dev/null | grep -q .; then
@@ -170,7 +173,7 @@ if [ "${INSTALL_DOCKER:-1}" = "1" ]; then
       | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
     chmod a+r /etc/apt/keyrings/docker.gpg
     printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu %s stable\n' \
-      "$(dpkg --print-architecture)" "$(. /etc/os-release; echo "$VERSION_CODENAME")" \
+      "$(dpkg --print-architecture)" "$VERSION_CODENAME" \
       >/etc/apt/sources.list.d/docker.list
     apt-get update -qq
     apt-get install -y -qq --no-install-recommends \
@@ -195,6 +198,8 @@ install -o "$OWNER_USER" -g "$OWNER_USER" -m 0600 "$tmp_kc" "$OWNER_HOME/.kube/s
 rm -f "$tmp_kc"
 
 if ! grep -qs 'KUBECONFIG=' "$OWNER_HOME/.bashrc"; then
+  # Written literally on purpose: the expansion belongs to the login shell.
+  # shellcheck disable=SC2016
   printf '\nexport KUBECONFIG="$HOME/.kube/config"\n' >>"$OWNER_HOME/.bashrc"
   chown "$OWNER_USER:$OWNER_USER" "$OWNER_HOME/.bashrc"
 fi
