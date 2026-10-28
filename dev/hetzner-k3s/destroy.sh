@@ -36,6 +36,10 @@ if [ -f "$CFG" ]; then
 fi
 do_dns=0
 if [ -f "$CF_ENV" ] && [ -x "$HERE/../cloudflare-dns.sh" ]; then do_dns=1; fi
+# Deleting the records is opt-in: the name outlives this cluster. A stage that
+# took the name over (a home node, a replacement cluster) owns those records now,
+# and `make dev-down` on the retired node must not point DNS at nothing.
+remove_dns="${REMOVE_DNS:-0}"
 
 echo "About to delete:"
 if [ -n "$cluster" ]; then
@@ -43,8 +47,10 @@ if [ -n "$cluster" ]; then
 else
   echo "  - no cluster (no $CFG)"
 fi
-if [ "$do_dns" = 1 ]; then
+if [ "$do_dns" = 1 ] && [ "$remove_dns" = 1 ]; then
   echo "  - DNS A records ${INGRESS_HOST} and *.${INGRESS_HOST}"
+elif [ "$do_dns" = 1 ]; then
+  echo "  - DNS records for ${INGRESS_HOST}: KEPT (REMOVE_DNS=1 to delete them)"
 fi
 
 if [ "${FORCE:-0}" != 1 ] && [ -t 0 ]; then
@@ -66,10 +72,14 @@ else
   echo "no cluster.yaml — nothing to delete (run provision.sh first)"
 fi
 
-if [ "$do_dns" = 1 ]; then
+if [ "$do_dns" = 1 ] && [ "$remove_dns" = 1 ]; then
   echo "› removing DNS records for ${INGRESS_HOST}"
   if ! NAME="$INGRESS_HOST" bash "$HERE/../cloudflare-dns.sh" delete; then
     echo "DNS cleanup failed — the records still point at a released IP. Run 'make dev-dns-down'." >&2
     exit 1
   fi
+fi
+
+if [ "$do_dns" = 1 ] && [ "$remove_dns" != 1 ]; then
+  echo "› DNS records for ${INGRESS_HOST} left in place (REMOVE_DNS=1 to delete them)"
 fi

@@ -68,19 +68,26 @@ for the old cluster first.
 ## Tear down
 
 ```sh
-make dev-down        # hetzner-k3s delete + remove DNS records
+make dev-down                 # hetzner-k3s delete; DNS records are KEPT
+REMOVE_DNS=1 make dev-down    # ...and remove them too
+make dev-dns-down             # remove the records on their own
 ```
 
-`dev-down` prints the cluster named in `cluster.yaml` and the DNS records it will remove,
-and asks before going on when run from a terminal (`FORCE=1` skips the question; without a
-terminal it proceeds). If the cluster delete fails it stops and leaves DNS alone; run
-`make dev-dns-down` once the cluster is really gone.
+`dev-down` prints the cluster named in `cluster.yaml`, says whether it will touch DNS,
+and asks before going on when run from a terminal (`FORCE=1` skips the question; without
+a terminal it proceeds). If the cluster delete fails it stops and leaves DNS alone.
+
+**DNS is opt-in** (`REMOVE_DNS=1`) because the name outlives this cluster: a replacement
+stage — e.g. the single home node in [`../home-k3s`](../home-k3s) — may already own
+`alpha.dev.stardelt.io`, and tearing the retired cluster down must not point it at
+nothing. `make dev-dns-down` is the explicit way to delete the records.
 
 What disappears: the server, k3s itself, and **everything on its disk** — every
 PersistentVolumeClaim (SeaweedFS data, Lakekeeper's Postgres, JupyterHub homes,
 Trino spill). No Hetzner volumes are provisioned (`cluster.yaml` defines none), so
-local-path storage is the node's disk. The Cloudflare A records for
-`alpha.dev.stardelt.io` and `*.alpha.dev.stardelt.io` go with it.
+local-path storage is the node's disk. The Cloudflare records for
+`alpha.dev.stardelt.io` and `*.alpha.dev.stardelt.io` stay unless you ask for their
+removal.
 
 **Nothing on the cluster is irreplaceable.** The stack is reproducible from this repo
 (pinned chart versions in the `Makefile` + `helm-values/`) and the container images
