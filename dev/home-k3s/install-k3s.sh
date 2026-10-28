@@ -51,7 +51,11 @@ log "base packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq --no-install-recommends \
-  ca-certificates curl jq openssl gnupg apt-transport-https >/dev/null
+  ca-certificates curl jq openssl gnupg apt-transport-https \
+  apache2-utils shellcheck >/dev/null
+# apache2-utils: `htpasswd` hashes the Trino service-account password
+# (scripts/identity-bootstrap.sh refuses to run without it).
+# shellcheck: `make lint` uses it when present.
 
 # --- 3. swap off (kubelet's default is fail-swap-on) -----------------------
 if swapon --show=NAME --noheadings 2>/dev/null | grep -q .; then
