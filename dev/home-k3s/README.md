@@ -28,20 +28,25 @@ repository and `ghcr.io/stardelt/*` whenever it stops being useful.
 2. Forward **TCP 443** to the host. Port 80 is *not* required: certificates use DNS-01.
    If port 80 is already taken on your line by another service, that is the expected
    case, not a problem.
-3. DNS: point the platform's records at the router's **DDNS name** (not at an address),
-   so a changing public IP needs no work. Cloudflare:
+3. DNS: two **A records** (`<base-domain>` and `*.<base-domain>`) pointing at your public
+   IPv4, kept current by the `ddns` CronJob in this directory. Do **not** point them at a
+   router DDNS name with a CNAME: those names usually publish an AAAA record for the
+   router, and every IPv6-capable client prefers it — the port forward we need is
+   IPv4-only, so those clients land on the router's web UI with a certificate warning.
 
    ```sh
    set -a; . ~/.config/stardelt/cloudflare.env; set +a
-   TYPE=CNAME TARGET=<router-ddns-name> NAME=<base-domain> \
-     ./dev/cloudflare-dns.sh upsert
+   IP="$(curl -s https://api.ipify.org)"
+   TYPE=A IP="$IP" NAME=<base-domain> ./dev/cloudflare-dns.sh upsert
+
+   kubectl -n stardelt create secret generic cloudflare-dns \
+     --from-literal=api-token="$CLOUDFLARE_API_TOKEN"
+   kubectl apply -f dev/home-k3s/ddns.yaml   # edit ZONE_NAME/RECORD_NAME first
    ```
 
-   That writes `<base-domain>` and `*.<base-domain>` and removes an A record of the same
-   name if one exists (Cloudflare refuses a CNAME next to an A).
-
-   Check: `dig +short id.<base-domain>` must end in your public IPv4. If your line is
-   behind CGNAT/DS-Lite, no forward will work — test from outside, not from the host.
+   Check: `dig +short id.<base-domain>` must end in your public IPv4, and
+   `dig +short id.<base-domain> AAAA` must be empty. If your line is behind
+   CGNAT/DS-Lite, no forward will work — test from outside, not from the host.
 
 ## 2. Host + k3s — once, needs root
 
@@ -68,7 +73,8 @@ helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
 
 helm repo add jetstack https://charts.jetstack.io --force-update
 helm upgrade --install cert-manager jetstack/cert-manager \
-  --namespace cert-manager --create-namespace --set crds.enabled=true --wait
+  --namespace cert-manager --create-namespace \
+  -f dev/home-k3s/cert-manager-values.yaml --wait
 
 # the token needs Zone → DNS → Edit on the zone, and nothing else
 kubectl -n cert-manager create secret generic cloudflare-api-token \

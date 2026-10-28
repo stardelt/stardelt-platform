@@ -51,7 +51,7 @@ log "base packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq --no-install-recommends \
-  ca-certificates curl jq openssl apt-transport-https >/dev/null
+  ca-certificates curl jq openssl gnupg apt-transport-https >/dev/null
 
 # --- 3. swap off (kubelet's default is fail-swap-on) -----------------------
 if swapon --show=NAME --noheadings 2>/dev/null | grep -q .; then
@@ -91,9 +91,13 @@ TLS_SANS=(--tls-san "$NODE_NAME" --tls-san "localhost" --tls-san "127.0.0.1"
 if [ -n "$TS_IP" ]; then TLS_SANS+=(--tls-san "$TS_IP"); fi
 # Optional extra names for the API certificate (e.g. the platform's base domain when
 # kubectl is pointed at it). Never required for the platform itself.
-for san in ${EXTRA_TLS_SANS//,/ }; do
-  [ -n "$san" ] && TLS_SANS+=(--tls-san "$san")
-done
+# Comma separated; unset is the normal case and must not trip `set -u`.
+if [ -n "${EXTRA_TLS_SANS:-}" ]; then
+  IFS=',' read -ra _extra_sans <<<"$EXTRA_TLS_SANS"
+  for san in "${_extra_sans[@]}"; do
+    [ -n "$san" ] && TLS_SANS+=(--tls-san "$san")
+  done
+fi
 
 installer_flags=(
   server
@@ -176,12 +180,12 @@ fi
 log "kubeconfig for $OWNER_USER"
 install -d -o "$OWNER_USER" -g "$OWNER_USER" -m 0700 "$OWNER_HOME/.kube"
 tmp_kc="$(mktemp)"
-# k3s names the cluster, context and user `default`; rename all three so
-# EXPECT_CONTEXT=stardelt-dev (the Makefile guard) matches.
-sed -e "s|name: default$|name: stardelt-dev|" \
-    -e "s|current-context: default|current-context: stardelt-dev|" \
-    -e "s|context: default$|context: stardelt-dev|" \
-    /etc/rancher/k3s/k3s.yaml >"$tmp_kc"
+cp /etc/rancher/k3s/k3s.yaml "$tmp_kc"
+# k3s names the context `default`; rename it to `stardelt-dev` so
+# EXPECT_CONTEXT=stardelt-dev (the Makefile guard) matches. Use kubectl rather than
+# sed: the context references the cluster and the user by name, and rewriting one
+# side only leaves a kubeconfig that cannot resolve its own cluster.
+KUBECONFIG="$tmp_kc" /usr/local/bin/kubectl config rename-context default stardelt-dev >/dev/null
 install -o "$OWNER_USER" -g "$OWNER_USER" -m 0600 "$tmp_kc" "$OWNER_HOME/.kube/config"
 install -o "$OWNER_USER" -g "$OWNER_USER" -m 0600 "$tmp_kc" "$OWNER_HOME/.kube/stardelt-dev.yaml"
 rm -f "$tmp_kc"

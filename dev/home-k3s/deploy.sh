@@ -75,7 +75,7 @@ helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
 step "cert-manager"
 helm upgrade --install cert-manager jetstack/cert-manager \
   --namespace cert-manager --create-namespace \
-  --set crds.enabled=true --wait --timeout 10m
+  -f dev/home-k3s/cert-manager-values.yaml --wait --timeout 10m
 
 kubectl -n cert-manager get secret cloudflare-api-token >/dev/null 2>&1 \
   || die "Secret cert-manager/cloudflare-api-token is missing — see the header of this script"
