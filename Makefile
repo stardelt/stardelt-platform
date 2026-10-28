@@ -468,6 +468,7 @@ trino: deps _context ## Install/upgrade Trino, with OAuth2+TLS when a platform I
 	  fi; \
 	  echo "› Trino warehouses and group file: ensure ConfigMaps trino-warehouses (resource-groups.json) and trino-group-file (groups.txt), then one access-sync (platform#312)"; \
 	  $(MAKE) --no-print-directory trino-warehouse-configmaps || exit 1; \
+	  $(MAKE) --no-print-directory access-sync || exit 1; \
 	  $(MAKE) --no-print-directory access-sync-now || exit 1; \
 	  helm upgrade --install trino trino/trino \
 	    --version $(TRINO_VERSION) \
