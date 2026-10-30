@@ -362,8 +362,15 @@ jobs:
         # The same install the notebook image runs (images/jupyter/Dockerfile),
         # so this job proves the pin resolves and the library works at it.
         run: |
-          pip install "stardelt @ git+https://github.com/stardelt/stardelt-python@${{ steps.pin.outputs.ref }}"
+          # `[jupyter]` on purpose: that is what images/jupyter/Dockerfile installs,
+          # and since v0.1.5 the library's test_sqlmagic imports IPython at module
+          # level — a bare install fails collection here while the image works.
+          pip install "stardelt[jupyter] @ git+https://github.com/stardelt/stardelt-python@${{ steps.pin.outputs.ref }}"
           pip install pytest
 
       - name: Run the library's tests
-        run: python -m pytest stardelt-python/tests -q
+        # From the library root: the suite imports `tests.test_stardelt`, which
+        # only resolves with that directory on sys.path (no tests/__init__.py).
+        run: |
+          cd stardelt-python
+          python -m pytest tests -q
