@@ -71,6 +71,7 @@ CHART_EXTRA ?=
 BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 
 .PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator openfga trino catalogs upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-up dev-down dev-dns dev-dns-down
+.PHONY: platform platform-idempotence upgrade-idempotence platform-dry-run
 .PHONY: chart-deps chart-template chart-install
 .PHONY: verify-backups verify-backups-identity verify-backups-nova verify-backups-openfga verify-backups-all verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
 .PHONY: backups verify-pgdump offsite-backup export-recovery-secrets import-recovery-secrets
@@ -221,47 +222,83 @@ _helm-repos:
 	@helm repo update
 
 # ---------------------------------------------------------------------------
-# Install
+# The platform flow (platform#422) — the steps of `make platform` and
+# `make upgrade`, one target each.
+#
+# Every step is a target of its own, so scripts/platform.sh can name the step
+# that broke, say what that step does and point at the command to look at.
+# `make install` and `make install-core` call the same targets in the same
+# order, so a step has exactly one implementation and one order per profile.
+#
+# The steps are idempotent: every one of them converges the live state to what
+# this repository declares and leaves it alone when it is already there.
 # ---------------------------------------------------------------------------
-install: deps _context _helm-repos ## Install all stardelt components (idempotent)
+.PHONY: step-preflight step-reloader step-cnpg step-cnpg-cluster step-s3-secrets step-seaweedfs
+.PHONY: step-openfga step-catalog-clients step-lakekeeper step-lakekeeper-bootstrap step-access-sync
+.PHONY: step-trino step-app-secrets step-airflow step-superset step-pgdump step-nova step-pins
+.PHONY: step-notebooks step-spark step-verify
+
+# The values files the Lakekeeper release gets. `install` uses the
+# identity-aware file alone; `install-core` (no IdP) adds the allowall overlay
+# and renders no Catalog mappings.
+LAKEKEEPER_VALUES ?= -f helm-values/lakekeeper.yaml
+LAKEKEEPER_RENDER ?= 1
+
+step-preflight: deps _context _helm-repos ## Tools, the kube-context and the Helm repos
+
+step-reloader: ## Reloader: restarts a workload when a credential it reads changes
 	@echo "› Reloader (restarts workloads when a credential they read changes)"
 	@helm upgrade --install reloader stakater/reloader --version $(RELOADER_VERSION) $(HELM_FLAGS) -f helm-values/reloader.yaml
 
-	@echo "› [1/11] CloudNative-PG operator"
+step-cnpg: ## The CloudNative-PG operator (the Postgres clusters need it)
+	@echo "› CloudNative-PG operator"
 	@helm upgrade --install cnpg cnpg/cloudnative-pg \
 	  --version $(CNPG_VERSION) \
 	  $(HELM_FLAGS)
 
-	@echo "› [2/11] CNPG Cluster (Lakekeeper Postgres)"
+step-cnpg-cluster: ## The Lakekeeper Postgres cluster + the backup guard
+	@echo "› CNPG Cluster (Lakekeeper Postgres)"
 	@kubectl apply -f manifests/cnpg-postgres.yaml
-	@echo "› [2/11] guard: the live Cluster must still declare its backup config"
+	@echo "› guard: the live Cluster must still declare its backup config"
 	@$(MAKE) --no-print-directory verify-backup-config
+	@kubectl -n $(NAMESPACE) wait --for=condition=Ready --timeout=300s cluster/lakekeeper-pg
 
+step-s3-secrets: ## The S3 key pair (generated once, kept across installs)
 	@NAMESPACE=$(NAMESPACE) bash scripts/s3-secrets.sh
 
-	@echo "› [3/11] SeaweedFS"
+step-seaweedfs: ## The object store (S3 API)
+	@echo "› SeaweedFS"
 	@helm upgrade --install seaweedfs seaweedfs/seaweedfs \
 	  --version $(SEAWEEDFS_VERSION) \
 	  $(HELM_FLAGS) \
 	  -f helm-values/seaweedfs.yaml
 
-	@echo "› [3/11] Versioned notebooks bucket (published notebooks, platform#290)"
+# The object store and the credentials that reach it. The key pair comes
+# first: the SeaweedFS chart reads the gateway's configuration from it.
+step-storage: step-s3-secrets step-seaweedfs ## The object store and the S3 key pair
+
+step-notebooks-bucket: ## The versioned bucket published notebooks live in
+	@echo "› Versioned notebooks bucket (published notebooks, platform#290)"
 	@$(MAKE) --no-print-directory notebooks-bucket
 
+step-openfga: ## The catalog's permission store (its own Postgres) — only with an IdP
 	@# OpenFGA (platform#302): the permission store for the catalog cutover. Only
 	@# where the platform has an IdP — authorization is checked against a person's
 	@# OIDC subject, and a bare install has nothing to check. Lakekeeper keeps
 	@# `allowall` until #304, so this deployment changes no behaviour.
 	@if kubectl -n $(NAMESPACE) get configmap stardelt-identity >/dev/null 2>&1; then \
-	  echo "› [4/11] OpenFGA: the catalog's permission store (own Postgres, not wired yet)"; \
+	  echo "› OpenFGA: the catalog's permission store (own Postgres, not wired yet)"; \
 	  kubectl apply -f manifests/openfga-pg.yaml; \
 	  kubectl -n $(NAMESPACE) wait --for=condition=Ready --timeout=300s cluster/openfga-pg; \
 	  $(MAKE) --no-print-directory verify-backup-config PG_CLUSTER=openfga-pg; \
-	  echo "› [4/11] OpenFGA ingress: only the Lakekeeper catalog and migration pods"; \
+	  echo "› OpenFGA ingress: only the Lakekeeper catalog and migration pods"; \
 	  kubectl apply -f manifests/openfga-network-policy.yaml; \
 	  $(MAKE) --no-print-directory openfga; \
+	else \
+	  echo "› OpenFGA: skipped — no platform IdP (ConfigMap stardelt-identity)"; \
 	fi
 
+step-catalog-clients: ## The catalog's own service clients (svc-catalog-*) — only with an IdP
 	@echo "› Catalog service clients (platform#282): svc-catalog-* for every caller of the catalog"
 	@# Before Lakekeeper, because authentication is on (platform#285): the bootstrap
 	@# Job below presents svc-catalog-bootstrap on its very first call, so the Secret
@@ -272,39 +309,51 @@ install: deps _context _helm-repos ## Install all stardelt components (idempoten
 	@# cluster without an IdP there is no Secret and the catalog stays anonymous.
 	@if kubectl -n $(NAMESPACE) get configmap stardelt-identity >/dev/null 2>&1; then \
 	  $(MAKE) --no-print-directory sync-catalog-clients; \
+	else \
+	  echo "  › skipped — no platform IdP (ConfigMap stardelt-identity)"; \
 	fi
 
-	@echo "› [4/11] Lakekeeper"
-	@helm upgrade --install lakekeeper lakekeeper/lakekeeper \
+step-lakekeeper: ## The Iceberg REST catalog
+	@echo "› Lakekeeper"
+	@args="$(LAKEKEEPER_VALUES)"; \
+	if [ "$(LAKEKEEPER_RENDER)" = "1" ]; then \
+	  args="$$args $$(NAMESPACE=$(NAMESPACE) bash scripts/render-catalogs.sh bridge-arg) $$(NAMESPACE=$(NAMESPACE) bash scripts/render-catalogs.sh admin-arg)"; \
+	fi; \
+	helm upgrade --install lakekeeper lakekeeper/lakekeeper \
 	  --version $(LAKEKEEPER_VERSION) \
 	  $(HELM_FLAGS) \
-	  -f helm-values/lakekeeper.yaml \
-	  $$(NAMESPACE=$(NAMESPACE) bash scripts/render-catalogs.sh bridge-arg) \
-	  $$(NAMESPACE=$(NAMESPACE) bash scripts/render-catalogs.sh admin-arg)
+	  $$args
 
-	@echo "› [5/11] Lakekeeper bootstrap"
+step-lakekeeper-bootstrap: ## The catalog's bootstrap Job and its ingress NetworkPolicy
+	@echo "› Lakekeeper bootstrap"
 	@kubectl apply -f manifests/lakekeeper-bootstrap.yaml
-	@echo "› [5/11] catalog ingress NetworkPolicy (only the components that need it)"
+	@echo "› catalog ingress NetworkPolicy (only the components that need it)"
 	@kubectl apply -f manifests/lakekeeper-network-policy.yaml
-	@echo "› [5/11] Access sync: one warehouse per Catalog (platform#305)"
+
+step-access-sync: ## The CronJob that turns Catalog objects into warehouses and grants
+	@echo "› Access sync: one warehouse per Catalog (platform#305)"
 	@if kubectl -n $(NAMESPACE) get configmap stardelt-identity >/dev/null 2>&1; then \
 	  $(MAKE) --no-print-directory access-sync; \
+	else \
+	  echo "  › skipped — no platform IdP (ConfigMap stardelt-identity)"; \
 	fi
 
-	@echo "› [6/11] Trino"
-	@$(MAKE) --no-print-directory trino
+step-trino: trino ## The query engine (OAuth2 + in-cluster TLS when the platform has an IdP)
 
-	@echo "› [7/11] Airflow/Superset Secrets (generated once, kept across installs)"
+step-app-secrets: ## The Airflow/Superset Secrets (generated once, kept across installs)
+	@echo "› Airflow/Superset Secrets (generated once, kept across installs)"
 	@NAMESPACE=$(NAMESPACE) bash scripts/app-secrets.sh
 
-	@echo "› [8/11] Airflow"
+step-airflow: ## The orchestrator
+	@echo "› Airflow"
 	@helm upgrade --install airflow apache-airflow/airflow \
 	  --version $(AIRFLOW_VERSION) \
 	  $(HELM_FLAGS) \
 	  -f helm-values/airflow.yaml
 	@kubectl apply -f manifests/airflow-pipelines.yaml
 
-	@echo "› [9/11] Superset"
+step-superset: ## The BI tool
+	@echo "› Superset"
 	@# The init Job's role script lives in the repo (#287); --set-file puts it into
 	@# the extra-config ConfigMap so Helm carries it and there is one copy to edit.
 	@helm upgrade --install superset superset/superset \
@@ -313,17 +362,52 @@ install: deps _context _helm-repos ## Install all stardelt components (idempoten
 	  -f helm-values/superset.yaml \
 	  --set-file "extraConfigs.superset-analyst-role\.py=scripts/superset-analyst-role.py"
 
-	@echo "› [9/11] Postgres dumps: Superset and Airflow databases (daily, 14 days)"
+step-pgdump: ## The daily logical dumps of the Airflow and Superset databases
+	@echo "› Postgres dumps: Superset and Airflow databases (daily, 14 days)"
 	@kubectl apply -f manifests/pg-dump-backup.yaml
 
-	@echo "› [10/11] Nova (state store first: the Deployment reads its Secret)"
+step-nova: ## Nova (the state store first: the Deployment reads its Secret)
+	@echo "› Nova (state store first: the Deployment reads its Secret)"
 	@kubectl apply -f manifests/nova-pg.yaml
 	@$(MAKE) --no-print-directory verify-backup-config PG_CLUSTER=nova-pg
 	@kubectl -n $(NAMESPACE) wait --for=condition=Ready --timeout=300s cluster/nova-pg
 	@kubectl apply -f manifests/nova-deployment.yaml
 
-	@echo "› [11/11] Pin images to the digests CI published"
+# The apps: the orchestrator, the BI tool and Nova (the UI and the API). The
+# Secrets come first — the charts read them.
+step-apps: step-app-secrets step-airflow step-superset step-pgdump step-nova ## The apps: Airflow, Superset and Nova
+
+step-pins: ## The image digests this cluster runs
+	@echo "› Pin images to the digests CI published"
 	@$(MAKE) --no-print-directory pin-images
+
+step-notebooks: step-notebooks-bucket install-notebooks ## JupyterHub (the notebooks) and the bucket they publish into
+
+step-spark: install-spark ## The Spark Connect endpoint (heavy compute on the same Iceberg tables)
+
+# The verify targets the upgrade path runs after it converged the cluster.
+step-verify: ## Prove the platform works end to end (Trino auth, the catalog grants, the backups)
+	@$(MAKE) --no-print-directory verify-trino-auth
+	@$(MAKE) --no-print-directory verify-catalog-permissions
+	@$(MAKE) --no-print-directory verify-backups-all
+
+# ---------------------------------------------------------------------------
+# Install
+# ---------------------------------------------------------------------------
+install: step-preflight ## Install all stardelt components (idempotent)
+	@$(MAKE) --no-print-directory step-reloader
+	@$(MAKE) --no-print-directory step-cnpg
+	@$(MAKE) --no-print-directory step-cnpg-cluster
+	@$(MAKE) --no-print-directory step-storage
+	@$(MAKE) --no-print-directory step-notebooks-bucket
+	@$(MAKE) --no-print-directory step-openfga
+	@$(MAKE) --no-print-directory step-catalog-clients
+	@$(MAKE) --no-print-directory step-lakekeeper
+	@$(MAKE) --no-print-directory step-lakekeeper-bootstrap
+	@$(MAKE) --no-print-directory step-access-sync
+	@$(MAKE) --no-print-directory step-trino
+	@$(MAKE) --no-print-directory step-apps
+	@$(MAKE) --no-print-directory step-pins
 
 	@echo ""
 	@echo "stardelt installed. Run 'make pf' to open port-forwards."
@@ -331,52 +415,23 @@ install: deps _context _helm-repos ## Install all stardelt components (idempoten
 # ---------------------------------------------------------------------------
 # Core install — the cheap path for a single small node (cx33 / 8 GB).
 # Storage + catalog + query + Nova. Skips Airflow and Superset.
+#
+# The same step targets as `make install`, in the same order; the profile
+# differs in what it leaves out (Airflow, Superset, the identity) and in the
+# catalog's authorization backend (allowall — there is no IdP to check against).
 # ---------------------------------------------------------------------------
-install-core: deps _context _helm-repos ## Install the core only (storage+catalog+query+Nova)
-	@echo "› Reloader (restarts workloads when a credential they read changes)"
-	@helm upgrade --install reloader stakater/reloader --version $(RELOADER_VERSION) $(HELM_FLAGS) -f helm-values/reloader.yaml
-
-	@echo "› [1/7] CloudNative-PG operator"
-	@helm upgrade --install cnpg cnpg/cloudnative-pg \
-	  --version $(CNPG_VERSION) \
-	  $(HELM_FLAGS)
-
-	@echo "› [2/7] Generated credentials (S3 key pair, once)"
-	@NAMESPACE=$(NAMESPACE) bash scripts/s3-secrets.sh
-
-	@echo "› [3/7] CNPG Cluster (Lakekeeper Postgres)"
-	@kubectl apply -f manifests/cnpg-postgres.yaml
-	@echo "› [3/7] guard: the live Cluster must still declare its backup config"
-	@$(MAKE) --no-print-directory verify-backup-config
-	@kubectl -n $(NAMESPACE) wait --for=condition=Ready --timeout=300s cluster/lakekeeper-pg
-
-	@echo "› [4/7] SeaweedFS"
-	@helm upgrade --install seaweedfs seaweedfs/seaweedfs \
-	  --version $(SEAWEEDFS_VERSION) \
-	  $(HELM_FLAGS) \
-	  -f helm-values/seaweedfs.yaml
-
-	@echo "› [5/7] Lakekeeper (allowall: install-core has no IdP for OpenFGA)"
-	@helm upgrade --install lakekeeper lakekeeper/lakekeeper \
-	  --version $(LAKEKEEPER_VERSION) \
-	  $(HELM_FLAGS) \
-	  -f helm-values/lakekeeper.yaml \
-	  -f helm-values/lakekeeper-allowall.yaml
-
-	@echo "› [6/7] Lakekeeper bootstrap"
-	@kubectl apply -f manifests/lakekeeper-bootstrap.yaml
-	@echo "› [6/7] catalog ingress NetworkPolicy (only the components that need it)"
-	@kubectl apply -f manifests/lakekeeper-network-policy.yaml
-
-	@echo "› [7/7] Trino + Nova (state store first: the Deployment reads its Secret)"
-	@$(MAKE) --no-print-directory trino
-	@kubectl apply -f manifests/nova-pg.yaml
-	@$(MAKE) --no-print-directory verify-backup-config PG_CLUSTER=nova-pg
-	@kubectl -n $(NAMESPACE) wait --for=condition=Ready --timeout=300s cluster/nova-pg
-	@kubectl apply -f manifests/nova-deployment.yaml
-
-	@echo "› [8/8] Pin images to the digests CI published"
-	@$(MAKE) --no-print-directory pin-images
+install-core: step-preflight ## Install the core only (storage+catalog+query+Nova)
+	@$(MAKE) --no-print-directory step-reloader
+	@$(MAKE) --no-print-directory step-cnpg
+	@$(MAKE) --no-print-directory step-storage
+	@$(MAKE) --no-print-directory step-cnpg-cluster
+	@$(MAKE) --no-print-directory step-lakekeeper \
+	  LAKEKEEPER_VALUES="-f helm-values/lakekeeper.yaml -f helm-values/lakekeeper-allowall.yaml" \
+	  LAKEKEEPER_RENDER=0
+	@$(MAKE) --no-print-directory step-lakekeeper-bootstrap
+	@$(MAKE) --no-print-directory step-trino
+	@$(MAKE) --no-print-directory step-nova
+	@$(MAKE) --no-print-directory step-pins
 
 	@echo ""
 	@echo "Core installed. Run 'make pf' to reach Nova, Trino and Lakekeeper."
@@ -945,13 +1000,26 @@ install-identity: deps _context ## Install the platform IdP (Keycloak) at id.$(B
 	@# sign-in on, trinoUrl turns on the in-cluster TLS endpoint) and both are
 	@# process environment, not watched files: without this restart a fresh
 	@# install would keep running the dev-mode, plain-HTTP Nova it started with.
+	@#
+	@# The restart happens only when the manifest and the live Deployment really
+	@# differ. An unconditional restart rolls the pods on every run, which is not
+	@# idempotent (the Deployment's resourceVersion changes) and drops the
+	@# sessions a person has open for no reason (platform#422).
 	@if kubectl -n $(NAMESPACE) get deploy nova >/dev/null 2>&1; then \
-	  echo "› Nova: re-apply the manifest and restart so it re-reads the identity contract"; \
 	  kubectl apply -f manifests/nova-pg.yaml; \
 	  kubectl -n $(NAMESPACE) wait --for=condition=Ready --timeout=300s cluster/nova-pg; \
-	  kubectl apply -f manifests/nova-deployment.yaml; \
-	  kubectl -n $(NAMESPACE) rollout restart deploy/nova >/dev/null; \
-	  kubectl -n $(NAMESPACE) rollout status deploy/nova --timeout=3m; \
+	  diff_out="$$(kubectl -n $(NAMESPACE) diff -f manifests/nova-deployment.yaml 2>/dev/null)"; diff_rc=$$?; \
+	  if [ "$$diff_rc" -gt 1 ]; then \
+	    echo "› Nova: kubectl diff failed (exit $$diff_rc) — not touching the Deployment" >&2; exit 1; \
+	  fi; \
+	  if [ -n "$$diff_out" ]; then \
+	    echo "› Nova: the manifest differs from the live Deployment — applying it and restarting"; \
+	    kubectl apply -f manifests/nova-deployment.yaml; \
+	    kubectl -n $(NAMESPACE) rollout restart deploy/nova >/dev/null; \
+	    kubectl -n $(NAMESPACE) rollout status deploy/nova --timeout=3m; \
+	  else \
+	    echo "› Nova: the manifest matches the live Deployment — no restart"; \
+	  fi; \
 	fi
 	@echo "Keycloak installed. Issuer: https://id.$(BASE_DOMAIN)/realms/stardelt"
 	@echo "Admin console: https://id.$(BASE_DOMAIN)/admin/stardelt/console/ (sign in as admin, then Users)"
@@ -973,9 +1041,31 @@ install-operator: _context ## Install the stardelt Operator (needs ../stardelt-o
 	@echo "Operator installed. CRDs: PlatformInstance, Tenant, Lakehouse, IngestionSource, Pipeline."
 
 # ---------------------------------------------------------------------------
-# Upgrade (helm upgrade is idempotent — same as install)
+# The platform flow (platform#422) — one command installs, one command upgrades.
+#
+# The flow lives in scripts/platform.sh: it names every step, says what a
+# failing step does and where to look, waits for every workload and prints
+# what is running. The steps are the step-* targets above, the same ones
+# `make install` calls.
+#
+# `make platform` is the install; `make upgrade` is the upgrade. Both are safe
+# to run twice: every step converges the live state to what this repository
+# declares and leaves it alone when it is already there.
 # ---------------------------------------------------------------------------
-upgrade: install ## Upgrade all components (same as install)
+platform: ## Install the whole platform — storage, catalog, identity, query, apps, pins (one command)
+	@NAMESPACE=$(NAMESPACE) bash scripts/platform.sh install
+
+upgrade: ## Upgrade the platform to this release: the pins move, the schemas migrate, the sync converges, the verify targets run
+	@NAMESPACE=$(NAMESPACE) bash scripts/platform.sh upgrade
+
+platform-idempotence: ## Prove the install is idempotent: run it again and compare every resource version
+	@NAMESPACE=$(NAMESPACE) bash scripts/platform.sh check install
+
+upgrade-idempotence: ## Prove the upgrade is safe to run twice: run it again and compare every resource version
+	@NAMESPACE=$(NAMESPACE) bash scripts/platform.sh check upgrade
+
+platform-dry-run: ## Show what the install would do — nothing is written
+	@NAMESPACE=$(NAMESPACE) bash scripts/platform.sh install --check
 
 # ---------------------------------------------------------------------------
 # Uninstall
