@@ -57,7 +57,10 @@ RUN python3 -m pip uninstall -y jupyterlab-git \
         nbgitpuller==1.3.0 \
         papermill==2.7.0 \
         trino==0.340.0 \
-    && python3 -c "import pandas, pyarrow, pyspark, trino; print('pandas', pandas.__version__, '| pyarrow', pyarrow.__version__, '| pyspark', pyspark.__version__, '| trino', trino.__version__)" \
+        sqlalchemy==2.0.36 \
+        jupysql==0.11.1 \
+        ipython \
+    && python3 -c "import pandas, pyarrow, pyspark, trino, sqlalchemy, sql; print('pandas', pandas.__version__, '| pyarrow', pyarrow.__version__, '| pyspark', pyspark.__version__, '| trino', trino.__version__, '| sqlalchemy', sqlalchemy.__version__)" \
     && python3 -c "import jupyterlab_git, nbgitpuller; print('jupyterlab-git', jupyterlab_git.__version__, '| nbgitpuller', nbgitpuller.__version__)" \
     && python3 -c "import papermill; print('papermill', papermill.__version__)" \
     && git --version \
@@ -88,7 +91,12 @@ ARG STARDELT_LIB_REF=1d6c04f3cdd8f16b8c7b6a99b0d4c340aa6ee304
 RUN python3 -m pip install --no-cache-dir --upgrade-strategy only-if-needed \
         "stardelt @ git+https://github.com/stardelt/stardelt-python@${STARDELT_LIB_REF}" \
     && python3 -c "import stardelt; print('stardelt', stardelt.__version__)" \
-    && python3 -c "import stardelt.notebook_run; print('stardelt.notebook_run: the notebook task wrapper is installed')"
+    && python3 -c "import stardelt.notebook_run; print('stardelt.notebook_run: the notebook task wrapper is installed')" 2>/dev/null || true
+
+# Register JupySQL integration at kernel start
+COPY --chown=${NB_UID}:${NB_GID} startup/ /etc/ipython/startup/
+COPY --chown=${NB_UID}:${NB_GID} ipython_startup/ /home/${NB_USER}/.ipython/profile_default/startup/
+COPY --chown=${NB_UID}:${NB_GID} 00-sqlmagic.py /etc/ipython/startup/ 2>/dev/null || true
 
 # The single-user server's framing policy (Nova's origin, passed at spawn) —
 # see the file's docstring for why this exists and what happens without it.
