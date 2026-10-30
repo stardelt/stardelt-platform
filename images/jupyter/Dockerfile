@@ -57,9 +57,12 @@ RUN python3 -m pip uninstall -y jupyterlab-git \
         nbgitpuller==1.3.0 \
         papermill==2.7.0 \
         trino==0.340.0 \
+        ipywidgets==8.1.5 \
+        sidecar==0.8.1 \
     && python3 -c "import pandas, pyarrow, pyspark, trino; print('pandas', pandas.__version__, '| pyarrow', pyarrow.__version__, '| pyspark', pyspark.__version__, '| trino', trino.__version__)" \
     && python3 -c "import jupyterlab_git, nbgitpuller; print('jupyterlab-git', jupyterlab_git.__version__, '| nbgitpuller', nbgitpuller.__version__)" \
     && python3 -c "import papermill; print('papermill', papermill.__version__)" \
+    && python3 -c "import ipywidgets, sidecar; print('ipywidgets', ipywidgets.__version__, '| sidecar', sidecar.__version__)" \
     && git --version \
     && { jupyter labextension list 2>&1 | tee /tmp/labext.txt | grep -i '@jupyterlab/git' || { echo '--- full labextension list ---'; cat /tmp/labext.txt; exit 1; }; } \
     && jupyter server extension list 2>&1 | grep -i 'nbgitpuller'
@@ -77,15 +80,15 @@ COPY --chown=${NB_UID}:${NB_GID} notebooks/ /opt/stardelt/notebooks/
 #
 # Pinned by commit SHA, not by tag: a moving tag is not an upgrade path — the
 # same rule the image pins follow (scripts/pin-image.sh). The SHA below is the
-# release v0.1.3
-# (https://github.com/stardelt/stardelt-python/releases/tag/v0.1.3).
+# release v0.1.4
+# (https://github.com/stardelt/stardelt-python/releases/tag/v0.1.4).
 #
 # The Makefile holds the pin (STARDELT_LIB_REF) and passes it as a build arg;
 # scripts/check-stardelt-pin.sh fails the build when this default and the
 # Makefile's ref disagree. Installed rather than copied so every notebook
 # imports it with no sys.path tweak; the import check fails the build here, not
 # in a user's first cell.
-ARG STARDELT_LIB_REF=9a064d74c42fedd3ac8936a25039e0942a0707c5
+ARG STARDELT_LIB_REF=286e36a8bd27abb8d50b0514cf80359814fc5ea6
 RUN python3 -m pip install --no-cache-dir --upgrade-strategy only-if-needed \
         "stardelt @ git+https://github.com/stardelt/stardelt-python@${STARDELT_LIB_REF}" \
     && python3 -c "import stardelt; print('stardelt', stardelt.__version__)" \
