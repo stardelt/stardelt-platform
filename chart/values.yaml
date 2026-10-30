@@ -46,6 +46,10 @@ ingress:
   enabled: false
   # IngressClass name, e.g. nginx, traefik, alb. Empty = the cluster default.
   className: ""
+  # Extra annotations on every rendered Ingress. ingress-nginx, for one, allows a request body of
+  # 1 MiB unless told otherwise; Nova's notebook publish route takes up to 5 MiB, so give that
+  # path `nginx.ingress.kubernetes.io/proxy-body-size: "6m"` (a second Ingress for
+  # `/api/notebooks`, as dev/playground/ingress.yaml does) or set it here for the whole host.
   annotations: {}
   tls:
     # Requires cert-manager. Leave off when TLS terminates elsewhere (a cloud
