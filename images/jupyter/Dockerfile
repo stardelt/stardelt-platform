@@ -96,7 +96,6 @@ RUN python3 -m pip install --no-cache-dir --upgrade-strategy only-if-needed \
 # Register JupySQL integration at kernel start
 COPY --chown=${NB_UID}:${NB_GID} startup/ /etc/ipython/startup/
 COPY --chown=${NB_UID}:${NB_GID} ipython_startup/ /home/${NB_USER}/.ipython/profile_default/startup/
-COPY --chown=${NB_UID}:${NB_GID} 00-sqlmagic.py /etc/ipython/startup/ 2>/dev/null || true
 
 # The single-user server's framing policy (Nova's origin, passed at spawn) —
 # see the file's docstring for why this exists and what happens without it.
