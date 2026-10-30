@@ -69,22 +69,23 @@ RUN python3 -m pip uninstall -y jupyterlab-git \
 # newer image replaces the source without touching the user's copy.
 COPY --chown=${NB_UID}:${NB_GID} notebooks/ /opt/stardelt/notebooks/
 
-# The stardelt notebook helper (`import stardelt`: sql, write_df, spark, and
-# the connection() stub) has its own repository (stardelt/stardelt-python) and
-# is installed here as a **pinned release**. Pure Python, MIT, versioned and
-# tested there; the platform consumes one release of it (platform#417).
+# The stardelt notebook helper (`import stardelt`: sql, write_df, publish,
+# spark, and the connection() stub) has its own repository
+# (stardelt/stardelt-python) and is installed here as a **pinned release**.
+# Pure Python, MIT, versioned and tested there; the platform consumes one
+# release of it (platform#417).
 #
 # Pinned by commit SHA, not by tag: a moving tag is not an upgrade path — the
 # same rule the image pins follow (scripts/pin-image.sh). The SHA below is the
-# release v0.1.2
-# (https://github.com/stardelt/stardelt-python/releases/tag/v0.1.2).
+# release v0.1.3
+# (https://github.com/stardelt/stardelt-python/releases/tag/v0.1.3).
 #
 # The Makefile holds the pin (STARDELT_LIB_REF) and passes it as a build arg;
 # scripts/check-stardelt-pin.sh fails the build when this default and the
 # Makefile's ref disagree. Installed rather than copied so every notebook
 # imports it with no sys.path tweak; the import check fails the build here, not
 # in a user's first cell.
-ARG STARDELT_LIB_REF=bc44a3e6df14b59df0a5b60e5893010df74293d5
+ARG STARDELT_LIB_REF=9a064d74c42fedd3ac8936a25039e0942a0707c5
 RUN python3 -m pip install --no-cache-dir --upgrade-strategy only-if-needed \
         "stardelt @ git+https://github.com/stardelt/stardelt-python@${STARDELT_LIB_REF}" \
     && python3 -c "import stardelt; print('stardelt', stardelt.__version__)" \
