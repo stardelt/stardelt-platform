@@ -264,6 +264,17 @@ singleuser:
   # depends on the public name or the ingress.
   extraEnv:
     TRINO_URL: https://trino.alpha.dev.stardelt.io:443
+    # Nova's public origin, for `stardelt.publish()` (platform#291). The
+    # single-user network policy blocks in-cluster ranges, so the notebook
+    # reaches Nova through this host; the value comes from the identity
+    # contract (`publicUrl`), never from this file, and the helper says
+    # `STARDELT_NOVA_URL is not set` when the ConfigMap is absent.
+    STARDELT_NOVA_URL:
+      valueFrom:
+        configMapKeyRef:
+          name: stardelt-identity
+          key: publicUrl
+          optional: true
     # Spark Connect's ClusterIP endpoint for `stardelt.spark()` (default when
     # the pod does not override it). Reachable through the egress rule below;
     # Spark has no authentication of its own, so this stays cluster-internal.
