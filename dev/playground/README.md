@@ -49,10 +49,18 @@ Request bodies through Nova are limited to 2 MiB (the Nova Ingress annotation
 `nginx.ingress.kubernetes.io/proxy-body-size`, matching what Nova itself enforces;
 oversize bodies get a clean 413, not a 502).
 
-## 5. Tell Nova where it is
+## 5. Tell Nova where it is (already done by the install)
 
-Nova builds its app deep-links from `NOVA_BASE_DOMAIN`. The manifest reads it from a ConfigMap
-rather than an inline value, so re-applying `manifests/nova-deployment.yaml` cannot wipe it:
+Nova builds every app deep-link **and both embedded apps — Dashboards (Superset) and Notebooks
+(JupyterHub)** — from `NOVA_BASE_DOMAIN`. `make install` and `make install-core` converge it
+through the `platform-config` target:
+
+```sh
+make platform-config                     # BASE_DOMAIN=... to override, default alpha.dev.stardelt.io
+```
+
+The value lives in ConfigMap `stardelt-platform-config`, not inline, so re-applying
+`manifests/nova-deployment.yaml` cannot wipe it. Set it by hand only on a bare manifest install:
 
 ```sh
 kubectl -n stardelt create configmap stardelt-platform-config \
@@ -61,9 +69,10 @@ kubectl -n stardelt create configmap stardelt-platform-config \
 kubectl -n stardelt rollout restart deploy/nova
 ```
 
-Without it Nova still reports live status, but every deep-link (`trino.`, `jupyter.`, …) is empty.
-The umbrella chart does the same thing through `platform.baseDomain`, so a chart install needs this
-step only when you use the plain manifests.
+Without it Nova still reports live status, but the app links are empty and the two embedded pages
+show an empty state — which looks like "Dashboards and Notebooks are not set up" even when
+Superset and JupyterHub are healthy. The umbrella chart passes `platform.baseDomain` to Nova
+directly and does not need the ConfigMap.
 
 ## 6. Platform IdP (optional)
 

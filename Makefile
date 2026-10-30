@@ -70,7 +70,7 @@ CHART_EXTRA ?=
 # client redirect URIs on the app subdomains. Same default as `dev-dns`.
 BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 
-.PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator openfga trino catalogs upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-up dev-down dev-dns dev-dns-down
+.PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator openfga trino catalogs upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-up dev-down dev-dns dev-dns-down platform-config
 .PHONY: chart-deps chart-template chart-install
 .PHONY: verify-backups verify-backups-identity verify-backups-nova verify-backups-openfga verify-backups-all verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
 .PHONY: backups verify-pgdump offsite-backup export-recovery-secrets import-recovery-secrets
@@ -221,6 +221,30 @@ _helm-repos:
 	@helm repo update
 
 # ---------------------------------------------------------------------------
+# Nova's base domain. Nova builds every app deep-link and both *embedded* apps
+# (Dashboards = Superset, Notebooks = JupyterHub) from `NOVA_BASE_DOMAIN`. With
+# no base domain `/api/apps/links` and `/api/embeds` answer with empty URLs and
+# both pages show an empty state — a fresh cluster looked "not set up" while
+# Superset and JupyterHub were healthy. The value lives in a ConfigMap, not
+# inline, because re-applying nova-deployment.yaml would otherwise wipe it; the
+# umbrella chart passes platform.baseDomain straight to Nova instead.
+# ---------------------------------------------------------------------------
+platform-config: _context ## Converge ConfigMap stardelt-platform-config (Nova's base domain)
+	@desired="$(BASE_DOMAIN)"; \
+	current="$$(kubectl -n $(NAMESPACE) get configmap stardelt-platform-config -o jsonpath='{.data.baseDomain}' 2>/dev/null || true)"; \
+	if [ "$$current" = "$$desired" ]; then \
+	  echo "› stardelt-platform-config: baseDomain=$$desired (unchanged)"; \
+	else \
+	  kubectl -n $(NAMESPACE) create configmap stardelt-platform-config \
+	    --from-literal=baseDomain="$$desired" --dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
+	  echo "› stardelt-platform-config: baseDomain=$$desired"; \
+	  if kubectl -n $(NAMESPACE) get deploy nova >/dev/null 2>&1; then \
+	    echo "  › restarting Nova so it reads the new value"; \
+	    kubectl -n $(NAMESPACE) rollout restart deploy/nova >/dev/null; \
+	  fi; \
+	fi
+
+# ---------------------------------------------------------------------------
 # Install
 # ---------------------------------------------------------------------------
 install: deps _context _helm-repos ## Install all stardelt components (idempotent)
@@ -317,6 +341,8 @@ install: deps _context _helm-repos ## Install all stardelt components (idempoten
 	@kubectl apply -f manifests/pg-dump-backup.yaml
 
 	@echo "› [10/11] Nova (state store first: the Deployment reads its Secret)"
+	@echo "› [10/11] Nova's base domain (deep-links and the embedded apps are built from it)"
+	@$(MAKE) --no-print-directory platform-config
 	@kubectl apply -f manifests/nova-pg.yaml
 	@$(MAKE) --no-print-directory verify-backup-config PG_CLUSTER=nova-pg
 	@kubectl -n $(NAMESPACE) wait --for=condition=Ready --timeout=300s cluster/nova-pg
@@ -370,6 +396,8 @@ install-core: deps _context _helm-repos ## Install the core only (storage+catalo
 
 	@echo "› [7/7] Trino + Nova (state store first: the Deployment reads its Secret)"
 	@$(MAKE) --no-print-directory trino
+	@echo "› [7/7] Nova's base domain (deep-links and the embedded apps are built from it)"
+	@$(MAKE) --no-print-directory platform-config
 	@kubectl apply -f manifests/nova-pg.yaml
 	@$(MAKE) --no-print-directory verify-backup-config PG_CLUSTER=nova-pg
 	@kubectl -n $(NAMESPACE) wait --for=condition=Ready --timeout=300s cluster/nova-pg
