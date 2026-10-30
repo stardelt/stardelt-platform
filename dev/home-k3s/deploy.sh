@@ -109,11 +109,8 @@ fi
 step "playground Ingresses for $BASE_DOMAIN"
 sed "s/alpha\.dev\.stardelt\.io/$BASE_DOMAIN/g" dev/playground/ingress.yaml | kubectl apply -f -
 
-step "ConfigMap stardelt-platform-config (Nova's deep-links)"
-kubectl -n "$NAMESPACE" create configmap stardelt-platform-config \
-  --from-literal=baseDomain="$BASE_DOMAIN" \
-  --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-kubectl -n "$NAMESPACE" rollout restart deploy/nova >/dev/null
+step "Nova's base domain (deep-links, Dashboards and Notebooks embeds)"
+EXPECT_CONTEXT="$EXPECT_CONTEXT" BASE_DOMAIN="$BASE_DOMAIN" make platform-config
 kubectl -n "$NAMESPACE" rollout status deploy/nova --timeout=5m
 
 # --- optional phases -------------------------------------------------------
