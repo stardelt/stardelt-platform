@@ -11,8 +11,6 @@
 #                      own repository (never in the image)
 #   - nbgitpuller      One-click clone of a repository into the user's home,
 #                      for training sessions (hub link generator)
-#   - ipywidgets       Widgets for the catalog browser
-#   - jupyterlab-sidecar Side panel for the catalog browser (if compatible)
 #
 # Deliberately absent: `jupyterlab-sql`. Its last release (0.3.3, 2020) predates
 # JupyterLab 4, and it has no way to carry the per-user token — it would ship a
@@ -43,13 +41,11 @@ RUN python3 -m pip uninstall -y jupyterlab-git \
     && python3 -m pip install --no-cache-dir --upgrade-strategy only-if-needed \
         pandas==2.2.3 \
         pyarrow==18.1.0 \
-        'pyspark[connect]==4.1.3' \
+        'pyspark[connect]==4.2.0' \
         jupyterlab-git==0.55.0 \
         nbgitpuller==1.3.0 \
         trino==0.340.0 \
-        ipywidgets==8.1.5 \
     && python3 -c "import pandas, pyarrow, pyspark, trino; print('pandas', pandas.__version__, '| pyarrow', pyarrow.__version__, '| pyspark', pyspark.__version__, '| trino', trino.__version__)" \
-    && python3 -c "import ipywidgets; print('ipywidgets', ipywidgets.__version__)" \
     && python3 -c "import jupyterlab_git, nbgitpuller; print('jupyterlab-git', jupyterlab_git.__version__, '| nbgitpuller', nbgitpuller.__version__)" \
     && git --version \
     && { jupyter labextension list 2>&1 | tee /tmp/labext.txt | grep -i '@jupyterlab/git' || { echo '--- full labextension list ---'; cat /tmp/labext.txt; exit 1; }; } \
