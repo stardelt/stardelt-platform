@@ -25,6 +25,9 @@
 # arbitrary code, so Jupyter Server's `frame-ancestors` list is a deliberate
 # choice: exactly `'self'` plus Nova's origin, which the hub passes at spawn
 # from the identity contract. The config file documents the mechanism.
+# Python 3.11 (3.11.10 in the 2024-10-07 base image). Keep both on the same
+# Python minor: Spark Connect UDFs fail otherwise — the Spark image installs its
+# own CPython 3.11 for the workers and must stay on this minor (platform#369).
 FROM quay.io/jupyter/scipy-notebook:2024-10-07
 
 USER ${NB_UID}
@@ -37,6 +40,14 @@ USER ${NB_UID}
 # dependency (`jupyterlab-git-core`) before it uninstalls the old package, and
 # that late uninstall deletes the new `package.json`, so `labextension list`
 # no longer shows `@jupyterlab/git`. Uninstall first, in its own invocation.
+# The Spark workers run these exact versions of pandas, pyarrow and numpy
+# (images/spark/Dockerfile installs them into its own Python 3.11): a pandas UDF
+# pickles pandas objects on this side and rebuilds them there (platform#369).
+# The Spark Connect client is on the SAME Spark line as the server image
+# (apache/spark:4.1.3): a newer client reads the server's settings in the old
+# spelling -- `spark.sql.session.localRelationSizeLimit` comes back as `3221225472b`
+# -- and every createDataFrame dies with `invalid literal for int()` (platform#399).
+# scripts/check-spark-parity.sh fails the build when the two drift apart.
 RUN python3 -m pip uninstall -y jupyterlab-git \
     && python3 -m pip install --no-cache-dir --upgrade-strategy only-if-needed \
         pandas==2.2.3 \
@@ -44,9 +55,11 @@ RUN python3 -m pip uninstall -y jupyterlab-git \
         'pyspark[connect]==4.1.3' \
         jupyterlab-git==0.55.0 \
         nbgitpuller==1.3.0 \
+        papermill==2.7.0 \
         trino==0.340.0 \
     && python3 -c "import pandas, pyarrow, pyspark, trino; print('pandas', pandas.__version__, '| pyarrow', pyarrow.__version__, '| pyspark', pyspark.__version__, '| trino', trino.__version__)" \
     && python3 -c "import jupyterlab_git, nbgitpuller; print('jupyterlab-git', jupyterlab_git.__version__, '| nbgitpuller', nbgitpuller.__version__)" \
+    && python3 -c "import papermill; print('papermill', papermill.__version__)" \
     && git --version \
     && { jupyter labextension list 2>&1 | tee /tmp/labext.txt | grep -i '@jupyterlab/git' || { echo '--- full labextension list ---'; cat /tmp/labext.txt; exit 1; }; } \
     && jupyter server extension list 2>&1 | grep -i 'nbgitpuller'
@@ -57,15 +70,25 @@ RUN python3 -m pip uninstall -y jupyterlab-git \
 COPY --chown=${NB_UID}:${NB_GID} notebooks/ /opt/stardelt/notebooks/
 
 # The stardelt notebook helper (`import stardelt`: sql, write_df, spark, and
-# the connection() stub). Pure Python, MIT, tested in CI (images/jupyter/tests/
-# plus the `notebook-helper` job in .github/workflows/ci.yml). Installed rather
-# than copied so every notebook imports it with no sys.path tweak; the import
-# check fails the build here, not in a user's first cell.
-COPY --chown=${NB_UID}:${NB_GID} stardelt/ /tmp/stardelt-pkg-build/stardelt/
-COPY --chown=${NB_UID}:${NB_GID} pyproject.toml /tmp/stardelt-pkg-build/pyproject.toml
-RUN python3 -m pip install --no-cache-dir /tmp/stardelt-pkg-build/ \
-    && rm -rf /tmp/stardelt-pkg-build \
-    && python3 -c "import stardelt; print('stardelt', stardelt.__version__)"
+# the connection() stub) has its own repository (stardelt/stardelt-python) and
+# is installed here as a **pinned release**. Pure Python, MIT, versioned and
+# tested there; the platform consumes one release of it (platform#417).
+#
+# Pinned by commit SHA, not by tag: a moving tag is not an upgrade path — the
+# same rule the image pins follow (scripts/pin-image.sh). The SHA below is the
+# release v0.1.1
+# (https://github.com/stardelt/stardelt-python/releases/tag/v0.1.1).
+#
+# The Makefile holds the pin (STARDELT_LIB_REF) and passes it as a build arg;
+# scripts/check-stardelt-pin.sh fails the build when this default and the
+# Makefile's ref disagree. Installed rather than copied so every notebook
+# imports it with no sys.path tweak; the import check fails the build here, not
+# in a user's first cell.
+ARG STARDELT_LIB_REF=1d6c04f3cdd8f16b8c7b6a99b0d4c340aa6ee304
+RUN python3 -m pip install --no-cache-dir --upgrade-strategy only-if-needed \
+        "stardelt @ git+https://github.com/stardelt/stardelt-python@${STARDELT_LIB_REF}" \
+    && python3 -c "import stardelt; print('stardelt', stardelt.__version__)" \
+    && python3 -c "import stardelt.notebook_run; print('stardelt.notebook_run: the notebook task wrapper is installed')"
 
 # The single-user server's framing policy (Nova's origin, passed at spawn) —
 # see the file's docstring for why this exists and what happens without it.
