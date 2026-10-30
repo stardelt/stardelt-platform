@@ -47,7 +47,18 @@ spec:
       database: openfga
       owner: openfga
   # The store holds relationship tuples and the authorization model, nothing
-  # else, so it stays small: 128Mi request, 256Mi ceiling on the single node.
+  # else, so it stays small: 256Mi request, 512Mi ceiling on the single node.
+  #
+  # The ceiling is 512Mi, not 256Mi, because the base backup runs *inside* the
+  # instance's cgroup: barman-cloud reads the whole database and compresses it,
+  # and at 256Mi the kernel OOM-killed the instance manager mid-backup ("signal:
+  # killed" / "instance manager was restarted during backup on pod
+  # openfga-pg-1"). Every failed backup then left the last successful one
+  # older than the coverage window (`make verify-backups-all` failed on
+  # openfga-pg-1), and the restarts took the catalog's permission store down
+  # with them — Lakekeeper answers 503 while OpenFGA's datastore bounces, and
+  # the access-sync tick then fails. lakekeeper-pg has had 512Mi all along and
+  # backs up fine.
   resources:
-    requests: { cpu: "50m", memory: "128Mi" }
-    limits:   { cpu: "1",   memory: "256Mi" }
+    requests: { cpu: "50m", memory: "256Mi" }
+    limits:   { cpu: "1",   memory: "512Mi" }
