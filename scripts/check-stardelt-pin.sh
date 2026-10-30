@@ -70,7 +70,7 @@ fi
 # outlive the Makefile's pin silently — the ARG would still look right.
 # The literal `${STARDELT_LIB_REF}` is what the Dockerfile must contain.
 # shellcheck disable=SC2016
-if ! grep -q 'stardelt @ git+https://github.com/stardelt/stardelt-python@${STARDELT_LIB_REF}' "$dockerfile"; then
+if ! grep -q 'stardelt\(\[[a-z,]*\]\)\{0,1\} @ git+https://github.com/stardelt/stardelt-python@${STARDELT_LIB_REF}' "$dockerfile"; then
   echo "check-stardelt-pin: $dockerfile does not install the library at \${STARDELT_LIB_REF}" >&2
   exit 1
 fi

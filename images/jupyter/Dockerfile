@@ -80,19 +80,28 @@ COPY --chown=${NB_UID}:${NB_GID} notebooks/ /opt/stardelt/notebooks/
 #
 # Pinned by commit SHA, not by tag: a moving tag is not an upgrade path — the
 # same rule the image pins follow (scripts/pin-image.sh). The SHA below is the
-# release v0.1.4
-# (https://github.com/stardelt/stardelt-python/releases/tag/v0.1.4).
+# release v0.1.5
+# (https://github.com/stardelt/stardelt-python/releases/tag/v0.1.5).
 #
 # The Makefile holds the pin (STARDELT_LIB_REF) and passes it as a build arg;
 # scripts/check-stardelt-pin.sh fails the build when this default and the
 # Makefile's ref disagree. Installed rather than copied so every notebook
 # imports it with no sys.path tweak; the import check fails the build here, not
 # in a user's first cell.
-ARG STARDELT_LIB_REF=286e36a8bd27abb8d50b0514cf80359814fc5ea6
+ARG STARDELT_LIB_REF=3c953a4386bbb7545ab40f24adae4a270d335c06
 RUN python3 -m pip install --no-cache-dir --upgrade-strategy only-if-needed \
-        "stardelt @ git+https://github.com/stardelt/stardelt-python@${STARDELT_LIB_REF}" \
+        "stardelt[jupyter] @ git+https://github.com/stardelt/stardelt-python@${STARDELT_LIB_REF}" \
     && python3 -c "import stardelt; print('stardelt', stardelt.__version__)" \
-    && python3 -c "import stardelt.notebook_run; print('stardelt.notebook_run: the notebook task wrapper is installed')"
+    && python3 -c "import stardelt.notebook_run; print('stardelt.notebook_run: the notebook task wrapper is installed')" \
+    && python3 -c "import sql; print('jupysql', sql.__version__)"
+
+# `%sql` in the first cell (stardelt-nova#288): the `jupyter` extra above brings JupySQL, and this
+# system IPython config loads the library's magic into every kernel. JupySQL's usage statistics
+# stay off even if somebody imports it without the magic.
+ENV PLOOMBER_STATS_ENABLED=false
+COPY ipython_config.py /usr/local/etc/ipython/ipython_config.py
+# The build fails here, not in a user's first cell, when the config is not honoured.
+RUN python3 -c "from IPython.terminal.ipapp import TerminalIPythonApp as A; a = A(); a.initialize(['--no-banner']); assert 'stardelt.sqlmagic' in a.shell.extension_manager.loaded"
 
 # The single-user server's framing policy (Nova's origin, passed at spawn) —
 # see the file's docstring for why this exists and what happens without it.
