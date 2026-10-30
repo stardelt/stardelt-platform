@@ -41,7 +41,7 @@ RUN python3 -m pip uninstall -y jupyterlab-git \
     && python3 -m pip install --no-cache-dir --upgrade-strategy only-if-needed \
         pandas==2.2.3 \
         pyarrow==18.1.0 \
-        'pyspark[connect]==4.2.0' \
+        'pyspark[connect]==4.1.3' \
         jupyterlab-git==0.55.0 \
         nbgitpuller==1.3.0 \
         trino==0.340.0 \
