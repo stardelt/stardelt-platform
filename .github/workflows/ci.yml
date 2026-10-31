@@ -316,6 +316,18 @@ jobs:
           test "$(grep -c 'path: "/"$' /tmp/umbrella-trino-ingress.yaml)" = 1
           grep -q 'path: "/v1/statement"' /tmp/umbrella-trino-ingress.yaml
           grep -q 'path: "/oauth2"' /tmp/umbrella-trino-ingress.yaml
+          # ingress.allowedCidrs (#427): the source-range annotation on every rendered Ingress, none by default;
+          # an entry that is not a CIDR fails the render.
+          helm template stardelt chart -n stardelt --set ingress.enabled=true --set platform.baseDomain=example.com \
+            --set 'ingress.exposeUnauthenticated={trino}' --set 'ingress.allowedCidrs={203.0.113.0/24,198.51.100.7/32}' > /tmp/umbrella-allow.yaml
+          test "$(grep -c 'whitelist-source-range: "203.0.113.0/24,198.51.100.7/32"' /tmp/umbrella-allow.yaml)" = 2
+          if grep -q 'whitelist-source-range' /tmp/umbrella-trino-ingress.yaml; then
+            echo "no allowedCidrs must mean no source-range annotation" >&2; exit 1
+          fi
+          if helm template stardelt chart -n stardelt --set ingress.enabled=true --set platform.baseDomain=example.com \
+               --set 'ingress.allowedCidrs={not-a-cidr}' > /dev/null 2>&1; then
+            echo "expected render failure for a non-CIDR allowedCidrs entry" >&2; exit 1
+          fi
           # S3 credentials (#100): one generated key pair in both Secrets, and SeaweedFS
           # reads it instead of generating a secret of its own.
           helm template stardelt chart -n stardelt > /tmp/umbrella.yaml
