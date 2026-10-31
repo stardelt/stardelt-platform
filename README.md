@@ -221,6 +221,37 @@ make upgrade-idempotence     # the same for the upgrade
 
 The gate prints the objects that moved, or `✓ the install flow changed nothing`.
 
+### Two channels: iterate fast, pin deliberately
+
+The dev cluster is meant to track `main`, but a repository that is pinned for a
+reproducible install should not be rewritten on every merge. The two are separate
+targets:
+
+```sh
+make dev-refresh    # the fast channel: every stardelt image to the newest `dev` build
+make pin-images     # the stable channel: the same, and write the digests into manifests/
+```
+
+`make dev-refresh` resolves the `dev` tag and patches the running Deployments only —
+nothing is written to the checkout, so there is no branch and no PR in the loop. Use
+it after a merge on `main` when you want the cluster to have the change now.
+
+`make pin-images` does the same and then records the digest in
+`manifests/nova-deployment.yaml` / `manifests/spark.yaml`. That is the state a
+reproducible install carries, and it is a deliberate act: run it when a build is
+worth freezing, not on every merge.
+
+Two consequences worth knowing:
+
+- **An install wins over a refresh.** `make install` and `make upgrade` apply the
+  manifests, so they converge the cluster back to the pinned digests. After a
+  `make dev-refresh`, the next install moves the images back — deliberately, because
+  an install is reproducible. To keep a build, `make pin-images` and commit.
+- **`make platform-idempotence` still passes after a refresh.** The gate holds the
+  pins still (`SKIP_PINS=1`) and compares what it applies, so a cluster that is ahead
+  of the manifests is not reported as drift. The gate proves the flow is idempotent;
+  it does not police which build is deployed.
+
 ### When a step fails
 
 Every step is named, and a failure says which one broke, what it does, how to
