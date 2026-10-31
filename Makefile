@@ -1031,8 +1031,16 @@ install-identity: deps _context ## Install the platform IdP (Keycloak) at id.$(B
 	  kubectl apply -f manifests/nova-pg.yaml; \
 	  kubectl -n $(NAMESPACE) wait --for=condition=Ready --timeout=300s cluster/nova-pg; \
 	  kubectl apply -f manifests/nova-deployment.yaml; \
-	  kubectl -n $(NAMESPACE) rollout restart deploy/nova >/dev/null; \
-	  kubectl -n $(NAMESPACE) rollout status deploy/nova --timeout=3m; \
+	  cmrv="$$(kubectl -n $(NAMESPACE) get configmap stardelt-identity -o jsonpath='{.metadata.resourceVersion}' 2>/dev/null || true)"; \
+	  lastrv="$$(kubectl -n $(NAMESPACE) get deploy nova -o jsonpath='{.spec.template.metadata.annotations.stardelt\.io/identity-rev}' 2>/dev/null || true)"; \
+	  if [ "$$cmrv" != "$$lastrv" ]; then \
+	    kubectl -n $(NAMESPACE) rollout restart deploy/nova >/dev/null; \
+	    kubectl -n $(NAMESPACE) patch deploy nova --type=merge \
+	      -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"stardelt.io/identity-rev\":\"$$cmrv\"}}}}}" >/dev/null; \
+	    kubectl -n $(NAMESPACE) rollout status deploy/nova --timeout=3m; \
+	  else \
+	    echo "  › identity unchanged — Nova keeps its pod (no restart)"; \
+	  fi; \
 	fi
 	@echo "Keycloak installed. Issuer: https://id.$(BASE_DOMAIN)/realms/stardelt"
 	@echo "Admin console: https://id.$(BASE_DOMAIN)/admin/stardelt/console/ (sign in as admin, then Users)"
