@@ -51,6 +51,12 @@ ingress:
   # path `nginx.ingress.kubernetes.io/proxy-body-size: "6m"` (a second Ingress for
   # `/api/notebooks`, as dev/playground/ingress.yaml does) or set it here for the whole host.
   annotations: {}
+  # Source ranges that may open a connection to the public endpoints (stardelt-platform#427). Empty =
+  # open to everyone. A list renders `nginx.ingress.kubernetes.io/whitelist-source-range` on every
+  # Ingress this chart renders (ingress-nginx; other controllers ignore it). Entries are CIDRs, at most 64.
+  # Always include the cluster's own egress address: pods that call the public names arrive through
+  # it. Do not also set this annotation under `annotations`.
+  allowedCidrs: []
   tls:
     # Requires cert-manager. Leave off when TLS terminates elsewhere (a cloud
     # load balancer, an edge proxy, an existing Certificate).

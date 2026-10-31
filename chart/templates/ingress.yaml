@@ -24,6 +24,15 @@
 {{- $base := .Values.platform.baseDomain | default "" }}
 {{- $tls := .Values.ingress.tls }}
 {{- $extraAnnotations := .Values.ingress.annotations }}
+{{- $allowed := .Values.ingress.allowedCidrs | default list }}
+{{- if gt (len $allowed) 64 }}
+{{- fail "ingress.allowedCidrs: at most 64 entries" }}
+{{- end }}
+{{- range $allowed }}
+{{- if not (regexMatch "^[0-9a-fA-F:.]+/[0-9]{1,3}$" (toString .)) }}
+{{- fail (printf "ingress.allowedCidrs: %q is not a CIDR such as 203.0.113.0/24" (toString .)) }}
+{{- end }}
+{{- end }}
 {{- $overrides := .Values.ingress.hosts | default dict }}
 {{- $unauthenticated := list "trino" "lakekeeper" "superset" "airflow" "jupyterhub" }}
 {{- $exposed := .Values.ingress.exposeUnauthenticated | default list }}
@@ -64,7 +73,7 @@ metadata:
   namespace: {{ $.Release.Namespace }}
   labels:
     app.kubernetes.io/part-of: stardelt
-  {{- if or $extraAnnotations (and $tls.enabled $tls.issuer) .regex }}
+  {{- if or $extraAnnotations (and $tls.enabled $tls.issuer) .regex $allowed }}
   annotations:
     {{- with $extraAnnotations }}
     {{- toYaml . | nindent 4 }}
@@ -74,6 +83,9 @@ metadata:
     {{- end }}
     {{- if .regex }}
     nginx.ingress.kubernetes.io/use-regex: "true"
+    {{- end }}
+    {{- if $allowed }}
+    nginx.ingress.kubernetes.io/whitelist-source-range: {{ join "," $allowed | quote }}
     {{- end }}
   {{- end }}
 spec:
