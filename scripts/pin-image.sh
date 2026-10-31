@@ -69,6 +69,14 @@ if [ -z "$digest" ]; then
   exit 1
 fi
 
+# `PRINT_DIGEST=1` answers "what would you pin?" and touches nothing — `make dev-watch`
+# and the CI checks read it. It exits before the first kubectl call, so it works without
+# a cluster.
+if [ "${PRINT_DIGEST:-0}" = "1" ]; then
+  printf '%s\n' "$digest"
+  exit 0
+fi
+
 if [ -z "$CONTAINER" ]; then
   CONTAINER=$(kubectl -n "$NS" get deploy "$DEPLOY" -o jsonpath='{.spec.template.spec.containers[0].name}')
 fi
@@ -94,7 +102,11 @@ if [ "$current_digest" = "$digest" ]; then
   echo "already pinned"
 else
   kubectl -n "$NS" set image "deploy/$DEPLOY" "$CONTAINER=$pinned" >/dev/null
-  kubectl -n "$NS" rollout status "deploy/$DEPLOY" --timeout="${TIMEOUT:-300s}"
+  if [ "${NOWAIT:-0}" = "1" ]; then
+    echo "  › not waiting for the rollout (NOWAIT=1)"
+  else
+    kubectl -n "$NS" rollout status "deploy/$DEPLOY" --timeout="${TIMEOUT:-300s}"
+  fi
 fi
 
 # Keep the manifest in step, or the next `kubectl apply` puts the mutable tag back and a
