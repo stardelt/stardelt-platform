@@ -154,9 +154,18 @@ EOF
 
   # The catalog now answers 403 to everything until the re-bootstrap below.
   # --- e. reopen-bootstrap ----------------------------------------------------
-  kubectl -n "$NAMESPACE" exec deploy/lakekeeper -c lakekeeper -- \
-    /home/nonroot/lakekeeper reopen-bootstrap -y
-  ok "catalog reopened for bootstrap"
+  # A catalog that is already open (an interrupted run, or one that never left
+  # bootstrap) makes the CLI exit 400 CatalogAlreadyOpenForBootstrap. That is the
+  # state this step wants, so treat it as done instead of failing the cutover.
+  if reopen_out=$(kubectl -n "$NAMESPACE" exec deploy/lakekeeper -c lakekeeper -- \
+      /home/nonroot/lakekeeper reopen-bootstrap -y 2>&1); then
+    ok "catalog reopened for bootstrap"
+  else
+    case "$reopen_out" in
+      *CatalogAlreadyOpenForBootstrap*) ok "catalog already open for bootstrap" ;;
+      *) printf '%s\n' "$reopen_out" >&2; die "reopen-bootstrap failed" ;;
+    esac
+  fi
 
   # --- f. bootstrap + reconcile ----------------------------------------------
   code=$(curl -sS -o "$TMP/bootstrap.json" -w '%{http_code}' -X POST \

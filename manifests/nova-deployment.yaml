@@ -106,12 +106,13 @@ spec:
         - name: ghcr-creds
       containers:
         - name: nova
-          image: ghcr.io/stardelt/nova:dev@sha256:de880236b65bfd5e1ccf03d31fc811e83f8beb4e6663a8972b1e3873c645942a
-          # `:dev` is a mutable tag, so it only takes effect when a pod starts:
-          # Always re-pulls, but nothing here changes when CI publishes — after a
-          # merge, roll the deployment (`kubectl -n stardelt rollout restart
-          # deploy/nova`) or pin the digest CI printed for a reproducible install.
-          imagePullPolicy: Always
+          image: ghcr.io/stardelt/nova:dev@sha256:e47ed49dcbee0ad3f95808e2a9685164c3a7e2028038bb0af17d0a22e52bc16b
+          # The reference is pinned by digest, so its content never changes and
+          # IfNotPresent keeps a cached image usable when GHCR is unreachable or
+          # the pull credential has expired — an `Always` policy turned both into
+          # an ImagePullBackOff that survived reboots. To take a new build, pin
+          # the new digest CI printed (or roll the deployment) instead.
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
               name: http

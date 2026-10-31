@@ -42,4 +42,14 @@ spec:
       owner: lakekeeper
   resources:
     requests: { cpu: "50m", memory: "256Mi" }
-    limits:   { cpu: "1",   memory: "512Mi" }
+    limits:   { cpu: "1",   memory: "2Gi" }
+  # 100 (the default) was filled by clients stuck in authentication during the
+  # 2026-10-31 outage; keep an explicit ceiling with headroom instead.
+  postgresql:
+    parameters:
+      max_connections: "150"
+  # PostgreSQL has to finish recovery before the instance manager can reach it.
+  # The default budget restarts it mid-recovery, which never converges.
+  probes:
+    startup:
+      failureThreshold: 120
