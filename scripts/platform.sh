@@ -370,6 +370,38 @@ gate() {
 }
 
 # ---------------------------------------------------------------------------
+# The host preflight
+# ---------------------------------------------------------------------------
+# AppArmor can refuse signals between the processes of one container. PostgreSQL
+# wakes its own background workers with SIGURG, so every CNPG instance stays in
+# "starting up", the install looks like a database fault, and the cause is on the
+# node (stardelt-platform#445). Only checkable when the node is this machine.
+host_preflight() {
+  command -v journalctl >/dev/null 2>&1 || return 0
+  local host denied
+  host="$(hostname 2>/dev/null || true)"
+  [ -n "$host" ] || return 0
+  # A remote cluster is somebody else's host: its kernel log is not ours to read.
+  kubectl get node -o name 2>/dev/null | grep -qx "node/$host" || return 0
+  denied="$(journalctl -k --since "-10 min" 2>/dev/null | grep -c 'apparmor="DENIED" operation="signal"' || true)"
+  [ "${denied:-0}" -gt 0 ] || return 0
+  {
+    printf '\n\033[1;31m✗ the host denies signals inside containers — Postgres will not start\033[0m\n\n'
+    printf '  %s AppArmor denial(s) in the last ten minutes, like:\n' "$denied"
+    printf '    apparmor="DENIED" operation="signal" class="signal" profile="cri-containerd.apparmor.d" comm="postgres"\n\n'
+    printf '  why it matters : PostgreSQL wakes its background workers with SIGURG. When the\n'
+    printf '                   profile refuses that, every CNPG instance stays "starting up"\n'
+    printf '                   and the install hangs on the databases.\n'
+    printf '  check          : sudo journalctl -k --since "-10 min" | grep -i "apparmor"\n'
+    printf '  ways out       : 1. boot the previous kernel and hold the new one\n'
+    printf '                   2. disable_apparmor = true in the k3s containerd template, restart k3s\n'
+    printf '                   3. securityContext.appArmorProfile: Unconfined per pod (many pods)\n'
+    printf '  documented     : getting-started/prerequisites, "Host OS, kernel and AppArmor"\n'
+  } >&2
+  exit 1
+}
+
+# ---------------------------------------------------------------------------
 # The flow
 # ---------------------------------------------------------------------------
 run_flow() {
@@ -377,6 +409,8 @@ run_flow() {
   local plan id n=0 total
   plan="$(plan_for "$flow")"
   total="$(echo "$plan" | wc -w | tr -d ' ')"
+
+  host_preflight
 
   for id in $plan; do
     n=$((n + 1))
