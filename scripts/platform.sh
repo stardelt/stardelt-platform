@@ -197,8 +197,15 @@ run_step() {
     return 0
   fi
 
-  make --no-print-directory "${STEP_TARGET[$id]}" || rc=$?
-  if [ "$rc" -ne 0 ]; then
+  # A moving image tag is not convergent: `pin-images` resolves whatever CI last
+  # published under `dev`, so a gate run would re-pin every deployment and the
+  # comparison below could never pass while CI keeps publishing. Moving the pins
+  # is the upgrade's job, so the gate runs the flow with them held still.
+  if [ "$GATE" = 1 ]; then
+    SKIP_PINS=1 make --no-print-directory "${STEP_TARGET[$id]}" || rc=$?
+  else
+    make --no-print-directory "${STEP_TARGET[$id]}" || rc=$?
+  fi  if [ "$rc" -ne 0 ]; then
     fail_step "$id" "$rc"
   fi
 }

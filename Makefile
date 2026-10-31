@@ -400,8 +400,12 @@ step-nova: ## Nova (state store first, then the base domain, then the Deployment
 step-apps: step-app-secrets step-airflow step-superset step-pgdump step-nova ## The apps: Airflow, Superset and Nova
 
 step-pins: ## The image digests this cluster runs
-	@echo "› Pin images to the digests CI published"
-	@$(MAKE) --no-print-directory pin-images
+	@if [ "$(SKIP_PINS)" = "1" ]; then \
+	  echo "› Pin images: held still (SKIP_PINS=1 — a moving dev tag is not convergent)"; \
+	else \
+	  echo "› Pin images to the digests CI published"; \
+	  $(MAKE) --no-print-directory pin-images; \
+	fi
 
 step-verify: ## The verify targets the upgrade path runs after it converged the cluster
 	@$(MAKE) --no-print-directory verify-trino-auth verify-catalog-permissions verify-backups-all
