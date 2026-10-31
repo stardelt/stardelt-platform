@@ -236,6 +236,18 @@ make pin-images     # the stable channel: the same, and write the digests into m
 nothing is written to the checkout, so there is no branch and no PR in the loop. Use
 it after a merge on `main` when you want the cluster to have the change now.
 
+```sh
+APP=nova   make dev-refresh    # one image only (seconds, not a minute)
+NOWAIT=1   make dev-refresh    # fire and forget: do not block on the rollout
+make dev-watch                 # follow nova's `dev` tag and roll when CI publishes
+APP=nova INTERVAL=5 make dev-watch   # a tighter tick, another image
+ONESHOT=1  make dev-watch      # one check, then exit — this is what a timer runs
+```
+
+`make dev-watch` is the inner loop: each tick asks the registry for the tag's digest
+and compares it with what the Deployment runs, so it is one request and silent until
+something changed. Ctrl-C stops it; it never writes the repository either.
+
 `make pin-images` does the same and then records the digest in
 `manifests/nova-deployment.yaml` / `manifests/spark.yaml`. That is the state a
 reproducible install carries, and it is a deliberate act: run it when a build is
