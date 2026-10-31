@@ -14,7 +14,7 @@ Production-shape deployment artifacts. Helm values, manifests, and scripts to in
 | `kubectl` | 1.28+ | Must be configured with a valid kubeconfig pointing at your cluster |
 | `helm` | 3.18+ | The `stardelt-dedupe` post-renderer plugin is installed automatically |
 | `docker` | any recent | Required only for the local image targets (`make build-superset-image`, `make build-jupyter-image`) |
-| `cert-manager` | 1.15+ | Required by `make install-identity`: the Trino coordinator's in-cluster TLS certificate is issued by a namespace-local CA (`manifests/trino-tls.yaml`). The playground installs it with the ingress (see `dev/playground/README.md`). `make install-core` without identity does not need it. |
+| `cert-manager` | 1.15+ | Required by the platform IdP (`make platform` with `IDENTITY=1`): the query engine's in-cluster TLS certificate is issued by a namespace-local CA (`manifests/trino-tls.yaml`). The playground installs it with the ingress (see `dev/playground/README.md`). `make install-core` without identity does not need it. |
 
 Your `kubectl` current-context determines the target cluster. Verify with:
 
@@ -28,6 +28,9 @@ Set `EXPECT_CONTEXT` to make it refuse any other cluster:
 ```sh
 EXPECT_CONTEXT=stardelt-dev make install-core
 ```
+
+New here? Start with the [runbook](#runbook) — one command installs the platform,
+one command upgrades it.
 
 ---
 
@@ -124,18 +127,154 @@ the run's data access follows.
 
 ---
 
+## Runbook
+
+*For an operator who has never seen the platform. One command installs it, one
+command upgrades it, and nothing in between is your job.*
+
+Everything below acts on the kube-context `kubectl` points at. Pin it so a
+stale context cannot send an install to the wrong cluster:
+
+```sh
+export EXPECT_CONTEXT=stardelt-dev
+```
+
+### Before you start
+
+| | |
+|---|---|
+| A Kubernetes cluster | 1.28+, any conformant distribution (EKS, GKE, AKS, RKE2, k3s, kind, …) — stardelt does not ship a distribution |
+| `kubectl` | 1.28+ |
+| `helm` | 3.18+ |
+| A domain | the IdP's issuer is `https://id.<your-domain>/realms/stardelt`; without one the platform runs in the development shape (no sign-in) |
+| `cert-manager` | only with the IdP: the query engine's in-cluster TLS certificate is issued by a namespace-local CA (`manifests/trino-tls.yaml`) |
+| Memory on the node | ~8 GB for the core profile, 16 GB for the full one (Airflow, Superset, notebooks and Spark) |
+
+### Install — one command
+
+```sh
+git clone https://github.com/stardelt/stardelt-platform
+cd stardelt-platform
+IDENTITY=1 BASE_DOMAIN=platform.example.com make platform
+```
+
+`make platform` runs twelve steps in order — storage, the databases, the
+permission store, the IdP, the catalog, the access-sync, the query engine, the
+apps, the notebooks, Spark and the image pins — then waits for every workload
+and prints what is running. It is safe to run twice: every step converges the
+live state to what this repository declares and leaves it alone when it is
+already there.
+
+* `IDENTITY=1` installs the platform IdP (Keycloak) with the realm, the client
+  secrets and the audiences. Leave it out and the platform runs without
+  sign-in — the development shape, for a cluster where you only want the
+  catalog and the query engine.
+* `BASE_DOMAIN` is the domain the IdP and the apps are served on. It is
+  substituted into the realm, so a wrong value means a wrong issuer URL.
+* `NAMESPACE=other` puts the whole platform in another namespace.
+* `SLIM=1` applies the small-node overrides.
+
+Preview what a run would do — the commands, nothing written:
+
+```sh
+make platform-dry-run
+```
+
+### What it creates
+
+| | |
+|---|---|
+| Helm releases | `reloader`, `cnpg`, `seaweedfs`, `openfga`, `lakekeeper`, `trino`, `airflow`, `superset`, `jupyterhub` |
+| Deployments / StatefulSets from the manifests | `keycloak`, `nova`, `spark-connect` |
+| Postgres clusters (CloudNative-PG) | `lakekeeper-pg`, `nova-pg`, `keycloak-pg`, `openfga-pg` — with WAL archiving and a daily base backup into the object store |
+| CronJobs | `access-sync` (every 2 minutes: the warehouses, the grants, the group file, the decision table), `airflow-pg-dump`, `superset-pg-dump`, `lakehouse-backup` |
+| ConfigMaps | `stardelt-identity` (the identity contract every component reads), `trino-group-file`, `trino-warehouses`, `access-sync-script` |
+| Secrets | `stardelt-s3-creds` (generated once), `keycloak-admin`, `stardelt-realm-admin`, `stardelt-oidc-clients`, `trino-internal-secret`, `trino-password-db`, `airflow-*`, `superset-*` |
+| Buckets | the data bucket and the versioned `notebooks` bucket in the object store |
+
+It does **not** create: the `Catalog` objects (those are the operator's own
+resources — `make seed-dev-access` makes a dev set), the stardelt Operator
+(`make install-operator`, needs a sibling checkout), OpenBao or the External
+Secrets Operator (both opt-in).
+
+### Upgrade — one command
+
+```sh
+git pull                       # the new release
+make upgrade
+```
+
+`make upgrade` converges everything to the new release, moves the image pins to
+the digests CI published, runs the schema migrations (CloudNative-PG,
+Lakekeeper's own migration job, the query engine's upgrade and the catalog's
+bootstrap), converges the access-sync and then runs the verify targets
+(`verify-trino-auth`, `verify-catalog-permissions`, `verify-backups-all`). It
+is safe to run twice.
+
+Prove that for yourself — the gate snapshots every object of the platform,
+runs the flow again and compares:
+
+```sh
+make platform-idempotence    # the install changes nothing on a converged cluster
+make upgrade-idempotence     # the same for the upgrade
+```
+
+The gate prints the objects that moved, or `✓ the install flow changed nothing`.
+
+### When a step fails
+
+Every step is named, and a failure says which one broke, what it does, how to
+undo it, the command to look at and the next action:
+
+```
+✗ step query failed (exit 2)
+
+  what this step does : installs the query engine (Trino) — with OAuth2 and the in-cluster TLS listener when the platform has an IdP
+  how to undo it      : helm uninstall trino -n stardelt (the PVC stays)
+  look at             : kubectl -n stardelt logs deploy/trino-coordinator --tail=100
+  next                : fix the cause the command above shows, then run the
+                        command again. Every step is idempotent, so the run
+                        continues where it stopped and changes nothing else.
+```
+
+Read the log the message points at, fix the cause, run the same command again.
+There is no silent retry and no `|| true` in the flow: a step that cannot
+finish stops the run there.
+
+### Remove it
+
+```sh
+make uninstall
+```
+
+That removes the Helm releases and the manifests in reverse order. **The
+PersistentVolumeClaims stay** — the data does not go with the platform. Delete
+them yourself when you mean it:
+
+```sh
+kubectl delete pvc --all -n stardelt
+```
+
+The Secrets listed in the output of `make uninstall` stay as well (they hold
+the keys that make the backups readable): `stardelt-realm-admin`,
+`stardelt-oidc-clients`, `trino-password-db`, `airflow-fernet-key`,
+`superset-secret-key` and the rest. `make export-recovery-secrets` writes them
+to an encrypted file outside the repository before you delete anything.
+
+---
+
 ## Quickstart
 
 ```sh
 make deps      # verify kubectl + helm are present
-make install   # add helm repos, install plugin, deploy all components
+make platform  # install the whole platform (the runbook above)
 make pf        # open port-forwards
 ```
 
 Override the namespace (default: `stardelt`):
 
 ```sh
-NAMESPACE=my-namespace make install
+NAMESPACE=my-namespace make platform
 ```
 
 ---
@@ -2310,7 +2449,7 @@ aws --endpoint-url "$AWS_ENDPOINT_URL" s3 sync s3://lakehouse-backup s3://lakeho
 | `help` | List all targets with descriptions |
 | `deps` | Run `scripts/check-deps.sh` to verify CLI tools |
 | `lint` | `bash -n` + ShellCheck every script under `scripts/` and `dev/` (ShellCheck only if installed) |
-| `install` | Add helm repos, deploy the full stack (11 steps; generates the Airflow/Superset Secrets first) |
+| `install` | Add helm repos, deploy the full stack (the same step targets `make platform` runs, in the same order) |
 | `install-core` | Core only (storage + catalog + query + Nova) — fits a small node; `SLIM=1` for 8 GB |
 | `verify-backup-config` | Post-apply guard (also run by both install targets): the live `lakekeeper-pg` Cluster must still declare `spec.backup`, or the command fails loudly |
 | `verify-backups-nova` | Same full WAL check for `nova-pg` (`s3://backups/nova-pg/wals/`) |
@@ -2349,7 +2488,11 @@ aws --endpoint-url "$AWS_ENDPOINT_URL" s3 sync s3://lakehouse-backup s3://lakeho
 | `install-operator` | Install the stardelt Operator from `../stardelt-operator/chart` (dev path) |
 | `pin` | Pin a deployment to the newest published digest **and write it back into the manifest** (`make pin APP=nova`, `APP=spark DEPLOY=spark-connect`), so a later `kubectl apply` cannot put the mutable tag back |
 | `pin-images` | Pin Nova, the operator and Spark to their digests (the install targets do this themselves) |
-| `upgrade` | Re-run `install` (helm upgrade is idempotent) |
+| `upgrade` | The upgrade path: converge the cluster to this release, move the image pins, run the schema migrations, converge the access-sync, then the verify targets. Safe to run twice |
+| `platform` | **The one command that installs the platform** — twelve named steps, then it waits for every workload and prints what is running (see [Runbook](#runbook)) |
+| `platform-dry-run` | Show what `make platform` would do — the commands of every step, nothing written |
+| `platform-idempotence` | The idempotence gate: snapshot every object of the platform, run the install again, compare — exits 1 when a resource version moved |
+| `upgrade-idempotence` | The same gate for the upgrade path |
 | `uninstall` | Remove all helm releases and manifests in reverse order |
 | `chart-deps` | `helm dependency update chart` — fetch/refresh the umbrella chart's sub-charts |
 | `chart-template` | Render the umbrella chart (`helm template stardelt chart -n <ns>`) |
@@ -2412,6 +2555,9 @@ scripts/
   access-sync-job.py    CronJob access-sync: Catalog objects become Lakekeeper warehouses
                         and grants (groups become roles, members assignees); SqlWarehouse
                         objects become resource groups and wh-<name> group-file lines
+  platform.sh           The flow of `make platform` / `make upgrade`: the named steps,
+                        the failure message, the wait, the report and the idempotence
+                        gate (platform#422)
   check-deps.sh         Verify required CLI tools
   check-catalog-template.sh  Fail when catalog.properties.tmpl drifts from the `warehouse` block (platform#308)
   render-catalogs.sh    Ready Catalogs → Trino `--set-file`s and the bridge's `--set-json` (platform#308)
@@ -2596,3 +2742,6 @@ are intentionally left in place; delete them manually if you want to reclaim sto
 ```sh
 kubectl delete pvc --all -n stardelt
 ```
+
+The full removal path — what is kept, what is lost, and how to keep the
+recovery keys — is in the [runbook](#remove-it).

@@ -8,6 +8,11 @@ metadata:
   namespace: stardelt
 spec:
   instances: 1
+  # Pinned, and deliberately older than the other three: pg_upgrade 17 -> 18
+  # fails on this database (it stops while restoring schemas). Until that is
+  # understood, an unpinned manifest would track the operator's default and
+  # retry the upgrade on every apply.
+  imageName: ghcr.io/cloudnative-pg/postgresql:17.7-system-trixie
   storage:
     size: 2Gi
   # Continuous backup into the platform's own object store: barman-cloud streams

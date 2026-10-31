@@ -24,6 +24,9 @@ metadata:
   labels: { app.kubernetes.io/part-of: stardelt }
 spec:
   instances: 1
+  # Pinned: without this an apply tracks the operator default, which silently
+  # starts a major upgrade the next time the operator ships one.
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.3-system-trixie
   storage:
     size: 1Gi
   backup:
