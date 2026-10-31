@@ -205,7 +205,9 @@ run_step() {
     SKIP_PINS=1 make --no-print-directory "${STEP_TARGET[$id]}" || rc=$?
   else
     make --no-print-directory "${STEP_TARGET[$id]}" || rc=$?
-  fi  if [ "$rc" -ne 0 ]; then
+  fi
+
+  if [ "$rc" -ne 0 ]; then
     fail_step "$id" "$rc"
   fi
 }
