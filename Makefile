@@ -70,7 +70,7 @@ CHART_EXTRA ?=
 # client redirect URIs on the app subdomains. Same default as `dev-dns`.
 BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 
-.PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator openfga trino catalogs upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-up dev-down dev-dns dev-dns-down platform-config
+.PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator openfga trino catalogs upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-refresh dev-up dev-down dev-dns dev-dns-down platform-config
 .PHONY: chart-deps chart-template chart-install
 .PHONY: verify-backups verify-backups-identity verify-backups-nova verify-backups-openfga verify-backups-all verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
 .PHONY: backups verify-pgdump offsite-backup export-recovery-secrets import-recovery-secrets
@@ -1154,7 +1154,7 @@ chart-install: _context ## Install/upgrade the umbrella chart as release `starde
 pin: _context ## Pin a deployment to the newest published digest: make pin APP=nova|spark NS=stardelt TAG=dev
 	@APP="$(APP)" NS="$(NAMESPACE)" TAG="$(TAG)" bash scripts/pin-image.sh
 
-pin-images: _context ## Pin every stardelt image this cluster runs to its published digest
+pin-images: _context ## The stable channel: pin every image AND write the digests the manifests carry
 	@for app in nova stardelt-operator; do \
 	  if kubectl -n $(NAMESPACE) get deploy $$app >/dev/null 2>&1; then \
 	    APP=$$app NS=$(NAMESPACE) bash scripts/pin-image.sh || \
@@ -1164,6 +1164,19 @@ pin-images: _context ## Pin every stardelt image this cluster runs to its publis
 	@if kubectl -n $(NAMESPACE) get deploy spark-connect >/dev/null 2>&1; then \
 	  APP=spark DEPLOY=spark-connect NS=$(NAMESPACE) bash scripts/pin-image.sh || \
 	    echo "  › could not pin spark — leaving the tag in place"; \
+	fi
+
+dev-refresh: _context ## The fast channel: roll every image to the newest `dev` build, cluster only
+	@echo "› dev channel: the newest \`dev\` build of every stardelt image (nothing is written to the repository)"
+	@for app in nova stardelt-operator; do \
+	  if kubectl -n $(NAMESPACE) get deploy $$app >/dev/null 2>&1; then \
+	    WRITE_MANIFEST=0 APP=$$app NS=$(NAMESPACE) bash scripts/pin-image.sh || \
+	      echo "  › could not refresh $$app — leaving the current digest in place"; \
+	  fi; \
+	done
+	@if kubectl -n $(NAMESPACE) get deploy spark-connect >/dev/null 2>&1; then \
+	  WRITE_MANIFEST=0 APP=spark DEPLOY=spark-connect NS=$(NAMESPACE) bash scripts/pin-image.sh || \
+	    echo "  › could not refresh spark — leaving the current digest in place"; \
 	fi
 
 build-superset-image: ## Build the Superset image (ghcr.io/stardelt/superset:dev)

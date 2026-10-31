@@ -102,6 +102,11 @@ fi
 # during an apply that looked like a no-op). The reference keeps the tag for readability
 # and adds the digest the kubelet actually resolves: `:dev@sha256:…`.
 #
+# `WRITE_MANIFEST=0` skips this half and only moves the cluster: that is the fast dev
+# loop (`make dev-refresh`), where the repository should not be dirtied for every merge
+# on `main`. The stable path (`make pin-images`) is the one that writes the manifests,
+# so a reproducible install still carries the digests it was tested with.
+#
 # Components without a checked-in image line (stardelt-operator) skip this half.
 case "$APP" in
   nova)  manifest="${MANIFEST:-manifests/nova-deployment.yaml}" ;;
@@ -109,7 +114,7 @@ case "$APP" in
   *)     manifest="${MANIFEST:-}" ;;
 esac
 
-if [ -n "$manifest" ] && [ -f "$manifest" ] && grep -qE "^\s+image: $REGISTRY/$REPO:" "$manifest"; then
+if [ "${WRITE_MANIFEST:-1}" = "1" ] && [ -n "$manifest" ] && [ -f "$manifest" ] && grep -qE "^\s+image: $REGISTRY/$REPO:" "$manifest"; then
   python3 - "$manifest" "$REGISTRY/$REPO" "$digest" "$APP" <<'PYEOF'
 import re, sys
 path, repo, digest, app = sys.argv[1:5]
