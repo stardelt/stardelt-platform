@@ -70,7 +70,7 @@ CHART_EXTRA ?=
 # client redirect URIs on the app subdomains. Same default as `dev-dns`.
 BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 
-.PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator openfga trino catalogs upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-refresh dev-watch dev-up dev-down dev-dns dev-dns-down platform-config
+.PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator openfga trino catalogs upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-refresh dev-watch dev-status dev-up dev-down dev-dns dev-dns-down platform-config
 .PHONY: chart-deps chart-template chart-install
 .PHONY: verify-backups verify-backups-identity verify-backups-nova verify-backups-openfga verify-backups-all verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
 .PHONY: backups verify-pgdump offsite-backup export-recovery-secrets import-recovery-secrets
@@ -1186,6 +1186,9 @@ dev-refresh: _context ## The fast channel: newest `dev` build of every stardelt 
 
 dev-watch: _context ## Follow one image's `dev` tag and roll it when CI publishes (APP=nova INTERVAL=15 ONESHOT=1 for a timer)
 	@APP=$(APP) NS=$(NAMESPACE) INTERVAL=$(INTERVAL) ONESHOT=$(ONESHOT) bash scripts/dev-watch.sh
+
+dev-status: _context ## Show what the cluster runs against what the manifests pin
+	@NS=$(NAMESPACE) TAG=$(TAG) bash scripts/dev-status.sh
 
 build-superset-image: ## Build the Superset image (ghcr.io/stardelt/superset:dev)
 	@echo "› building $(SUPERSET_IMAGE)"

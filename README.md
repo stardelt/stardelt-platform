@@ -242,7 +242,20 @@ NOWAIT=1   make dev-refresh    # fire and forget: do not block on the rollout
 make dev-watch                 # follow nova's `dev` tag and roll when CI publishes
 APP=nova INTERVAL=5 make dev-watch   # a tighter tick, another image
 ONESHOT=1  make dev-watch      # one check, then exit — this is what a timer runs
+make dev-status                # what the cluster runs vs what the manifests pin
 ```
+
+`make dev-status` answers the question the two channels create — *is the cluster
+ahead of the pin, or behind it*:
+
+```text
+  app                  cluster        pinned         state
+  nova                 33dbe9854f36   a3f4e0450c12   cluster ahead of the pin
+  spark                a36a9a8f1a8a   a36a9a8f1a8a   in sync
+  stardelt-operator    575b89c47077   (chart)        pinned by the chart
+```
+
+It is read-only and always exits 0, so it is safe in a prompt or a CI step.
 
 `make dev-watch` is the inner loop: each tick asks the registry for the tag's digest
 and compares it with what the Deployment runs, so it is one request and silent until
