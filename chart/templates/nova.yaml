@@ -198,6 +198,17 @@ spec:
               value: {{ .Values.identity.groupClaim | quote }}
             - name: NOVA_OIDC_ADMIN_GROUP
               value: {{ .Values.identity.adminGroup | quote }}
+            {{- /* The public client `stardelt login` signs in with (device flow): Nova tells it to
+                   the command line at GET /api/auth/config (stardelt-nova#312). The platform's own
+                   Keycloak ships the client `stardelt-dev`; with an external IdP nothing is guessed. */}}
+            {{- $deviceClient := .Values.nova.auth.deviceClientId }}
+            {{- if and (not $deviceClient) (eq (include "stardelt.identityMode" .) "platform") }}
+            {{- $deviceClient = "stardelt-dev" }}
+            {{- end }}
+            {{- if $deviceClient }}
+            - name: NOVA_OIDC_DEVICE_CLIENT_ID
+              value: {{ $deviceClient | quote }}
+            {{- end }}
             {{- else }}
             - name: NOVA_AUTH_MODE
               value: "dev"
