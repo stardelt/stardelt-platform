@@ -50,6 +50,12 @@ JUPYTER_IMAGE  := ghcr.io/stardelt/jupyter-singleuser:dev
 STARDELT_LIB_REF := 3c953a4386bbb7545ab40f24adae4a270d335c06
 STARDELT_LIB_TAG := v0.1.5
 
+# The image tag the dev channel follows. `dev` moves on every merge; every merged
+# commit also carries an immutable `sha-<short>`, which is what you deploy when you
+# want a specific commit on the cluster rather than the newest one:
+#   make dev-refresh APP=nova TAG=sha-1a2b3c4
+TAG ?= dev
+
 # SLIM=1 applies the small-node overrides in helm-values/slim/ (for cx33 / 8 GB).
 TRINO_EXTRA := $(if $(filter 1,$(SLIM)),-f helm-values/slim/trino.yaml,)
 # Query-log feed (stardelt-nova#116): Trino's event listener posts to Nova's internal port.
@@ -1170,22 +1176,22 @@ dev-refresh: _context ## The fast channel: newest `dev` build of every stardelt 
 	@echo "› dev channel: the newest \`dev\` build of every stardelt image (nothing is written to the repository)"
 	@if [ -n "$(APP)" ]; then \
 	  WRITE_MANIFEST=0 APP=$(APP) DEPLOY=$(if $(filter spark,$(APP)),spark-connect,$(APP)) \
-	    NS=$(NAMESPACE) NOWAIT=$(NOWAIT) bash scripts/pin-image.sh; \
+	    NS=$(NAMESPACE) NOWAIT=$(NOWAIT) TAG=$(TAG) bash scripts/pin-image.sh; \
 	else \
 	  for app in nova stardelt-operator; do \
 	    if kubectl -n $(NAMESPACE) get deploy $$app >/dev/null 2>&1; then \
-	      WRITE_MANIFEST=0 APP=$$app NS=$(NAMESPACE) NOWAIT=$(NOWAIT) bash scripts/pin-image.sh || \
+	      WRITE_MANIFEST=0 APP=$$app NS=$(NAMESPACE) NOWAIT=$(NOWAIT) TAG=$(TAG) bash scripts/pin-image.sh || \
 	        echo "  › could not refresh $$app — leaving the current digest in place"; \
 	    fi; \
 	  done; \
 	  if kubectl -n $(NAMESPACE) get deploy spark-connect >/dev/null 2>&1; then \
-	    WRITE_MANIFEST=0 APP=spark DEPLOY=spark-connect NS=$(NAMESPACE) NOWAIT=$(NOWAIT) bash scripts/pin-image.sh || \
+	    WRITE_MANIFEST=0 APP=spark DEPLOY=spark-connect NS=$(NAMESPACE) NOWAIT=$(NOWAIT) TAG=$(TAG) bash scripts/pin-image.sh || \
 	      echo "  › could not refresh spark — leaving the current digest in place"; \
 	  fi; \
 	fi
 
 dev-watch: _context ## Follow one image's `dev` tag and roll it when CI publishes (APP=nova INTERVAL=15 ONESHOT=1 for a timer)
-	@APP=$(APP) NS=$(NAMESPACE) INTERVAL=$(INTERVAL) ONESHOT=$(ONESHOT) bash scripts/dev-watch.sh
+	@APP=$(APP) NS=$(NAMESPACE) INTERVAL=$(INTERVAL) ONESHOT=$(ONESHOT) TAG=$(TAG) bash scripts/dev-watch.sh
 
 dev-status: _context ## Show what the cluster runs against what the manifests pin
 	@NS=$(NAMESPACE) TAG=$(TAG) bash scripts/dev-status.sh
