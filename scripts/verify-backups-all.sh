@@ -54,6 +54,11 @@
 #   BACKUP_BUCKET      default backups — the bucket the pg_dump CronJobs write to
 #   S3_CHECK_IMAGE     image for the listing pod (default amazon/aws-cli:2.17.0,
 #                      the same image the platform's own S3 jobs run)
+#   LIST_ATTEMPTS      default 3 (1 to 5) — how often the listing pod is tried before
+#                      the object sources are reported as unreadable. Each attempt
+#                      runs under its own pod name, a failed attempt prints its
+#                      whole output, and the final message says the backup was
+#                      NOT checked (platform#466).
 #   S3_SOURCE_OVERRIDE testing/repair hook: comma-separated `label=s3://bucket/prefix/`
 #                      pairs replacing an object source. The #367 failure proof
 #                      points one source at a prefix with no recent object:
@@ -74,6 +79,15 @@ MAX_AGE_HOURS="${MAX_AGE_HOURS:-36}"
 BACKUP_BUCKET="${BACKUP_BUCKET:-backups}"
 S3_CHECK_IMAGE="${S3_CHECK_IMAGE:-amazon/aws-cli:2.17.0}"
 S3_SOURCE_OVERRIDE="${S3_SOURCE_OVERRIDE:-}"
+LIST_ATTEMPTS="${LIST_ATTEMPTS:-3}"
+
+case "$LIST_ATTEMPTS" in
+  [1-5]) ;;
+  *)
+    echo "LIST_ATTEMPTS must be a number from 1 to 5 (got '$LIST_ATTEMPTS')" >&2
+    exit 2
+    ;;
+esac
 
 case "$MAX_AGE_HOURS" in
   '' | *[!0-9]*)
@@ -270,9 +284,11 @@ done
 POD
 )"
 
-  scratch_pod="verify-backups-all-s3-$$"
-  pod_spec="$(jq -n \
-    --arg name "$scratch_pod" --arg ns "$NAMESPACE" \
+  # The Pod document for one attempt; the name differs per attempt, so a pod that the last
+  # attempt left behind (still being deleted) cannot make the next one fail on its name.
+  pod_spec_for() {
+  jq -n \
+    --arg name "$1" --arg ns "$NAMESPACE" \
     --arg image "$S3_CHECK_IMAGE" --arg cmd "$pod_script" --arg sources "$s3_sources" \
     '{
       apiVersion: "v1", kind: "Pod",
@@ -305,18 +321,27 @@ POD
         }],
         volumes: [{ name: "scratch", emptyDir: {} }]
       }
-    }')"
+    }'
+  }
 
   info "listing ${#s3_requests[@]} object source(s) from one $S3_CHECK_IMAGE pod"
-  if ! pod_out="$(kubectl -n "$NAMESPACE" run "$scratch_pod" \
-        --rm --attach --quiet --restart=Never \
-        --image "$S3_CHECK_IMAGE" \
-        --pod-running-timeout=3m \
-        --overrides "$pod_spec" 2>&1)"; then
-    err "the listing pod failed — object ages are unknown:"
-    printf '%s\n' "$pod_out" | tail -n 20 >&2
-    pod_out=""
-  fi
+  pod_out=""
+  attempt=1
+  while [ "$attempt" -le "$LIST_ATTEMPTS" ]; do
+    scratch_pod="verify-backups-all-s3-$$-$attempt"
+    if attempt_out="$(kubectl -n "$NAMESPACE" run "$scratch_pod" \
+          --rm --attach --quiet --restart=Never \
+          --image "$S3_CHECK_IMAGE" \
+          --pod-running-timeout=3m \
+          --overrides "$(pod_spec_for "$scratch_pod")" 2>&1)"; then
+      pod_out="$attempt_out"
+      break
+    fi
+    err "the listing pod failed (attempt $attempt of $LIST_ATTEMPTS); its whole output:"
+    printf '%s\n' "$attempt_out" | sed 's/^/    /' >&2
+    cleanup
+    attempt=$((attempt + 1))
+  done
 
   while read -r tag field_a field_b field_rest; do
     case "$tag" in
@@ -401,7 +426,7 @@ for pvc in "${pvcs[@]}"; do
         failures+=("$pvc: no CronJob $NAMESPACE/$cronjob — apply manifests/pg-dump-backup.yaml (make backups)")
       elif [ -z "$pod_now" ]; then
         verdict="FAIL"
-        failures+=("$pvc: cannot list $source — the listing pod failed (see above)")
+        failures+=("$pvc: cannot list $source — the listing pod failed $LIST_ATTEMPTS time(s), its output is printed above; this backup was NOT checked")
       else
         case "${s3_state[$label]:-missing}" in
           ok)
