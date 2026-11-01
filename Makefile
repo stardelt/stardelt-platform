@@ -315,7 +315,7 @@ step-cnpg-cluster: ## The catalog's Postgres cluster, its backup guard and the d
 step-s3-secrets: ## The S3 key pair (generated once, kept across installs)
 	@NAMESPACE=$(NAMESPACE) bash scripts/s3-secrets.sh
 
-step-storage: step-s3-secrets ## The object store (SeaweedFS) and the versioned notebooks bucket
+step-storage: step-s3-secrets ## The object store (SeaweedFS), the versioned notebooks bucket and the daily archive copy
 	@echo "› SeaweedFS"
 	@helm upgrade --install seaweedfs seaweedfs/seaweedfs \
 	  --version $(SEAWEEDFS_VERSION) \
@@ -323,6 +323,9 @@ step-storage: step-s3-secrets ## The object store (SeaweedFS) and the versioned 
 	  -f helm-values/seaweedfs.yaml
 	@echo "› Versioned notebooks bucket (published notebooks, platform#290)"
 	@$(MAKE) --no-print-directory notebooks-bucket
+	@echo "› Object-store archive: the lakehouse-backup bucket and its daily copy (platform#462)"
+	@$(MAKE) --no-print-directory backup-bucket
+	@kubectl apply -f manifests/object-store-backup.yaml
 
 # OpenFGA (platform#302): the permission store for the catalog cutover. Only
 # where the platform has an IdP — authorization is checked against a person's
@@ -1237,6 +1240,12 @@ print-stardelt-lib-ref: ## Print the pinned stardelt library commit
 .PHONY: notebooks-bucket
 notebooks-bucket: _context ## Create the versioned `notebooks` bucket for published notebooks (idempotent)
 	@NAMESPACE=$(NAMESPACE) bash scripts/create-notebooks-bucket.sh
+
+# The destination of the `lakehouse-backup` CronJob (manifests/object-store-backup.yaml): a
+# plain bucket, no versioning (the sync is append-only). Without it every run of the job fails.
+.PHONY: backup-bucket
+backup-bucket: _context ## Create the `lakehouse-backup` bucket, the archive's destination (idempotent)
+	@NAMESPACE=$(NAMESPACE) bash scripts/create-backup-bucket.sh
 
 # ---------------------------------------------------------------------------
 # Port-forwards
