@@ -747,6 +747,15 @@ Keycloak first and then the Secret, and proves the new value with a fresh token.
 delete-principal NAME=analytics YES=1` removes the client and the Secret, but only for a client
 that carries `stardelt-managed=principal`; anything else is refused.
 
+*The first pipeline of a group in one command (demo plan, platform#469).* Nova lets a person publish a pipeline for a group only
+when that group has a ready principal `pipeline-<group>`; until then `stardelt bundle plan` refuses with "No principal for this
+group yet". `make demo-access` does what that sentence asks an administrator to do: it checks that the Catalogs `bronze`, `silver`
+and `gold` exist (it never creates a Catalog), makes sure the realm group exists (default `demo`, marked
+`stardelt-managed=demo-access`), adds the people in `MEMBERS=ada,bo` to it (they must exist; it creates no user), runs
+`sync-principal` for `pipeline-<group>`, applies the `ServicePrincipal` of that name and waits until the operator reports it ready,
+then runs one access sync. Without `YES=1` it prints the plan and exits 1; a second run changes nothing and says so per step; it
+deletes nothing. `bash scripts/demo-access.sh --manifest` prints the `ServicePrincipal` it would apply.
+
 *Catalog service clients (platform#282, step 1 of the catalog's authentication).* Every component
 that calls the Iceberg REST catalog has its own confidential service client instead of sharing one:
 
