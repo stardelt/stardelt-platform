@@ -280,10 +280,14 @@ Two consequences worth knowing:
   manifests, so they converge the cluster back to the pinned digests. After a
   `make dev-refresh`, the next install moves the images back — deliberately, because
   an install is reproducible. To keep a build, `make pin-images` and commit.
-- **`make platform-idempotence` still passes after a refresh.** The gate holds the
-  pins still (`SKIP_PINS=1`) and compares what it applies, so a cluster that is ahead
-  of the manifests is not reported as drift. The gate proves the flow is idempotent;
-  it does not police which build is deployed.
+- **`make platform-idempotence` reports the first run after a refresh.** The gate runs
+  the flow and compares, and the flow applies the manifests — so a cluster that is
+  ahead of the pins is converged back to them, which is a real change. Measure it
+  instead of trusting the sentence: after `make dev-refresh`, the first gate run names
+  `deployments/nova` (and its resourceVersion) and the second one passes, because by
+  then the cluster matches. `SKIP_PINS=1` only stops the gate from *re-pinning*, not
+  from applying what is pinned; that is what makes it a proof of convergence rather
+  than of "nothing happened".
 
 ### When a step fails
 
