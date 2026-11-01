@@ -60,6 +60,13 @@ rules:
   - apiGroups: ["stardelt.io"]
     resources: ["sqlwarehouses"]
     verbs: ["get", "list"]
+  # Connections (nova#203): the list route reads the `Connection` resources to show each
+  # connection's sync state and, for an administrator, every group's connections; a group
+  # connection writes and deletes its resource. Without this rule the store half works and the
+  # page answers 502 "the cluster did not answer" — measured on the dev cluster 2026-11-01.
+  - apiGroups: ["stardelt.io"]
+    resources: ["connections"]
+    verbs: ["get", "list", "create", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -253,11 +260,19 @@ spec:
             - name: NOVA_EVENTS_TOKEN
               valueFrom: { secretKeyRef: { name: nova-events, key: token, optional: true } }
             # Secret store (stardelt-nova#171, platform#240): the connections API signs in with the
-            # caller's token (audience `openbao`) and the chart renders the same three values for
-            # the umbrella install — keep them here so a `kubectl apply` of this manifest cannot
-            # silently drop the store config the live Deployment already carries.
+            # caller's token (audience `openbao`). The store itself is opt-in (`make openbao`;
+            # production installs use the customer's own store, decision D23), so the address is
+            # NOT hard-coded here: a URL for a store that was never installed makes Nova answer
+            # 502 "the secret store is unavailable: error sending request" and the Connections
+            # page shows a transport error, when the honest answer is 503 "the secret store is
+            # not configured". `make openbao` writes ConfigMap `stardelt-secret-store`; without
+            # it this reference is absent and every connection route answers 503.
             - name: NOVA_SECRET_STORE_URL
-              value: http://openbao.stardelt.svc.cluster.local:8200
+              valueFrom:
+                configMapKeyRef:
+                  name: stardelt-secret-store
+                  key: url
+                  optional: true
             - name: NOVA_SECRET_STORE_ROLE
               value: platform-users
             - name: NOVA_SECRET_STORE_MOUNT
