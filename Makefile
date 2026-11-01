@@ -299,12 +299,18 @@ step-cnpg: ## The CloudNative-PG operator (the Postgres clusters need it)
 	  --version $(CNPG_VERSION) \
 	  $(HELM_FLAGS)
 
-step-cnpg-cluster: ## The catalog's Postgres cluster and the backup-config guard
+step-cnpg-cluster: ## The catalog's Postgres cluster, its backup guard and the daily base backup
 	@echo "› CNPG Cluster (Lakekeeper Postgres)"
 	@kubectl apply -f manifests/cnpg-postgres.yaml
 	@echo "› guard: the live Cluster must still declare its backup config"
 	@$(MAKE) --no-print-directory verify-backup-config
 	@kubectl -n $(NAMESPACE) wait --for=condition=Ready --timeout=300s cluster/lakekeeper-pg
+	@echo "› Daily base backups: the catalog's cluster and the permission store's"
+	@# WAL alone recovers to a point in time but replays every segment since the
+	@# volume was created; the base backup is what makes a restore fast. The file
+	@# carries both schedules, and a cluster that does not exist yet simply has an
+	@# idle schedule until its own step creates it.
+	@kubectl apply -f manifests/cnpg-backup-schedule.yaml
 
 step-s3-secrets: ## The S3 key pair (generated once, kept across installs)
 	@NAMESPACE=$(NAMESPACE) bash scripts/s3-secrets.sh
