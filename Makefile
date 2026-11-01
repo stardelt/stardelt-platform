@@ -643,6 +643,10 @@ sync-pipeline-runner-client: _context ## Converge the live realm's pipeline-runn
 sync-principal: _context ## Create or converge a ServicePrincipal client and its Secret (idempotent)
 	@NAMESPACE=$(NAMESPACE) NAME=$(NAME) GROUP=$(GROUP) AUDIENCES=$(AUDIENCES) ROTATE=$(ROTATE) bash scripts/keycloak-sync-principal.sh
 
+.PHONY: demo-access
+demo-access: _context ## The group, pipeline principal and ServicePrincipal a first pipeline (and the demo) needs: GROUP=demo MEMBERS=ada,bo (needs YES=1)
+	@NAMESPACE=$(NAMESPACE) GROUP='$(GROUP)' MEMBERS='$(MEMBERS)' YES='$(YES)' bash scripts/demo-access.sh
+
 .PHONY: delete-principal
 delete-principal: _context ## Delete a ServicePrincipal client and its Secret (stardelt-managed only; needs YES=1)
 	@NAMESPACE=$(NAMESPACE) NAME=$(NAME) YES=$(YES) bash scripts/keycloak-sync-principal.sh --delete
