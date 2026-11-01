@@ -323,6 +323,10 @@ step-storage: step-s3-secrets ## The object store (SeaweedFS) and the versioned 
 	  -f helm-values/seaweedfs.yaml
 	@echo "› Versioned notebooks bucket (published notebooks, platform#290)"
 	@$(MAKE) --no-print-directory notebooks-bucket
+	@echo "› Archive bucket for the lakehouse copy (object-store backup)"
+	@NAMESPACE=$(NAMESPACE) bash scripts/create-bucket.sh lakehouse-backup
+	@echo "› Object-store backup: the lakehouse copied outside its own bucket, daily 03:15"
+	@kubectl apply -f manifests/object-store-backup.yaml
 
 # OpenFGA (platform#302): the permission store for the catalog cutover. Only
 # where the platform has an IdP — authorization is checked against a person's
