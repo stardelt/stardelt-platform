@@ -265,6 +265,17 @@ ahead of the pin, or behind it*:
 
 It is read-only and always exits 0, so it is safe in a prompt or a CI step.
 
+"Differs from the pin" alone would be ambiguous — the same output for the fast
+channel working and for a Deployment someone rolled back to an old build. So the
+registry's current digest of `TAG` is the third point, and only *cluster == tag !=
+pin* counts as ahead. Anything else is reported in red, with what to run:
+
+```text
+  nova     deadbeefdead   a3f4e0450c12   differs from the pin AND from dev
+```
+
+`NO_REGISTRY=1` skips that lookup (offline); the state then says it did not ask.
+
 `make dev-watch` is the inner loop: each tick asks the registry for the tag's digest
 and compares it with what the Deployment runs, so it is one request and silent until
 something changed. Ctrl-C stops it; it never writes the repository either.
