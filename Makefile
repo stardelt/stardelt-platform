@@ -976,9 +976,30 @@ external-secrets: deps _context _helm-repos ## Install External Secrets Operator
 # volume belong together: never delete Secret openbao-seal-key while the volume of pod openbao-0 exists.
 openbao: deps _context _helm-repos ## Install the sandbox secret store (OpenBao, opt-in): auto-unseal, KV v2, JWT sign-in with the platform IdP
 	@NAMESPACE=$(NAMESPACE) bash scripts/openbao-seal-key.sh
-	@helm upgrade --install openbao openbao/openbao --version $(OPENBAO_VERSION) $(HELM_FLAGS) -f helm-values/openbao.yaml
+	@# --wait=false deliberately overrides $(HELM_FLAGS): a fresh store is not Ready until it
+	@# has been initialised, and initialisation is the next step. `helm --wait` therefore can
+	@# only time out on a first install (measured: "context deadline exceeded" after 10m with
+	@# openbao-0 Running 0/1). openbao-bootstrap.sh polls the API itself and initialises.
+	@helm upgrade --install openbao openbao/openbao --version $(OPENBAO_VERSION) $(HELM_FLAGS) --wait=false -f helm-values/openbao.yaml
+	@# The bootstrap execs into the pod, so it must exist — not be Ready.
+	@kubectl -n $(NAMESPACE) wait --for=create --timeout=120s pod/openbao-0
 	@NAMESPACE=$(NAMESPACE) bash scripts/openbao-bootstrap.sh
 	@NAMESPACE=$(NAMESPACE) OWNER_GROUPS="$(OWNER_GROUPS)" bash scripts/openbao-connections.sh
+	@echo "› Nova's address for the store (its own ConfigMap: a platform install must not drop it)"
+	@# The address is deliberately not in manifests/nova-deployment.yaml: that file is
+	@# applied by every install, and a hard-coded URL for the opt-in store made Nova answer
+	@# 502 "error sending request" on a cluster that never installed OpenBao. This ConfigMap
+	@# exists exactly when the store does; Nova reads it optionally and answers 503 without it.
+	@kubectl -n $(NAMESPACE) create configmap stardelt-secret-store \
+	  --from-literal=url=http://openbao.$(NAMESPACE).svc.cluster.local:8200 \
+	  --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+	@# A store installed before Nova: no Deployment to roll, and Nova reads the ConfigMap when
+	@# its own step creates it. Every other install restarts Nova so the new address takes.
+	@if kubectl -n $(NAMESPACE) get deploy nova >/dev/null 2>&1; then \
+	  kubectl -n $(NAMESPACE) rollout restart deploy/nova >/dev/null && echo "  › Nova restarted to read the address"; \
+	else \
+	  echo "  › Nova is not deployed yet; it will read the address when it is"; \
+	fi
 
 test-openbao-policies: ## Prove the connection policies against a throwaway local OpenBao (needs the bao binary)
 	@bash scripts/test-openbao-policies.sh
@@ -1107,6 +1128,9 @@ uninstall: _context ## Uninstall all stardelt components (reverse order)
 	@kubectl delete -f manifests/openfga-pg.yaml             --ignore-not-found
 
 	@echo "› uninstalling helm releases"
+	@# The store's address must go with the store: a leftover ConfigMap would tell the next
+	@# install's Nova to reach a service that no longer exists (the 502 this fix removes).
+	@kubectl -n $(NAMESPACE) delete configmap stardelt-secret-store --ignore-not-found
 	@helm uninstall jupyterhub --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@helm uninstall superset   --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@kubectl delete -f manifests/airflow-pipelines.yaml --ignore-not-found
