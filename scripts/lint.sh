@@ -72,4 +72,9 @@ bash scripts/check-spark-parity.sh
 echo "› script: check-stardelt-pin"
 bash scripts/check-stardelt-pin.sh
 
+# The create-user Job makes the read-only `nova-api` user Nova signs in to Airflow with
+# (platform#476): a clean install without it answers 401 on every Pipelines call.
+echo "› script: check-airflow-users"
+bash scripts/check-airflow-users.sh
+
 echo "lint: OK"
