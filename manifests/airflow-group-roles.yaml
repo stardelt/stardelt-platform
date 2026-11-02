@@ -51,7 +51,8 @@ spec:
           automountServiceAccountToken: true
           containers:
             - name: sync
-              image: ghcr.io/stardelt/airflow:demo@sha256:226aca67b063995a1ed64bd83176ae2a81971dbecddd746cdf1d87cd04555ed0
+              image: >-
+                ghcr.io/stardelt/airflow:demo@sha256:226aca67b063995a1ed64bd83176ae2a81971dbecddd746cdf1d87cd04555ed0
               command: ["python", "/opt/scripts/sync.py"]
               env:
                 - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
