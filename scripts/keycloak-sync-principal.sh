@@ -83,7 +83,7 @@ if [ "$mode" = sync ]; then
     [ -n "$GROUP" ] || fail "GROUP is required — pass GROUP=<existing realm group>"
   fi
   if [ -z "$AUDIENCES" ]; then
-    if [ "$KIND" = service ]; then AUDIENCES=lakekeeper; else AUDIENCES=trino; fi
+    if [ "$KIND" = service ]; then AUDIENCES=lakekeeper; else AUDIENCES=trino,lakekeeper; fi
   fi
   aud_list=()
   seen=""
