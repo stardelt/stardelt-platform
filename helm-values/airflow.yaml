@@ -161,7 +161,37 @@ apiServer:
         # at every login (the same group Nova treats as administrator).
         AUTH_USER_REGISTRATION = True
         AUTH_USER_REGISTRATION_ROLE = "stardelt-member"
-        AUTH_ROLES_MAPPING = {_admin_group: ["Admin"]}
+        # Two sentences of comment: why it is lazy (a new group applies from the next sign-in,
+        # no webserver restart) and that a failure to query must fall back to the admin entry
+        # only, never raise.
+        class _AuthRolesMapping(dict):
+            def items(self):
+                try:
+                    from airflow.providers.fab.auth_manager.cli_commands.utils import get_application_builder
+
+                    with get_application_builder() as appbuilder:
+                        sm = appbuilder.sm
+                        roles = sm.get_all_roles() or []
+                        base = dict(super().items()) if dict.__dict__.get("items") else {}
+                        mapping = {}
+                        admin_entry = base.get(_admin_group, ["Admin"])
+                        mapping[_admin_group] = admin_entry
+                        for role in roles:
+                            name = getattr(role, "name", None)
+                            if not name or not name.startswith("stardelt-group-"):
+                                continue
+                            group = name[len("stardelt-group-"):]
+                            if not group:
+                                continue
+                            mapping[group] = ["stardelt-member", name]
+                        return mapping.items()
+                except Exception:
+                    try:
+                        return dict(super().items()).items()
+                    except Exception:
+                        return [(_admin_group, ["Admin"])]
+
+        AUTH_ROLES_MAPPING = _AuthRolesMapping({_admin_group: ["Admin"]})
         AUTH_ROLES_SYNC_AT_LOGIN = True
     else:
         AUTH_TYPE = AUTH_DB
