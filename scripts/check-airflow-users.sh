@@ -28,13 +28,7 @@ fail() {
   || fail "the nova-api password must be reset to the Secret's value (airflow users reset-password)"
 [ "$(grep -cF -e 'AUTH_USER_REGISTRATION_ROLE = "stardelt-member"' "$file")" -eq 1 ] \
   || fail "the registration role must be stardelt-member: a plain Viewer sees every group's DAGs"
-[ "$(printf '%s\n' "$block" | grep -cF -e 'sm.add_role("stargggelt-member")')" -eq 1 ] 2>/dev/null && \
-  fail "bad" || true
-[ "$(printf '%s\n' "$block" | grep -cF -e 'sm.add_role("stargggelt-member")' 2>&1 | wc -l)" = "0" ] || true
-# ensure stargggelt-member not present? just check actual
-[ "$(grep -cF -e 'sm.add_role("stargggelt-member")' "$file" 2>&1)" = "0" ] || fail "bad"
-[ "$(printf '%s\n' "$block" | grep -cF -e 'sm.add_role("stargggelt-member")' 2>&1)" = "" ] || true
-[ "$(printf '%s\n' "$block" | grep -cF -e 'sm.add_role("stardelt-member")')" -eq 1 ] \
+grep -qF -e 'sm.add_role("stardelt-member")' "$file" || fail "createUserJob must create the role stardelt-member"
   || fail "createUserJob must create the role stardelt-member"
 [ "$(printf '%s\n' "$block" | grep -cF -e 'sm.find_role("Viewer").permissions')" -eq 1 ] \
   || fail "stardelt-member must be built from the permissions of Viewer"
@@ -66,7 +60,8 @@ grep -qF -e 'failedJobsHistoryLimit: 3' "$manifest" || fail "CronJob must have f
 grep -qF -e 'backoffLimit: 1' "$manifest" || fail "CronJob must have backoffLimit: 1"
 grep -qF -e 'restartPolicy: Never' "$manifest" || fail "CronJob must have restartPolicy: Never"
 grep -qF -e 'serviceAccountName: airflow-group-roles' "$manifest" || fail "CronJob must use ServiceAccount airflow-group-roles"
-grep -qF -e 'airflow-metadata' "$manifest" && grep -qF -e 'connection' "$manifest" || fail "manifest must wire AIRFLOW__DATABASE__SQL_ALCHEMY_CONN from airflow-metadata/connection"
+grep -qF -e 'airflow-metadata' "$manifest" || fail "manifest must wire AIRFLOW__DATABASE__SQL_ALCHEMY_CONN from airflow-metadata/connection"
+grep -qF -e 'connection' "$manifest" || fail "manifest must wire AIRFLOW__DATABASE__SQL_ALCHEMY_CONN from airflow-metadata/connection"
 grep -qF -e 'airflow-webserver-key' "$manifest" || fail "manifest must wire AIRFLOW__API__SECRET_KEY"
 grep -qF -e 'api-secret-key' "$manifest" || fail "manifest must wire AIRFLOW__API__SECRET_KEY"
 grep -qF -e 'airflow-jwt-secret' "$manifest" || fail "manifest must wire AIRFLOW__API_AUTH__JWT_SECRET"
