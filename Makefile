@@ -388,6 +388,8 @@ step-airflow: ## Airflow and the pipeline templates
 	  $(HELM_FLAGS) \
 	  -f helm-values/airflow.yaml
 	@kubectl apply -f manifests/airflow-pipelines.yaml
+	@kubectl -n $(NAMESPACE) create configmap airflow-group-roles-script --from-file=sync.py=scripts/airflow-group-roles.py --dry-run=client -o yaml | kubectl apply -f -
+	@kubectl apply -f manifests/airflow-group-roles.yaml
 
 step-superset: ## Superset
 	@echo "› Superset"

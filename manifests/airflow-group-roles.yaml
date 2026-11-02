@@ -1,0 +1,92 @@
+# Sync Airflow FAB roles for Pipeline/ServicePrincipal owner groups (platform#477 S1b).
+#
+# Creates (idempotently) role stardelt-group-<ownerGroup> for every non-empty
+# spec.ownerGroup found on Pipelines and ServicePrincipals in this namespace.
+# The loader (S2) grants DAG-level permissions to that role via access_control.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: airflow-group-roles
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: airflow-group-roles
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+subjects:
+  - kind: ServiceAccount
+    name: airflow-group-roles
+    namespace: stardelt
+roleRef:
+  kind: Role
+  name: airflow-pipeline-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: airflow-group-roles
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/part-of: stardelt
+            app.kubernetes.io/name: airflow-group-roles
+        spec:
+          restartPolicy: Never
+          serviceAccountName: airflow-group-roles
+          automountServiceAccountToken: true
+          containers:
+            - name: sync
+              image: >-
+                ghcr.io/stardelt/airflow:demo@sha256:226aca67b063995a1ed64bd83176ae2a81971dbecddd746cdf1d87cd04555ed0
+              command: ["python", "/opt/scripts/sync.py"]
+              env:
+                - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+                  valueFrom:
+                    secretKeyRef:
+                      name: airflow-metadata
+                      key: connection
+                - name: AIRFLOW__API__SECRET_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: airflow-webserver-key
+                      key: api-secret-key
+                - name: AIRFLOW__API_AUTH__JWT_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: airflow-jwt-secret
+                      key: jwt-secret
+                - name: AIRFLOW__CORE__FERNET_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: airflow-fernet-key
+                      key: fernet-key
+              volumeMounts:
+                - name: scripts
+                  mountPath: /opt/scripts
+                  readOnly: true
+              resources:
+                requests: { cpu: "50m", memory: "64Mi" }
+                limits: { cpu: "500m", memory: "256Mi" }
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: { drop: ["ALL"] }
+          volumes:
+            - name: scripts
+              configMap:
+                name: airflow-group-roles-script
+                defaultMode: 0444
