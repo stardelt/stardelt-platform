@@ -265,6 +265,8 @@ jobs:
 
       - name: helm dependency update — umbrella chart
         run: helm dependency update chart
+      - name: Nova's permissions agree (manifest and umbrella chart, platform#473)
+        run: bash scripts/check-nova-rbac-parity.sh
       - name: helm lint + template — umbrella chart
         run: |
           helm lint chart
