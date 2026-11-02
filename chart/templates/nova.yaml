@@ -89,6 +89,10 @@ rules:
   - apiGroups: ["stardelt.io"]
     resources: ["catalogs"]
     verbs: ["get", "list", "patch"]
+  # `SqlWarehouse` resources: which compute class a person uses (nova#236, platform#473).
+  - apiGroups: ["stardelt.io"]
+    resources: ["sqlwarehouses"]
+    verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
