@@ -29,7 +29,6 @@ fail() {
 [ "$(grep -cF -e 'AUTH_USER_REGISTRATION_ROLE = "stardelt-member"' "$file")" -eq 1 ] \
   || fail "the registration role must be stardelt-member: a plain Viewer sees every group's DAGs"
 grep -qF -e 'sm.add_role("stardelt-member")' "$file" || fail "createUserJob must create the role stardelt-member"
-  || fail "createUserJob must create the role stardelt-member"
 [ "$(printf '%s\n' "$block" | grep -cF -e 'sm.find_role("Viewer").permissions')" -eq 1 ] \
   || fail "stardelt-member must be built from the permissions of Viewer"
 [ "$(printf '%s\n' "$block" | grep -cF -e 'GLOBAL = {("can_read", "DAGs"), ("can_read", "DAG Runs")}')" -eq 1 ] \
