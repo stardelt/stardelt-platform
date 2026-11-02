@@ -86,7 +86,8 @@ ensure_secret airflow-admin username=admin password=@rand
 # Nova Deployment references it unconditionally (NOVA_AIRFLOW_PASSWORD), so a
 # namespace without it leaves Nova in CreateContainerConfigError — `install-core`
 # does not install Airflow, but it does install Nova. Generated once and kept, like
-# the rest; the matching Airflow user is created when Airflow is installed.
+# the rest; the matching Airflow user is created by the chart's createUserJob when Airflow is
+# installed (helm-values/airflow.yaml, platform#476).
 ensure_secret airflow-nova-api username=nova-api password=@rand
 
 # Superset. `superset 0.15.5` has no Secret-name field for its secret key; the
