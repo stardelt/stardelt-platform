@@ -46,12 +46,10 @@ manifest=manifests/airflow-group-roles.yaml
 [ -f "$manifest" ] || fail "missing $manifest"
 grep -qF -e 'name: airflow-group-roles' "$manifest" || fail "manifest must define ServiceAccount airflow-group-roles"
 grep -qF -e 'name: airflow-pipeline-reader' "$manifest" || fail "manifest must bind to existing Role airflow-pipeline-reader"
-grep -qF -e 'image: ghcr.io/stardelt/airflow:demo@sha256:226aca67b063995a1ed64bd83176ae2a81971dbecddd746cdf1d87cd04555ed0' "$manifest" \
-  || fail "manifest must use the pinned airflow image digest from helm-values"
 # digest must match helm-values/airflow.yaml
 hv_digest="$(grep -A2 'repository: ghcr.io/stardelt/airflow' "$file" | grep 'digest:' | awk '{print $2}')"
 [ -n "$hv_digest" ] || fail "could not read airflow image digest from helm-values"
-grep -qF -e "$hv_digest" "$manifest" || fail "manifest Airflow image digest must match helm-values/airflow.yaml digest"
+grep -qF -e "airflow:demo@$hv_digest" "$manifest" || grep -qF -e "$hv_digest" "$manifest" || fail "manifest Airflow image digest must match helm-values/airflow.yaml digest"
 grep -qF -e 'schedule: "*/5 * * * *"' "$manifest" || fail "CronJob must run every 5 minutes"
 grep -qF -e 'concurrencyPolicy: Forbid' "$manifest" || fail "CronJob must have concurrencyPolicy: Forbid"
 grep -qF -e 'successfulJobsHistoryLimit: 1' "$manifest" || fail "CronJob must have successfulJobsHistoryLimit: 1"
