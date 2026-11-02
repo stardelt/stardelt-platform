@@ -291,6 +291,12 @@ report() {
 #     flow changing anything.
 #   * Helm's own release secrets (sh.helm.release.v1.*) are Helm's history of
 #     the release: every `helm upgrade` writes a new one, whatever it changed.
+#   * Deployments, StatefulSets and DaemonSets are compared as a whole object
+#     without `.status`, `metadata.resourceVersion`, `metadata.generation` and
+#     `metadata.managedFields`: a readiness flap under load writes the status
+#     and moves the resourceVersion, and that is not the flow changing anything
+#     (platform#479), while a changed image, variable, replica count, label or
+#     annotation still shows.
 SNAPSHOT_KINDS="deployments statefulsets daemonsets configmaps secrets serviceaccounts
 services roles rolebindings networkpolicies persistentvolumeclaims certificates issuers
 cronjobs scheduledbackups.postgresql.cnpg.io clusters.postgresql.cnpg.io
@@ -305,6 +311,13 @@ snapshot() {
       cronjobs|scheduledbackups.postgresql.cnpg.io|clusters.postgresql.cnpg.io)
         out="$(kubectl -n "$NAMESPACE" get "$kind" -o json 2>/dev/null \
           | jq -r '.items[] | "\(.metadata.name)=" + (.spec | tostring | @base64)' 2>/dev/null)" || continue
+        ;;
+      deployments|statefulsets|daemonsets)
+        out="$(kubectl -n "$NAMESPACE" get "$kind" -o json 2>/dev/null \
+          | jq -c '.items[] | del(.status, .metadata.resourceVersion, .metadata.generation, .metadata.managedFields)' 2>/dev/null \
+          | while IFS= read -r object; do
+              printf '%s=%s\n' "$(printf '%s' "$object" | jq -r .metadata.name)" "$(printf '%s' "$object" | cksum | cut -d' ' -f1)"
+            done)" || continue
         ;;
       secrets)
         out="$(kubectl -n "$NAMESPACE" get "$kind" -o json 2>/dev/null \
