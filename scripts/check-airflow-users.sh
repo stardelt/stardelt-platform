@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Fail when the Airflow create-user Job in helm-values/airflow.yaml would not create the `nova-api`
-# service user: read-only (Viewer), with the username and password of the airflow-nova-api Secret,
-# and with its password reset to the Secret's value when the user already exists (platform#476).
+# service user: Viewer's read permissions plus the `nova-service` role that lets Nova trigger and
+# pause DAGs (platform#496), with the username and password of the airflow-nova-api Secret, and
+# with its password reset to the Secret's value when the user already exists (platform#476).
 # A clean install without this user leaves Nova's Pipelines page with HTTP 401 from Airflow.
 # It also checks that people who sign in are `stardelt-member`, not `Viewer`: the global read on
 # DAGs and DAG Runs of a plain Viewer shows every group's DAGs, runs, logs and code (platform#477).
@@ -29,10 +30,19 @@ fail() {
 [ "$(grep -cF -e 'AUTH_USER_REGISTRATION_ROLE = "stardelt-member"' "$file")" -eq 1 ] \
   || fail "the registration role must be stardelt-member: a plain Viewer sees every group's DAGs"
 grep -qF -e 'sm.add_role("stardelt-member")' "$file" || fail "createUserJob must create the role stardelt-member"
-[ "$(printf '%s\n' "$block" | grep -cF -e 'sm.find_role("Viewer").permissions')" -eq 1 ] \
-  || fail "stardelt-member must be built from the permissions of Viewer"
+[ "$(printf '%s\n' "$block" | grep -cF -e 'sm.find_role("Viewer").permissions')" -eq 2 ] \
+  || fail "stardelt-member and nova-service must be built from the permissions of Viewer"
 [ "$(printf '%s\n' "$block" | grep -cF -e 'GLOBAL = {("can_read", "DAGs"), ("can_read", "DAG Runs")}')" -eq 1 ] \
   || fail "stardelt-member must not hold the global read on DAGs and DAG Runs"
+
+# platform#496: Nova's service identity may trigger (can_create on DAG Runs) and pause
+# (can_edit on DAGs); Nova's own routes check the caller's owner group first.
+grep -qF -e 'sm.find_role("nova-service")' "$file" || fail "createUserJob must create the role nova-service"
+grep -qF -e 'NOVA_WRITE = (("can_edit", "DAGs"), ("can_create", "DAG Runs"))' "$file" \
+  || fail "nova-service must grant can_edit on DAGs and can_create on DAG Runs"
+grep -qF -e 'sm.find_user(username=os.environ["AIRFLOW_NOVA_API_USERNAME"])' "$file" \
+  || fail "nova-service must be assigned to the nova-api user"
+grep -qF -e 'sm.update_user(user)' "$file" || fail "the nova-service assignment must be persisted"
 
 # platform#477 S1b checks
 [ "$(grep -cF -e 'AUTH_ROLES_MAPPING = {_admin_group: ["Admin"]}' "$file")" -eq 0 ] \
