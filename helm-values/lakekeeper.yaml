@@ -123,16 +123,26 @@ OPABridge:
 
       # The catalog owner group may roll a table back (platform#444 decision: administrators
       # and catalog managers). The chart's allow_table_procedure list has no
-      # ROLLBACK_TO_SNAPSHOT, so the default deny reached Trino even though Nova allowed the
-      # owner. `manage_grants` is the owner's catalog grant (design/multitenant-catalogs.md
-      # §5.3); writers and readers do not hold it, so a rollback stays a manager action.
+      # ROLLBACK_TO_SNAPSHOT, and Lakekeeper's warehouse batch-check has no `manage_grants`
+      # action, so this is answered from the access table's `manage` list (the owner group's
+      # members, access-sync-job.py) plus `all` (administrators) — the same table the front
+      # policy reads. A missing or stale table leaves the rule undefined and the procedure
+      # denied.
       allow_table_procedure if {
       	input.action.operation == "ExecuteTableProcedure"
       	input.action.resource.function.functionName == "ROLLBACK_TO_SNAPSHOT"
       	table := input.action.resource.table.tableName
       	is_metadata_table(table) == false
       	catalog := input.action.resource.table.catalogName
-      	require_catalog_access_simple(catalog, "manage_grants")
+      	user := input.context.identity.user
+      	manage := {u | some u in data.stardelt.access.catalogs[catalog].manage}
+      	admins := {u | some u in data.stardelt.access.catalogs[catalog].all}
+      	user in (manage | admins)
+      	generated_at := data.stardelt.access.generatedAt
+      	is_number(generated_at)
+      	age := time.now_ns() - (generated_at * 1000000000)
+      	age < 360 * 1000000000
+      	age > -60 * 1000000000
       }
     stardelt.front.rego: |
       package stardelt
