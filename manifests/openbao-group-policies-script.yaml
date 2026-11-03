@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openbao-group-policies-script
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+data: {}
