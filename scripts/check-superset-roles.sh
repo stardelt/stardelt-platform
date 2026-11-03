@@ -27,6 +27,7 @@ grep -qF -e '_AuthRolesMapping' "$file" || fail "superset values must use _AuthR
 grep -qF -e 'stardelt-group-' "$file" || fail "mapping must add group roles"
 
 grep -qF -e 'superset-group-roles.py' "$file" || fail "init job must run superset-group-roles.py"
+grep -qF -e 'serviceAccountName: superset' "$file" || fail "superset values must run the pods as the superset ServiceAccount"
 
 [ -f "$manifest" ] || fail "missing $manifest"
 grep -qF -e 'name: superset-group-roles' "$manifest" || fail "manifest must define superset-group-roles"
@@ -35,6 +36,13 @@ if ! (grep -qF -e 'catalogs' "$manifest" && grep -qF -e 'get' "$manifest" && gre
 fi
 grep -qF -e 'CronJob' "$manifest" || fail "manifest must define a CronJob"
 grep -qF -e 'concurrencyPolicy: Forbid' "$manifest" || fail "cronjob must have concurrencyPolicy: Forbid"
+grep -qF -e 'serviceAccountName: superset' "$manifest" || fail "the Job must run as the superset ServiceAccount"
+grep -qF -e 'name: ghcr-creds' "$manifest" || fail "the Job must use the image pull secret"
+grep -qF -e 'name: superset-env' "$manifest" || fail "the Job must read the chart's superset-env Secret"
+grep -qF -e 'name: superset-secret-key' "$manifest" || fail "the Job must set SUPERSET_SECRET_KEY"
+grep -qF -e 'secretName: superset-config' "$manifest" || fail "the Job must mount the Superset config Secret"
+grep -qF -e '/app/configs/superset-group-roles.py' "$manifest" || fail "the Job must run the chart-mounted script"
+if grep -qF -e 'placeholder' "$manifest"; then fail "the manifest still carries the placeholder ConfigMap"; fi
 
 hv_digest="$(grep 'tag:' "$file" | grep -o 'sha256:[0-9a-f]\{64\}' | head -1)"
 [ -n "$hv_digest" ] || fail "could not find superset image digest in values"

@@ -393,6 +393,9 @@ step-airflow: ## Airflow and the pipeline templates
 
 step-superset: ## Superset
 	@echo "› Superset"
+	@# The ServiceAccount and the read-only Catalogs Role must exist before the chart's
+	@# init Job runs (it converges the group roles); the CronJob keeps later groups in sync.
+	@kubectl apply -f manifests/superset-group-roles.yaml >/dev/null
 	@# The init Job's role script lives in the repo (#287); --set-file puts it into
 	@# the extra-config ConfigMap so Helm carries it and there is one copy to edit.
 	@helm upgrade --install superset superset/superset \
