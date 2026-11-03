@@ -508,6 +508,17 @@ class BridgePolicyTest(unittest.TestCase):
         self.assertIs(self.front(catalog_body("sub-steward", "gold"), table), False)
         self.assertEqual(self.stub.authorized(), 0, "the catalog-level deny is decisive")
 
+    def test_a_stale_table_denies_the_rollback(self):
+        """The rule reads the table; an old table must not keep granting the owner."""
+        table = access_table(now=0)
+        front, upstream = self.both(
+            procedure_body("sub-steward", "ROLLBACK_TO_SNAPSHOT", "gold", "retail_demo",
+                           "taxi_daily_metrics"),
+            table,
+        )
+        self.assertIs(front, False)
+        self.assertIs(upstream, False)
+
     def test_the_catalog_owner_may_roll_a_table_back_but_a_writer_may_not(self):
         """The #444 decision: the owner group (manage_grants) and admins may roll back."""
         table = access_table()

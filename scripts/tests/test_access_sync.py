@@ -1163,12 +1163,20 @@ class CatalogVerbListsTest(JobTestCase):
         self.assertEqual(lists["write"], ["sub-etl"])
         self.assertEqual(lists["create"], ["sub-build"])
 
-    def test_the_owner_group_holds_no_verb(self):
-        """Ownership is `manage_grants` and must not imply reading (design §5.3)."""
+    def test_the_owner_group_holds_no_data_verb_but_is_in_manage(self):
+        """Ownership is `manage_grants` and must not imply reading (design §5.3).
+
+        `manage` is not a Lakekeeper verb; it is the owner list the bridge uses for
+        actions reserved to the catalog's managers (table rollback, platform#444).
+        """
         lists = access_sync.catalog_verb_lists(
             {"owner": "finops", "grants": []}, {"finops": {"sub-finops"}}, {}
         )
-        self.assertEqual(lists, {"browse": [], "select": [], "write": [], "create": []})
+        self.assertEqual(
+            {verb: lists[verb] for verb in ("browse", "select", "write", "create")},
+            {"browse": [], "select": [], "write": [], "create": []},
+        )
+        self.assertEqual(lists["manage"], ["sub-finops"])
 
     def test_a_static_assignee_is_its_own_user_string(self):
         """`superset` has no Keycloak user: the table holds the string Trino sends."""
@@ -1188,6 +1196,7 @@ class CatalogVerbListsTest(JobTestCase):
         )
         self.assertEqual(lists["browse"], ["sub-finops"])
         self.assertEqual(lists["select"], [])
+        self.assertEqual(lists["manage"], ["sub-finops"])
 
     def test_an_unknown_verb_is_ignored(self):
         lists = access_sync.catalog_verb_lists(

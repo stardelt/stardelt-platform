@@ -656,7 +656,10 @@ def catalog_verb_lists(spec, members, static):
     The union is over the groups the spec grants a verb to, with each verb widened
     to what it implies in Lakekeeper (`write` also gives `select` and `browse`, so
     a person who may write can also see the catalog). The owner group is not in
-    here: ownership is `manage_grants` and grants no data right.
+    the four data verbs: ownership is `manage_grants` and grants no data right.
+    It is published separately as `manage`, for actions the engine allows to the
+    catalog's managers only (table rollback, platform#444); `manage` is not a
+    Lakekeeper action, so the bridge must not ask Lakekeeper for it.
     """
     held = {}
     for grant in (spec or {}).get("grants") or []:
@@ -669,7 +672,9 @@ def catalog_verb_lists(spec, members, static):
         for verb in verbs:
             for effective in IMPLIED_VERBS[verb]:
                 lists[effective] |= users
-    return {verb: sorted(lists[verb]) for verb in TABLE_VERBS}
+    owner = (spec or {}).get("owner")
+    manage = group_users(owner, members, static) if owner else set()
+    return {verb: sorted(lists[verb]) for verb in TABLE_VERBS} | {"manage": sorted(manage)}
 
 
 def access_table(catalogs, members, static):
