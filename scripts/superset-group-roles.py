@@ -94,6 +94,16 @@ def converge(current, want, granted):
     return sorted(keep - current), sorted(current - keep)
 
 
+def database_perms(granted):
+    """The database perm strings in a `grants(...)` set (datasource perms dropped).
+
+    `grants` returns `(permission, view-menu)` tuples; the dashboard side holds
+    `Database.perm` strings. Mixing the two makes every subset check false and every
+    dashboard admin-only, which is how the first live run behaved.
+    """
+    return {perm for permission, perm in granted if permission == "database_access"}
+
+
 def dashboard_roles(chart_databases, role_databases):
     """The group roles that may see a dashboard: every chart's database must be covered.
 
@@ -169,7 +179,7 @@ def main():
             # Get datasets for this database
             tables = db.session.query(SqlaTable).filter(SqlaTable.database_id == db_obj.id).all()
             granted_all = grants([db_obj.perm], [t.perm for t in tables])
-            granted = {p for p in granted_all if p[0] == "database_access"}
+            granted = database_perms(granted_all)
             want = set()  # per-group roles only get what's granted for this catalog; they also get Gamma/stardelt-analyst via mapping? The ticket says "stardelt-analyst keeps Gamma + SQL Lab but loses the blanket..." and group roles carry catalogs. Also in mapping we add the group role to users in that group - so the role itself needs the permissions.
             for grp in sorted(groups):
                 role_name = f"stardelt-group-{grp}"
