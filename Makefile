@@ -399,7 +399,8 @@ step-superset: ## Superset
 	  --version $(SUPERSET_VERSION) \
 	  $(HELM_FLAGS) \
 	  -f helm-values/superset.yaml \
-	  --set-file "extraConfigs.superset-analyst-role\.py=scripts/superset-analyst-role.py"
+	  --set-file "extraConfigs.superset-analyst-role\.py=scripts/superset-analyst-role.py" \
+	  --set-file "extraConfigs.superset-group-roles\.py=scripts/superset-group-roles.py"
 
 step-pgdump: ## The daily logical dumps of the Airflow and Superset databases
 	@echo "› Postgres dumps: Superset and Airflow databases (daily, 14 days)"
