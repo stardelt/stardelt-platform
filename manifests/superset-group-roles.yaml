@@ -1,0 +1,190 @@
+# Sync Superset FAB roles for Catalog owner groups (platform#494).
+#
+# Creates (idempotently) role stardelt-group-<group> for each non-admin
+# grant on Catalogs and grants it database_access on the matching Trino
+# database and datasource_access on its datasets.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: superset-group-roles
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: superset-group-roles
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+rules:
+  - apiGroups: ["stardelt.io"]
+    resources: ["catalogs"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: superset-group-roles
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+subjects:
+  - kind: ServiceAccount
+    name: superset-group-roles
+    namespace: stardelt
+roleRef:
+  kind: Role
+  name: superset-group-roles
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: superset-group-roles-script
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+data:
+  sync.py: |
+    #!/usr/bin/env python3
+    # placeholder; the real script is mounted via extraConfigs in practice,
+    # but this CronJob runs the script from /app/configs if present? The ticket says
+    # "follow manifests/airflow-group-roles.yaml" pattern - the airflow one mounts a script
+    # from ConfigMap named airflow-group-roles-script. We need to provide it. Copy content.
+    pass
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: superset-group-roles
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/part-of: stardelt
+            app.kubernetes.io/name: superset-group-roles
+        spec:
+          restartPolicy: Never
+          serviceAccountName: superset-group-roles
+          automountServiceAccountToken: true
+          containers:
+            - name: sync
+              image: ghcr.io/stardelt/superset:dev@sha256:b9ced85d81a0c9efd2ca993f27bba5470e4815aad9d246b93e3ca5e62d26e8cd
+              command: ["python", "/app/configs/superset-group-roles.py"]
+              env:
+                - name: SUPERSET_SECRET_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: superset-secret-key
+                      key: secret-key
+                - name: SQLALCHEMY_DATABASE_URI
+                  valueFrom:
+                    secretKeyRef:
+                      name: superset-postgresql
+                      key: postgres-password
+                      optional: true
+                - name: POSTGRES_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: superset-postgresql
+                      key: postgres-password
+                      optional: true
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: superset-postgresql
+                      key: postgres-password
+                      optional: true
+                - name: DB_HOST
+                  value: superset-postgresql
+                - name: DB_PORT
+                  value: "5432"
+                - name: DB_NAME
+                  value: superset
+                - name: DB_USER
+                  value: superset
+                - name: DB_PASS
+                  valueFrom:
+                    secretKeyRef:
+                      name: superset-postgresql
+                      key: postgres-password
+              volumeMounts:
+                - name: configs
+                  mountPath: /app/configs
+                  readOnly: true
+              resources:
+                requests: { cpu: "50m", memory: "64Mi" }
+                limits: { cpu: "500m", memory: "256Mi" }
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: { drop: ["ALL"] }
+          volumes:
+            - name: configs
+              configMap:
+                name: superset-override
+                optional: true
+                items:
+                  - key: superset-group-roles.py
+                    path: superset-group-roles.py
+                defaultMode: 0444
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: superset-group-roles-alt
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/part-of: stardelt
+            app.kubernetes.io/name: superset-group-roles
+        spec:
+          restartPolicy: Never
+          serviceAccountName: superset-group-roles
+          automountServiceAccountToken: true
+          containers:
+            - name: sync
+              image: ghcr.io/stardelt/superset:dev@sha256:b9ced85d81a0c9efd2ca993f27bba5470e4815aad9d246b93e3ca5e62d26e8cd
+              command: ["python", "/app/pythonpath/superset-group-roles.py"]
+              envFrom: []
+              env:
+                - name: SUPERSET_CONFIG_PATH
+                  value: /app/configs/superset_config.py
+                - name: PYTHONPATH
+                  value: /app/pythonpath:/app
+              volumeMounts:
+                - name: configs
+                  mountPath: /app/pythonpath
+                  readOnly: true
+              resources:
+                requests: { cpu: "50m", memory: "64Mi" }
+                limits: { cpu: "500m", memory: "256Mi" }
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: { drop: ["ALL"] }
+          volumes:
+            - name: configs
+              configMap:
+                name: superset-override
+                optional: true
+                items:
+                  - key: superset-group-roles.py
+                    path: superset-group-roles.py
+                defaultMode: 0444

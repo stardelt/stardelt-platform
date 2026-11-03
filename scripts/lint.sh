@@ -77,4 +77,8 @@ bash scripts/check-stardelt-pin.sh
 echo "› script: check-airflow-users"
 bash scripts/check-airflow-users.sh
 
+# Per-group Superset roles scope dashboards and databases (platform#494).
+echo "› script: check-superset-roles"
+bash scripts/check-superset-roles.sh
+
 echo "lint: OK"
