@@ -26,6 +26,10 @@ rules:
     resourceNames: ["openbao-init"]
     verbs: ["get"]
   - apiGroups: [""]
+    resources: ["pods"]
+    resourceNames: ["openbao-0"]
+    verbs: ["get"]
+  - apiGroups: [""]
     resources: ["pods/exec"]
     resourceNames: ["openbao-0"]
     verbs: ["create"]
@@ -70,11 +74,14 @@ spec:
           automountServiceAccountToken: true
           containers:
             - name: sync
-              image: ghcr.io/stardelt/airflow:demo@sha256:2d9504d1a88770bbea76c64dae7cd64c2fb6097c19bc20d19d5b0314c5d4c33f
+              image: alpine/k8s:1.37.1
               command: ["bash", "/opt/scripts/sync.sh"]
               env:
                 - name: NAMESPACE
                   valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
+                # The ConfigMap mounts the policy files flat in /opt/scripts.
+                - name: POLICIES
+                  value: /opt/scripts
               volumeMounts:
                 - name: scripts
                   mountPath: /opt/scripts
