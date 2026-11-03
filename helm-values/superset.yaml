@@ -32,6 +32,11 @@ image:
 imagePullSecrets:
   - name: ghcr-creds
 
+# The Superset pods and the chart's init Job run as this ServiceAccount so the
+# group-roles script (manifests/superset-group-roles.yaml, CronJob every 5 min)
+# may list Catalog objects. The chart's own ServiceAccount stays off.
+serviceAccountName: superset
+
 bootstrapScript: |
   #!/bin/bash
   if [ ! -f ~/bootstrap ]; then echo "Running Superset" > ~/bootstrap; fi
@@ -343,6 +348,16 @@ extraConfigs:
     - database_name: Trino Warehouse
       sqlalchemy_uri: trino://superset@trino.alpha.dev.stardelt.io:443/warehouse
       impersonate_user: true
+    # The analyst role (scripts/superset-analyst-role.py) grants the `shared`
+    # catalog only; without this entry the init Job fails loudly ("no Trino
+    # database for catalog shared"). Use-case catalogs get their own entries when
+    # they are created (the live `Trino Mobility` was added by hand).
+    - database_name: Trino Shared
+      sqlalchemy_uri: trino://superset@trino.alpha.dev.stardelt.io:443/shared
+      impersonate_user: true
+      extra: >-
+        {"allow_multi_catalog": true, "metadata_params": {}, "engine_params": {},
+         "metadata_cache_timeout": {}, "schemas_allowed_for_csv_upload": []}
       extra: >-
         {"allow_multi_catalog": true, "metadata_params": {}, "engine_params": {},
         "metadata_cache_timeout": {}, "schemas_allowed_for_file_upload": []}
