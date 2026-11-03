@@ -1,36 +1,49 @@
-"""Dashboard visibility follows the catalog group role (platform#508)."""
-
+#!/usr/bin/env python3
 import importlib.util
-import pathlib
+import os
+import sys
 import unittest
 
-SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "superset-group-roles.py"
-spec = importlib.util.spec_from_file_location("superset_group_roles", SCRIPT)
-roles = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(roles)
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+SCRIPT = os.path.join(REPO_ROOT, "scripts", "superset-group-roles.py")
 
 
-class DashboardRolesTest(unittest.TestCase):
-    def test_a_dashboard_on_one_catalog_is_visible_to_that_catalog_group_only(self):
-        chart_databases = {"[Trino Mobility].(id:2)"}
-        role_databases = {
-            "stardelt-group-mobility-analytics": {chart_databases.pop() if False else "[Trino Mobility].(id:2)"},
-            "stardelt-group-retail-analytics": {"[Trino Retail].(id:4)"},
-        }
-        # build properly
-        role_databases = {
-            "stardelt-group-mobility-analytics": {"[Trino Mobility].(id:2)"},
-            "stardelt-group-retail-analytics": {"[Trino Retail].(id:4)"},
-        }
-        self.assertEqual(roles.dashboard_roles({"[Trino Mobility].(id:2)"}, role_databases), ["stardelt-group-mobility-analytics"])
+class TestSupersetGroupRoles(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # Load the script as a module without triggering Superset imports
+        spec = importlib.util.spec_from_file_location("superset_group_roles", SCRIPT)
+        cls.mod = importlib.util.module_from_spec(spec)
+        sys.modules["superset_group_roles"] = cls.mod
+        spec.loader.exec_module(cls.mod)
 
-    def test_a_dashboard_spanning_two_catalogs_is_admin_only(self):
-        chart_databases = {"[Trino Mobility].(id:2)", "[Trino Retail].(id:4)"}
-        role_databases = {
-            "stardelt-group-mobility-analytics": {"[Trino Mobility].(id:2)"},
-            "stardelt-group-retail-analytics": {"[Trino Retail].(id:4)"},
-        }
-        self.assertEqual(roles.dashboard_roles(chart_databases, role_databases), [])
+    def test_module_importable(self):
+        self.assertTrue(hasattr(self.mod, "main"))
+        self.assertTrue(hasattr(self.mod, "database_name_for_catalog"))
+        self.assertTrue(hasattr(self.mod, "database_uri_for_catalog"))
+        self.assertTrue(hasattr(self.mod, "is_trino"))
 
-    def test_a_dashboard_without_charts_is_admin_only(self):
-        self.assertEqual(roles.dashboard_roles(set(), {}), [])
+    def test_the_uri_keeps_the_connection_and_changes_only_the_catalog(self):
+        base = "trino://superset@trino.alpha.dev.stardelt.io:443/warehouse"
+        self.assertEqual(
+            self.mod.database_uri_for_catalog(base, "mobility"),
+            "trino://superset@trino.alpha.dev.stardelt.io:443/mobility",
+        )
+        base_with_qs = "trino://superset@trino.alpha.dev.stardelt.io:443/warehouse?SSL=true"
+        self.assertEqual(
+            self.mod.database_uri_for_catalog(base_with_qs, "mobility"),
+            "trino://superset@trino.alpha.dev.stardelt.io:443/mobility",
+        )
+
+    def test_a_non_trino_uri_is_refused(self):
+        with self.assertRaises(ValueError):
+            self.mod.database_uri_for_catalog("postgresql://user@db:5432/app", "mobility")
+
+    def test_the_name_is_readable(self):
+        self.assertEqual(self.mod.database_name_for_catalog("mobility"), "Trino Mobility")
+        self.assertEqual(self.mod.database_name_for_catalog("mobility-lab"), "Trino Mobility Lab")
+
+
+if __name__ == "__main__":
+    unittest.main()

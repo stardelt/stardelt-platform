@@ -65,6 +65,24 @@ def is_trino(uri):
     return str(uri or "").lower().startswith("trino://")
 
 
+def database_name_for_catalog(catalog):
+    """`mobility` -> `Trino Mobility`; the platform's existing row names."""
+    return "Trino " + str(catalog).replace("-", " ").replace("_", " ").title()
+
+
+def database_uri_for_catalog(base_uri, catalog):
+    """The base Trino URI with its path (the catalog) replaced; credentials/host/port stay."""
+    uri = str(base_uri or "")
+    if not is_trino(uri):
+        raise ValueError(f"not a Trino URI: {uri!r}")
+    scheme, rest = uri.split("://", 1)
+    rest = rest.split("?", 1)[0]
+    if "/" not in rest:
+        raise ValueError(f"Trino URI has no catalog path: {uri!r}")
+    prefix = rest.split("/", 1)[0]
+    return f"{scheme}://{prefix}/{catalog}"
+
+
 def grants(databases, tables):
     wanted = {("database_access", perm) for perm in databases}
     wanted |= {("datasource_access", perm) for perm in tables if perm}
@@ -125,8 +143,19 @@ def main():
                 continue
             db_obj = db_by_catalog.get(cat_name)
             if not db_obj:
-                print(f"orphan {cat_name}")
-                continue
+                if not trino_dbs:
+                    raise SystemExit("no Trino database in Superset to copy the connection from")
+                base = trino_dbs[0]
+                db_obj = Database(
+                    database_name=database_name_for_catalog(cat_name),
+                    sqlalchemy_uri=database_uri_for_catalog(base.sqlalchemy_uri, cat_name),
+                    impersonate_user=bool(base.impersonate_user),
+                    extra=base.extra,
+                )
+                db.session.add(db_obj)
+                db.session.commit()
+                db_by_catalog[cat_name] = db_obj
+                print(f"created {db_obj.database_name} for catalog {cat_name}")
             grants_list = spec.get("grants") or []
             groups = set()
             for g in grants_list:
