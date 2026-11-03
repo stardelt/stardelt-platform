@@ -23,6 +23,8 @@ grep -qF -e 'no Trino database for catalog shared' "$analyst" || fail "analyst s
 grep -qF -e 'stardelt-group-' "$groups" || fail "group roles script must create stardelt-group- roles"
 grep -qF -e 'catalogs.stardelt.io' "$groups" || fail "group roles script must list catalogs"
 grep -qF -e 'dashboard_roles' "$groups" || fail "group roles script must converge dashboard roles"
+grep -qF -e 'database_uri_for_catalog' "$groups" || fail "group roles script must create a missing database connection"
+grep -qF -e 'created ' "$groups" || fail "group roles script must report a created database"
 grep -qF -e 'published' "$groups" || fail "only published dashboards are converged"
 
 grep -qF -e '_AuthRolesMapping' "$file" || fail "superset values must use _AuthRolesMapping"
