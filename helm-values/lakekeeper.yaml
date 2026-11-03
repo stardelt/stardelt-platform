@@ -120,6 +120,20 @@ OPABridge:
       	input.context.identity.user == "superset"
       	regex.match(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`, input.action.resource.user.user)
       }
+
+      # The catalog owner group may roll a table back (platform#444 decision: administrators
+      # and catalog managers). The chart's allow_table_procedure list has no
+      # ROLLBACK_TO_SNAPSHOT, so the default deny reached Trino even though Nova allowed the
+      # owner. `manage_grants` is the owner's catalog grant (design/multitenant-catalogs.md
+      # §5.3); writers and readers do not hold it, so a rollback stays a manager action.
+      allow_table_procedure if {
+      	input.action.operation == "ExecuteTableProcedure"
+      	input.action.resource.function.functionName == "ROLLBACK_TO_SNAPSHOT"
+      	table := input.action.resource.table.tableName
+      	is_metadata_table(table) == false
+      	catalog := input.action.resource.table.catalogName
+      	require_catalog_access_simple(catalog, "manage_grants")
+      }
     stardelt.front.rego: |
       package stardelt
 
