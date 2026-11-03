@@ -407,7 +407,8 @@ host_preflight() {
     printf '                   and the install hangs on the databases.\n'
     printf '  check          : sudo journalctl -k --since "-10 min" | grep -i "apparmor"\n'
     printf '  ways out       : 1. boot the previous kernel and hold the new one\n'
-    printf '                   2. disable_apparmor = true in the k3s containerd template, restart k3s\n'
+    printf '                   2. sudo scripts/enable-apparmor.sh --apply [--restart]  (writes the k3s\n'
+    printf '                      containerd template; containers run unconfined on this node)\n'
     printf '                   3. securityContext.appArmorProfile: Unconfined per pod (many pods)\n'
     printf '  documented     : getting-started/prerequisites, "Host OS, kernel and AppArmor"\n'
   } >&2
