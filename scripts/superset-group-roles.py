@@ -76,6 +76,19 @@ def converge(current, want, granted):
     return sorted(keep - current), sorted(current - keep)
 
 
+def dashboard_roles(chart_databases, role_databases):
+    """The group roles that may see a dashboard: every chart's database must be covered.
+
+    `chart_databases` is the set of database perms the dashboard's charts read;
+    `role_databases` maps a role name to the database perms it holds. An empty chart set
+    (no chart, or a chart without a resolvable Trino datasource) has no group owner and
+    stays admin-only: [].
+    """
+    if not chart_databases:
+        return []
+    return sorted(role for role, dbs in role_databases.items() if chart_databases <= dbs)
+
+
 def main():
     from superset.app import create_app
 
@@ -103,6 +116,7 @@ def main():
 
         names_fn = lambda r: {(p.permission.name, p.view_menu.name) for p in r.permissions}
 
+        role_databases = {}
         for cat in catalogs:
             meta = cat.get("metadata") or {}
             spec = cat.get("spec") or {}
@@ -125,12 +139,13 @@ def main():
                 continue
             # Get datasets for this database
             tables = db.session.query(SqlaTable).filter(SqlaTable.database_id == db_obj.id).all()
-            granted = grants([db_obj.perm], [t.perm for t in tables])
+            granted_all = grants([db_obj.perm], [t.perm for t in tables])
+            granted = {p for p in granted_all if p[0] == "database_access"}
             want = set()  # per-group roles only get what's granted for this catalog; they also get Gamma/stardelt-analyst via mapping? The ticket says "stardelt-analyst keeps Gamma + SQL Lab but loses the blanket..." and group roles carry catalogs. Also in mapping we add the group role to users in that group - so the role itself needs the permissions.
             for grp in sorted(groups):
                 role_name = f"stardelt-group-{grp}"
                 role = sm.find_role(role_name) or sm.add_role(role_name)
-                add, remove = converge(names_fn(role), want, granted)
+                add, remove = converge(names_fn(role), want, granted_all)
                 for n, v in add:
                     pv = sm.find_permission_view_menu(n, v)
                     if pv:
@@ -139,8 +154,31 @@ def main():
                     pv = sm.find_permission_view_menu(n, v)
                     if pv:
                         sm.del_permission_role(role, pv)
+                role_databases.setdefault(role_name, set()).update(granted)
                 print(f"role {role_name}: {len(role.permissions)} permissions (db {db_obj.database_name})")
-        sm.get_session.commit()
+        from superset.models.dashboard import Dashboard
+
+        for dashboard in db.session.query(Dashboard).filter(Dashboard.published.is_(True)).all():
+            chart_dbs = set()
+            unresolved = False
+            for chart in dashboard.slices:
+                ds = chart.datasource
+                if ds is None or getattr(ds, "database", None) is None:
+                    unresolved = True
+                    continue
+                if not is_trino(ds.database.sqlalchemy_uri):
+                    unresolved = True
+                    continue
+                chart_dbs.add(ds.database.perm)
+            names = [] if unresolved else dashboard_roles(chart_dbs, role_databases)
+            wanted = [sm.find_role(name) for name in names]
+            if [r.name for r in dashboard.roles] != names:
+                dashboard.roles = [r for r in wanted if r is not None]
+                db.session.commit()
+                print(f"dashboard {dashboard.dashboard_title}: {names or 'admin-only'}")
+            else:
+                print(f"dashboard {dashboard.dashboard_title}: {names or 'admin-only'}")
+        db.session.commit()
         print("superset-group-roles: done")
 
 
