@@ -1,11 +1,12 @@
-# The dev seed's baseline catalogs (platform#309, layout decision platform#365):
-# the maintainer's live layout — `warehouse`, `shared`, `bronze`, `silver`, `gold`
-# — each owned by `stardelt-admins` and granted the four data verbs to the realm's
-# default group `stardelt-users`. Nothing else.
+# The dev seed's baseline catalogs (platform#309, layout decision platform#365; revised 2026-11-03
+# after platform#495): `warehouse` is the platform's technical/system catalog — administrators
+# only — and `shared` is the one shared area for every signed-in person. Domains create their own
+# catalogs (the use-case pattern: `mobility`, `retail`); there are no default bronze/silver/gold
+# layers, because a default layer is a shared write area, not a tenant boundary.
 #
 # This file is the baseline, not something every seed run applies: `make
-# seed-dev-access YES=1` creates groups, people and their Secret and leaves the
-# Catalog objects alone. Only `SEED_CATALOGS=1 make seed-dev-access YES=1` applies
+# seed-dev-access YES=1` creates groups, people and their Secret and leaves the Catalog
+# objects alone. Only `SEED_CATALOGS=1 make seed-dev-access YES=1` applies
 # this file (that is how a deleted baseline catalog comes back). The
 # differentiated permission fixtures — `finance`, `product`, `sandbox` — are opt-in
 # and live in `dev/seed/fixtures/permission-fixtures.yaml`:
@@ -28,13 +29,13 @@ metadata:
 spec:
   lakehouseRef: { name: main }
   displayName: "Warehouse"
-  description: "The platform's first catalog, adopted from the Lakekeeper warehouse of the same name."
+  description: "The platform's technical/system catalog (Lakekeeper's warehouse of the same name). Administrators only: it holds platform metadata, not tenant data."
   owner: stardelt-admins
   grants:
-    - { group: stardelt-users, verb: browse }
-    - { group: stardelt-users, verb: select }
-    - { group: stardelt-users, verb: write }
-    - { group: stardelt-users, verb: create }
+    - { group: stardelt-admins, verb: browse }
+    - { group: stardelt-admins, verb: select }
+    - { group: stardelt-admins, verb: write }
+    - { group: stardelt-admins, verb: create }
 ---
 apiVersion: stardelt.io/v1alpha1
 kind: Catalog
@@ -44,55 +45,7 @@ metadata:
 spec:
   lakehouseRef: { name: main }
   displayName: "Shared"
-  description: "One shared catalog for everyone; administrators own it."
-  owner: stardelt-admins
-  grants:
-    - { group: stardelt-users, verb: browse }
-    - { group: stardelt-users, verb: select }
-    - { group: stardelt-users, verb: write }
-    - { group: stardelt-users, verb: create }
----
-apiVersion: stardelt.io/v1alpha1
-kind: Catalog
-metadata:
-  name: bronze
-  namespace: stardelt
-spec:
-  lakehouseRef: { name: main }
-  displayName: "Bronze"
-  description: "Medallion layer: bronze."
-  owner: stardelt-admins
-  grants:
-    - { group: stardelt-users, verb: browse }
-    - { group: stardelt-users, verb: select }
-    - { group: stardelt-users, verb: write }
-    - { group: stardelt-users, verb: create }
----
-apiVersion: stardelt.io/v1alpha1
-kind: Catalog
-metadata:
-  name: silver
-  namespace: stardelt
-spec:
-  lakehouseRef: { name: main }
-  displayName: "Silver"
-  description: "Medallion layer: silver."
-  owner: stardelt-admins
-  grants:
-    - { group: stardelt-users, verb: browse }
-    - { group: stardelt-users, verb: select }
-    - { group: stardelt-users, verb: write }
-    - { group: stardelt-users, verb: create }
----
-apiVersion: stardelt.io/v1alpha1
-kind: Catalog
-metadata:
-  name: gold
-  namespace: stardelt
-spec:
-  lakehouseRef: { name: main }
-  displayName: "Gold"
-  description: "Medallion layer: gold."
+  description: "One shared catalog for everyone; administrators own it. Not tenant-isolated by design — anyone may read and write here."
   owner: stardelt-admins
   grants:
     - { group: stardelt-users, verb: browse }
