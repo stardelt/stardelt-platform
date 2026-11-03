@@ -40,6 +40,21 @@ class TestSupersetGroupRoles(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.mod.database_uri_for_catalog("postgresql://user@db:5432/app", "mobility")
 
+    def test_database_perms_drops_datasource_entries_and_dashboard_roles_match_strings(self):
+        granted = {
+            ("database_access", "[Trino Mobility].(id:2)"),
+            ("datasource_access", "[Trino Mobility].[kpis](id:1)"),
+        }
+        databases = self.mod.database_perms(granted)
+        self.assertEqual(databases, {"[Trino Mobility].(id:2)"})
+        self.assertEqual(
+            self.mod.dashboard_roles(
+                {"[Trino Mobility].(id:2)"},
+                {"stardelt-group-mobility-analytics": databases},
+            ),
+            ["stardelt-group-mobility-analytics"],
+        )
+
     def test_the_name_is_readable(self):
         self.assertEqual(self.mod.database_name_for_catalog("mobility"), "Trino Mobility")
         self.assertEqual(self.mod.database_name_for_catalog("mobility-lab"), "Trino Mobility Lab")
