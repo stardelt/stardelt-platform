@@ -81,4 +81,8 @@ bash scripts/check-airflow-users.sh
 echo "› script: check-superset-roles"
 bash scripts/check-superset-roles.sh
 
+# OpenBao group policies sync (platform#483).
+echo "› script: check-openbao-groups"
+bash scripts/check-openbao-groups.sh
+
 echo "lint: OK"

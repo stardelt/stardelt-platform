@@ -988,6 +988,8 @@ openbao: deps _context _helm-repos ## Install the sandbox secret store (OpenBao,
 	@kubectl -n $(NAMESPACE) wait --for=create --timeout=120s pod/openbao-0
 	@NAMESPACE=$(NAMESPACE) bash scripts/openbao-bootstrap.sh
 	@NAMESPACE=$(NAMESPACE) OWNER_GROUPS="$(OWNER_GROUPS)" bash scripts/openbao-connections.sh
+	@$(MAKE) openbao-group-policies-config
+	@kubectl -n $(NAMESPACE) apply -f manifests/openbao-group-policies.yaml >/dev/null || true
 	@echo "› Nova's address for the store (its own ConfigMap: a platform install must not drop it)"
 	@# The address is deliberately not in manifests/nova-deployment.yaml: that file is
 	@# applied by every install, and a hard-coded URL for the opt-in store made Nova answer
@@ -1333,3 +1335,17 @@ platform-idempotence: ## Prove the install is idempotent: run it again, no resou
 
 upgrade-idempotence: ## Prove the upgrade is safe to run twice: run it again, no resource version moves
 	@bash scripts/platform.sh check upgrade
+
+# Create/refresh ConfigMap with openbao-connections script and templates for group sync (platform#483)
+openbao-group-policies-config: _context
+	@kubectl -n $(NAMESPACE) create configmap openbao-group-policies-script \
+		--from-file=openbao-connections.sh=scripts/openbao-connections.sh \
+		--from-file=sync.sh=scripts/sync-openbao-group-policies.sh \
+		--from-file=connections-group.hcl=scripts/openbao-policies/connections-group.hcl \
+		--from-file=connections-user.hcl=scripts/openbao-policies/connections-user.hcl \
+		--from-file=connections-admin.hcl=scripts/openbao-policies/connections-admin.hcl \
+		--from-file=connections-platform-read.hcl=scripts/openbao-policies/connections-platform-read.hcl \
+		--from-file=connections-breakglass.hcl=scripts/openbao-policies/connections-breakglass.hcl \
+		--from-file=breakglass-role.json=scripts/openbao-policies/breakglass-role.json \
+		--dry-run=client -o yaml | kubectl apply -f - >/dev/null
+	@echo "› openbao-group-policies script/configmap refreshed"
