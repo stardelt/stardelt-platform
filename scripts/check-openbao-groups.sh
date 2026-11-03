@@ -21,7 +21,7 @@ pass
 " 2>&1 | tail -1 >/dev/null
 
 # Use grep-based checks as specified
-grep -q '"catalogs".*"get"' "$manifest" || grep -q "catalogs" "$manifest" && grep -q "get.*list" "$manifest" || true
+# (placeholder check removed)
 # Check explicitly
 grep -A 40 'kind: Role' "$manifest" | grep -q 'catalogs' || { echo "missing catalogs grant" >&2; exit 1; }
 grep -A 40 'kind: Role' "$manifest" | grep -q 'pipelines' || { echo "missing pipelines grant" >&2; exit 1; }
@@ -34,7 +34,7 @@ grep -A 40 'kind: Role' "$manifest" | grep -A 2 '"openbao-0"' "$manifest" | grep
 grep -q 'schedule: "\*/5 \* \* \* \*"' "$manifest" || grep -q "schedule.*\*/5" "$manifest" || { echo "missing schedule */5" >&2; exit 1; }
 
 # token is a secretKeyRef (no literal) - not directly relevant here, but check sync script doesn't pass token as argv
-grep -rn 'BAO_TOKEN' scripts/sync-openbao-group-policies.sh | grep -v '^$' >/dev/null && echo "ok" || true
+grep -rn 'BAO_TOKEN' scripts/sync-openbao-group-policies.sh >/dev/null 2>&1 || true
 # ensure no token in argv/logs
 if grep -rn 'root.*argv\|--token' "$manifest" scripts/sync-openbao-group-policies.sh 2>&1 | grep -v '^$' | grep -v '#'; then
   echo "token may be passed unsafely" >&2
