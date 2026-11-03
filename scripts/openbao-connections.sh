@@ -23,7 +23,7 @@ CONTAINER="${CONTAINER:-openbao}"
 INIT_SECRET=openbao-init
 
 ADMIN_GROUP="${ADMIN_GROUP:-stardelt-admins}"
-POLICIES="$PWD/scripts/openbao-policies"
+POLICIES="${POLICIES:-$PWD/scripts/openbao-policies}"
 
 for tool in kubectl python3 base64; do
   command -v "$tool" >/dev/null 2>&1 || { echo "openbao-connections: $tool not found" >&2; exit 1; }
