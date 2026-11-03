@@ -287,6 +287,12 @@ def table_body(user, operation, catalog, namespace, table):
     }
 
 
+def procedure_body(user, operation, catalog, namespace, table):
+    body = table_body(user, "ExecuteTableProcedure", catalog, namespace, table)
+    body["action"]["resource"]["function"] = {"functionName": operation}
+    return body
+
+
 def schema_body(user, catalog, name="replay_probe"):
     return {
         "context": {"identity": {"user": user, "groups": []},
@@ -501,6 +507,24 @@ class BridgePolicyTest(unittest.TestCase):
         table = access_table()
         self.assertIs(self.front(catalog_body("sub-steward", "gold"), table), False)
         self.assertEqual(self.stub.authorized(), 0, "the catalog-level deny is decisive")
+
+    def test_the_catalog_owner_may_roll_a_table_back_but_a_writer_may_not(self):
+        """The #444 decision: the owner group (manage_grants) and admins may roll back."""
+        table = access_table()
+        for user, expected in (
+            ("sub-steward", True),   # owner of gold: manage_grants
+            ("sub-admin", True),     # project admin
+            ("sub-ana", False),      # select on gold
+            ("sub-build", False),    # create on gold
+        ):
+            with self.subTest(user=user):
+                front, upstream = self.both(
+                    procedure_body(user, "ROLLBACK_TO_SNAPSHOT", "gold", "retail_demo",
+                                   "taxi_daily_metrics"),
+                    table,
+                )
+                self.assertIs(front, expected)
+                self.assertIs(upstream, expected, "the front and the chart must agree")
 
     def test_a_question_without_a_resource_falls_through(self):
         """`ExecuteQuery` and `ReadSystemInformation` carry no `resource` at all.
