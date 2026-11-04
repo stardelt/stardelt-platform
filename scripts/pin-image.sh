@@ -64,11 +64,9 @@ if [ -z "$digest" ] && command -v gh >/dev/null; then
   fi
 fi
 
-if [ "$APP" = "stardelt-operator" ]; then
-  digest="sha256:6d451569af69ec94ca0e0ffdda00e4e0edc8853696a37b3b9041a190bdf5335b"
-fi
-
 if [ -z "$digest" ]; then
+  # Never substitute a constant here: the pin would silently stop moving (platform#530 added one
+  # for the operator that was already a build behind). A tag that cannot be resolved is an error.
   echo "$REGISTRY/$REPO:$TAG not resolvable (private package needs read:packages?)" >&2
   exit 1
 fi
