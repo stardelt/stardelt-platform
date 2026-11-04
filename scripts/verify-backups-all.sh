@@ -104,7 +104,7 @@ MAX_AGE_SECONDS=$(( MAX_AGE_HOURS * 3600 ))
 ok()         { printf '✓ %s\n' "$*"; }
 info()       { printf '› %s\n' "$*"; }
 err()        { printf '✗ %s\n' "$*" >&2; }
-unverified() { printf '? %s\n' "$*"; }
+unverified() { printf '? %s\n' "$*" >&2; }
 unknown()    { printf '? %s\n' "$*"; }
 
 command -v kubectl >/dev/null 2>&1 || { err "kubectl not found"; exit 1; }
