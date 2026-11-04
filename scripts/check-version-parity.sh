@@ -6,6 +6,7 @@
 # operator pins the same versions in its own repo (stardelt-operator CI checks
 # those against this Makefile).
 #
+# It also checks that the operator's image in helm-values/operator.yaml carries a digest (stardelt-platform#519).
 #   bash scripts/check-version-parity.sh
 set -euo pipefail
 
@@ -62,4 +63,19 @@ if [[ -z "$kc_make" || "$kc_make" != "$kc_manifest" || "$kc_make" != "$kc_values
 else
   echo "✓ keycloak image $kc_make"
 fi
+
+# The operator's image is pinned only in helm-values/operator.yaml (`tag@sha256:…`, #519/#521).
+# There is no second copy to compare, so check the shape: a digest, never the mutable `dev` tag.
+if [[ ! -f helm-values/operator.yaml ]]; then
+  echo "– operator image: not present"
+else
+  op_tag="$(sed -n 's/^[[:space:]]*tag:[[:space:]]*//p' helm-values/operator.yaml | head -1 | tr -d '"')"
+  if [[ ! "$op_tag" =~ ^[^@]+@sha256:[0-9a-f]{64}$ ]]; then
+    echo "✗ operator image: helm-values/operator.yaml tag='${op_tag}' is not a tag@sha256:<64 hex> pin" >&2
+    status=1
+  else
+    echo "✓ operator image ${op_tag}"
+  fi
+fi
+
 exit "$status"
