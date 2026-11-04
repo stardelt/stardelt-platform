@@ -1109,6 +1109,15 @@ install-operator: _context ## Install the stardelt Operator (needs ../stardelt-o
 	  --namespace $(NAMESPACE) --create-namespace --wait --timeout 5m \
 	  -f helm-values/operator.yaml \
 	  --set 'imagePullSecrets[0].name=ghcr-creds'
+	@# Helm applies chart/crds/ on `helm install` only, never on `helm upgrade`: an upgraded
+	@# cluster keeps the CRD schema it was first installed with, and the API server then rejects
+	@# any resource that uses a field added since ("unknown field spec.pillars.pipelines",
+	@# stardelt-platform#539). The CRDs are generated in the operator repo, so they are applied
+	@# from there every time, before the check below proves the new schema landed.
+	@kubectl apply --server-side --force-conflicts -f $(OPERATOR_DIR)/chart/crds/
+	@kubectl get crd platforminstances.stardelt.io \
+	  -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.pillars.properties.dashboards.type}' \
+	  | grep -q boolean || { echo "the PlatformInstance CRD schema did not update (expected spec.pillars.dashboards)"; exit 1; }
 	@echo "Operator installed. CRDs: PlatformInstance, Lakehouse, Catalog, SqlWarehouse, IngestionSource, Pipeline, Connection, ServicePrincipal, Volume."
 
 # ---------------------------------------------------------------------------
