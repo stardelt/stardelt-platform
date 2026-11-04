@@ -1,13 +1,17 @@
 # OpenFGA — the catalog's permission store (authz 1/8, platform#302).
 # Chart: openfga/openfga 0.2.62, appVersion v1.14.0. Licence: Apache-2.0.
 #
-# What it will hold once the catalog is cut over: relationship tuples — which
-# subject (person, group, service client) may `browse`, `select`, `create`,
-# `modify` or manage grants on which warehouse, namespace, table or view, plus
-# the catalog's own roles. Today it holds nothing that is enforced: Lakekeeper
-# still runs `authz.backend: allowall` (helm-values/lakekeeper.yaml), so this
-# release is deployed and backed up but **unused until `make catalog-authz`**
-# (platform#304).
+# What it holds: relationship tuples — which subject (person, group, service
+# client) may `browse`, `select`, `create`, `modify` or manage grants on which
+# warehouse, namespace, table or view, plus the catalog's own roles.
+#
+# **It is load-bearing since the cut-over (platform#304).** Lakekeeper runs
+# `authz.backend: openfga` (helm-values/lakekeeper.yaml) and asks this store for
+# every catalog operation; the answer is fail-closed, so a store that cannot
+# answer turns a table read into `503 Authorization service is unavailable`.
+# Restarting this release is therefore a catalog outage, not a cosmetic event:
+# the liveness probe below must tolerate a slow host instead of killing the
+# process (platform#516, 2026-11-04).
 #
 # Database: CloudNative-PG Cluster `openfga-pg` (manifests/openfga-pg.yaml,
 # database `openfga`), not the chart's bundled Postgres subchart — this cluster
@@ -42,8 +46,9 @@ resources:
   limits:   { cpu: "500m", memory: "192Mi" }
 
 # No tracing, no Prometheus metrics: the platform does not scrape this release
-# yet, and the node's spare memory goes to the engines. Turn metrics back on
-# together with a scrape target when the cutover makes the store load-bearing.
+# yet, and the node's spare memory goes to the engines. The store is load-bearing
+# since the cut-over, so turn metrics on together with a scrape target — restarts
+# and 503s should be visible before somebody notices through a dashboard.
 telemetry:
   trace:
     enabled: false
