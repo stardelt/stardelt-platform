@@ -45,6 +45,22 @@ resources:
   requests: { cpu: "20m", memory: "64Mi" }
   limits:   { cpu: "500m", memory: "192Mi" }
 
+# Probe budget (platform#516): the chart's defaults (timeout 5 s, failureThreshold 12) kill
+# the store after 120 s of a node-wide stall — every pod on the host times out at once, so
+# the probes cannot distinguish "slow host" from "hung process". A restarted store is worse
+# than a slow one, because Lakekeeper is fail-closed: while openfga is gone every table read
+# answers 503. 5 minutes of tolerated unavailability, and a 10 s per-probe timeout, ride out
+# the stall that took the catalog down on 2026-11-04.
+# Readiness stays at the chart's values on purpose: a store that cannot answer should leave
+# the Service, so Lakekeeper fails fast instead of waiting on a socket.
+livenessProbe:
+  enabled: true
+  initialDelaySeconds: 60
+  periodSeconds: 10
+  timeoutSeconds: 10
+  failureThreshold: 30
+  successThreshold: 1
+
 # No tracing, no Prometheus metrics: the platform does not scrape this release
 # yet, and the node's spare memory goes to the engines. The store is load-bearing
 # since the cut-over, so turn metrics on together with a scrape target — restarts
