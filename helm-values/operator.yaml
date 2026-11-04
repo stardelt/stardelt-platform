@@ -5,10 +5,14 @@
 # operator#210-#214).
 #
 # `tag@sha256:…` pins the digest; the tag is only a label. After an operator merge, take the
-# `Pin it: …` line the Image workflow prints (`gh action run view <run> --log | grep 'Pin it'`)
-# and update `tag` in a one-line PR. This is the operator's replacement for
-# scripts/pin-image.sh, which skips components with no image line.
+# `Pin it: …` line the Image workflow prints (`gh run view <run> --log | grep 'Pin it'`) and
+# update `tag` in a one-line PR. This is the operator's replacement for scripts/pin-image.sh,
+# which skips components with no image line.
+#
+# Do NOT use the `Digest: sha256:…` line in the same log: that is the buildx export digest,
+# not the image manifest, and the kubelet answers `not found` for it. The correct value is
+# the one in the `Pin it:` line (and no other way to tell them apart from the log).
 image:
   repository: ghcr.io/stardelt/stardelt-operator
-  tag: dev@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
+  tag: dev@sha256:6d451569af69ec94ca0e0ffdda00e4e0edc8853696a37b3b9041a190bdf5335b
   pullPolicy: IfNotPresent
