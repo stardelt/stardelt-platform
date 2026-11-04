@@ -1376,10 +1376,10 @@ Lakekeeper), because authorization is keyed on the IdP's subjects; a bare
   tuples must survive a catalog re-bootstrap, which is exactly what the cutover
   is (spike platform#271), so they do not share `lakekeeper-pg`. CNPG generates
   Secret `openfga-pg-app`; the chart reads the DSN from its `uri` key.
-- **Memory budget.** Requests 20m / 64Mi, limits 500m / 192Mi for OpenFGA; its
+- **Memory budget.** Requests 20m / 128Mi, limits 500m / 512Mi for OpenFGA; its
   Postgres asks 50m / 128Mi with a 256Mi limit. Together ~190Mi of requests and
   at most ~450Mi of limits. The #271 spike measured a running OpenFGA at ~50Mi;
-  the dev release reports ~16Mi idle, and the 192Mi ceiling leaves room for
+  the dev release reports ~16Mi idle, and the 512Mi ceiling leaves room for
   checks.
 - **Backups.** Continuous WAL archiving into `s3://backups/openfga-pg/` plus the
   daily base backup `openfga-pg-daily` (`immediate: true`, so a fresh install

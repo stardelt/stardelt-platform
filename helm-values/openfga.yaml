@@ -41,9 +41,13 @@ datastore:
 
 # Small on purpose: the store answers checks, it does not hold table data.
 # The #271 spike measured a running OpenFGA at ~50 MiB.
+# 512 Mi, not 192 Mi: the store was OOMKilled (exit 137) at 2026-11-04 21:05:26Z while its steady
+# state was 38 Mi — the burst came from every client reconnecting at once after a node-wide
+# restart (platform#516). A killed permission store denies every catalogue read (fail-closed),
+# which is strictly worse than a few hundred MiB of headroom on a 23 GiB node.
 resources:
-  requests: { cpu: "20m", memory: "64Mi" }
-  limits:   { cpu: "500m", memory: "192Mi" }
+  requests: { cpu: "20m", memory: "128Mi" }
+  limits:   { cpu: "500m", memory: "512Mi" }
 
 # No liveness probe (platform#516). The failure mode we see is a node-wide stall: every pod on
 # the host times out at once and the process is merely starved. A liveness probe cannot tell
