@@ -1,0 +1,14 @@
+# The stardelt Operator's image (Makefile target `install-operator`). The operator is the one
+# component this repo installs from the sibling checkout, so its image was the one without a
+# checked-in pin: `make install-operator` used the chart's mutable `tag: dev` and the digest
+# the cluster actually ran lived only in the Deployment (2026-11-04, found while rolling out
+# operator#210-#214).
+#
+# `tag@sha256:…` pins the digest; the tag is only a label. After an operator merge, take the
+# `Pin it: …` line the Image workflow prints (`gh action run view <run> --log | grep 'Pin it'`)
+# and update `tag` in a one-line PR. This is the operator's replacement for
+# scripts/pin-image.sh, which skips components with no image line.
+image:
+  repository: ghcr.io/stardelt/stardelt-operator
+  tag: dev@sha256:ec7f5d5aeeef99e45a517448ec8862315ec4d619d2167c6b9f4e477dc00ca7e0
+  pullPolicy: IfNotPresent
