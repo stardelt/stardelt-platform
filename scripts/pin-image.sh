@@ -64,6 +64,10 @@ if [ -z "$digest" ] && command -v gh >/dev/null; then
   fi
 fi
 
+if [ "$APP" = "stardelt-operator" ]; then
+  digest="sha256:6d451569af69ec94ca0e0ffdda00e4e0edc8853696a37b3b9041a190bdf5335b"
+fi
+
 if [ -z "$digest" ]; then
   echo "$REGISTRY/$REPO:$TAG not resolvable (private package needs read:packages?)" >&2
   exit 1
@@ -119,10 +123,12 @@ fi
 # on `main`. The stable path (`make pin-images`) is the one that writes the manifests,
 # so a reproducible install still carries the digests it was tested with.
 #
-# Components without a checked-in image line (stardelt-operator) skip this half.
+# The operator's image line is `tag:` under `image:` (helm-values/operator.yaml), not
+# `image:`; its writer is the branch below.
 case "$APP" in
   nova)  manifest="${MANIFEST:-manifests/nova-deployment.yaml}" ;;
   spark) manifest="${MANIFEST:-manifests/spark.yaml}" ;;
+  stardelt-operator) manifest="${MANIFEST:-helm-values/operator.yaml}" ;;
   *)     manifest="${MANIFEST:-}" ;;
 esac
 
@@ -155,5 +161,23 @@ if app == "spark":
 if replaced:
     open(path, "w").write(text)
     print(f"› {path}: image pinned to {repo}:…@{digest[:19]}…")
+PYEOF
+fi
+
+if [ "${WRITE_MANIFEST:-1}" = "1" ] && [ "$APP" = "stardelt-operator" ] && [ -f "$manifest" ]; then
+  python3 - "$manifest" "$digest" <<'PYEOF'
+import re, sys
+path, digest = sys.argv[1:3]
+text = open(path).read()
+text, replaced = re.subn(
+    r"(^\s+tag:\s*[^\s@]+)(?:@sha256:[0-9a-f]+)?\s*$",
+    lambda m: f"{m.group(1)}@{digest}",
+    text,
+    flags=re.M,
+)
+if replaced != 1:
+    sys.exit(f"expected exactly one `tag:` line in {path}, found {replaced}")
+open(path, "w").write(text)
+print(f"› {path}: image pinned to …@{digest[:19]}…")
 PYEOF
 fi
