@@ -10,5 +10,5 @@
 # scripts/pin-image.sh, which skips components with no image line.
 image:
   repository: ghcr.io/stardelt/stardelt-operator
-  tag: dev@sha256:ec7f5d5aeeef99e45a517448ec8862315ec4d619d2167c6b9f4e477dc00ca7e0
+  tag: dev@sha256:f99ae16c68876679c259d7555ea328ee1d4ed6e81696f3bfc6d919c287d49484
   pullPolicy: IfNotPresent
