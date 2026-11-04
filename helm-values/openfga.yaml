@@ -45,21 +45,23 @@ resources:
   requests: { cpu: "20m", memory: "64Mi" }
   limits:   { cpu: "500m", memory: "192Mi" }
 
-# Probe budget (platform#516): the chart's defaults (timeout 5 s, failureThreshold 12) kill
-# the store after 120 s of a node-wide stall — every pod on the host times out at once, so
-# the probes cannot distinguish "slow host" from "hung process". A restarted store is worse
-# than a slow one, because Lakekeeper is fail-closed: while openfga is gone every table read
-# answers 503. 5 minutes of tolerated unavailability, and a 10 s per-probe timeout, ride out
-# the stall that took the catalog down on 2026-11-04.
+# No liveness probe (platform#516). The failure mode we see is a node-wide stall: every pod on
+# the host times out at once and the process is merely starved. A liveness probe cannot tell
+# that from a hung process, so it kills a store that would have recovered — and because
+# Lakekeeper is fail-closed, the restart is a complete denial of reads for ~30 s. Measured
+# 2026-11-04 16:18:47Z: the container was killed by the probe (exit 137) with the 5-minute
+# budget from #518 already in place, and Lakekeeper answered 503 AuthorizationBackendError
+# until the new process was up.
+#
+# A crashed process is still restarted by the kubelet (restartPolicy: Always), and an OOM kill
+# still happens through the memory limit. Only the "hang" case loses its automatic restart, and
+# for that case readiness already removes the store from the Service — the same outage, without
+# the extra 30 s.
+#
 # Readiness stays at the chart's values on purpose: a store that cannot answer should leave
 # the Service, so Lakekeeper fails fast instead of waiting on a socket.
 livenessProbe:
-  enabled: true
-  initialDelaySeconds: 60
-  periodSeconds: 10
-  timeoutSeconds: 10
-  failureThreshold: 30
-  successThreshold: 1
+  enabled: false
 
 # No tracing, no Prometheus metrics: the platform does not scrape this release
 # yet, and the node's spare memory goes to the engines. The store is load-bearing
