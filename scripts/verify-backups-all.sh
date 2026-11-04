@@ -23,10 +23,14 @@
 #                        completed run — not an object — is the signal)
 #        pg_dump         the newest object under s3://<bucket>/pgdump/<app>/,
 #                        listed by ONE scratch aws-cli pod for all prefixes
-#   3. prints `PVC | mechanism | last backup age | verdict` and exits 1 when any
-#      PVC is FAIL: no mechanism mapped and not in the ACCEPTED list, a mapped
+#   3. prints `PVC | mechanism | last backup age | verdict` and exits:
+#      0 every source was read and is fresh (or accepted),
+#      1 a source was read and is stale/missing (the "real gap" case),
+#      3 at least one source could not be read, so the run proved nothing about it.
+#      Cases that exit 1: no mechanism mapped and not in the ACCEPTED list, a mapped
 #      mechanism that is missing (no spec.backup, no ScheduledBackup, no
-#      CronJob), or a last backup older than MAX_AGE_HOURS (default 36).
+#      CronJob), or a last backup older than MAX_AGE_HOURS (default 36). An
+#      unreadable backup listing is exit 3 (UNVERIFIED), not exit 1.
 #   4. prints one more line for the off-cluster copy (platform#395): the rclone
 #      CronJob `offsite-backup` copies the three backup buckets to the S3 in
 #      Secret `backup-offsite` when one is configured. No destination is a
@@ -97,9 +101,11 @@ case "$MAX_AGE_HOURS" in
 esac
 MAX_AGE_SECONDS=$(( MAX_AGE_HOURS * 3600 ))
 
-ok()   { printf '✓ %s\n' "$*"; }
-info() { printf '› %s\n' "$*"; }
-err()  { printf '✗ %s\n' "$*" >&2; }
+ok()         { printf '✓ %s\n' "$*"; }
+info()       { printf '› %s\n' "$*"; }
+err()        { printf '✗ %s\n' "$*" >&2; }
+unverified() { printf '? %s\n' "$*" >&2; }
+unknown()    { printf '? %s\n' "$*"; }
 
 command -v kubectl >/dev/null 2>&1 || { err "kubectl not found"; exit 1; }
 command -v jq >/dev/null 2>&1 || { err "jq is required (resources are read as JSON)"; exit 1; }
@@ -367,6 +373,7 @@ fi
 
 declare -A pvc_age=() pvc_verdict=() pvc_disp=()
 failures=()
+unknowns=()
 for pvc in "${pvcs[@]}"; do
   mech="${pvc_mech[$pvc]}"
   target="${pvc_target[$pvc]}"
@@ -425,8 +432,8 @@ for pvc in "${pvcs[@]}"; do
         verdict="FAIL"
         failures+=("$pvc: no CronJob $NAMESPACE/$cronjob — apply manifests/pg-dump-backup.yaml (make backups)")
       elif [ -z "$pod_now" ]; then
-        verdict="FAIL"
-        failures+=("$pvc: cannot list $source — the listing pod failed $LIST_ATTEMPTS time(s), its output is printed above; this backup was NOT checked")
+        verdict="UNKNOWN"
+        unknowns+=("$pvc: cannot list $source — the listing pod failed $LIST_ATTEMPTS time(s), its output is printed above; this backup was NOT checked")
       else
         case "${s3_state[$label]:-missing}" in
           ok)
@@ -446,12 +453,12 @@ for pvc in "${pvcs[@]}"; do
             failures+=("$pvc: no object under $source — nothing has ever been dumped there")
             ;;
           error)
-            verdict="FAIL"
-            failures+=("$pvc: the listing pod could not read $source — check the stardelt-s3-creds Secret and the S3 endpoint")
+            verdict="UNKNOWN"
+            unknowns+=("$pvc: the listing pod could not read $source — check the stardelt-s3-creds Secret and the S3 endpoint")
             ;;
           *)
-            verdict="FAIL"
-            failures+=("$pvc: the listing pod returned no answer for $label")
+            verdict="UNKNOWN"
+            unknowns+=("$pvc: the listing pod returned no answer for $label")
             ;;
         esac
       fi
@@ -529,16 +536,18 @@ fi
 
 failed=0
 accepted=0
+unknown=0
 rows=()
 for pvc in "${pvcs[@]}"; do
   case "${pvc_verdict[$pvc]}" in
     PASS) ;;
     ACCEPTED) accepted=$(( accepted + 1 )) ;;
+    UNKNOWN) unknown=$(( unknown + 1 )) ;;
     *)
       failed=$(( failed + 1 ))
       ;;
   esac
-  rows+=("$pvc"$'\t'"${pvc_disp[$pvc]}"$'\t'"${pvc_age[$pvc]}"$'\t'"${pvc_verdict[$pvc]}")
+  rows+=("$pvc"$'	'"${pvc_disp[$pvc]}"$'	'"${pvc_age[$pvc]}"$'	'"${pvc_verdict[$pvc]}")
 done
 
 info "${#pvcs[@]} PVC(s) in namespace $NAMESPACE; a backup counts if it is younger than ${MAX_AGE_HOURS}h"
@@ -573,11 +582,19 @@ if [ "$failed" -gt 0 ] || [ "$offsite_failed" -gt 0 ]; then
     err "offsite copy: $offsite_reason"
   fi
   if [ "$failed" -gt 0 ]; then
-    echo "verify-backups-all: FAIL ($failed of ${#pvcs[@]} PVC(s))" >&2
+    echo "verify-backups-all: FAIL ($failed of ${#pvcs[@]} PVC(s), $unknown unchecked)" >&2
   else
     echo "verify-backups-all: FAIL (offsite copy)" >&2
   fi
   exit 1
+fi
+if [ "$unknown" -gt 0 ]; then
+  printf '\n'
+  for message in "${unknowns[@]}"; do
+    unverified "$message"
+  done
+  echo "verify-backups-all: UNVERIFIED ($unknown of ${#pvcs[@]} PVC(s) could not be read — the listing pod failed; the data was not checked)" >&2
+  exit 3
 fi
 
 ok "verify-backups-all: PASS ($(( ${#pvcs[@]} - accepted )) backed up, $accepted accepted, 0 failed)"

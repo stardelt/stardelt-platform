@@ -91,16 +91,18 @@ class ListingPod(unittest.TestCase):
 
     def test_three_failures_end_with_a_sentence_that_says_what_was_not_checked(self):
         done = self.run_script(99)
-        self.assertEqual(done.returncode, 1)
+        self.assertEqual(done.returncode, 3)
         self.assertEqual(len(self.names()), 3)
         self.assertIn("the listing pod failed (attempt 3 of 3); its whole output:", done.stderr)
         self.assertIn("the listing pod failed 3 time(s), its output is printed above; this backup was NOT checked", done.stderr)
+        self.assertIn("verify-backups-all: UNVERIFIED", done.stderr)
         self.assertNotIn("see above", done.stderr)
 
     def test_the_number_of_attempts_is_a_setting_and_is_checked(self):
         done = self.run_script(1, LIST_ATTEMPTS="1")
-        self.assertEqual((done.returncode, len(self.names())), (1, 1))
+        self.assertEqual((done.returncode, len(self.names())), (3, 1))
         self.assertIn("failed 1 time(s)", done.stderr)
+        self.assertIn("UNVERIFIED", done.stderr)
         for bad in ("0", "6", "x", ""):
             refused = self.run_script(0, LIST_ATTEMPTS=bad) if bad else None
             if refused is not None:
