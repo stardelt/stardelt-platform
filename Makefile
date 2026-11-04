@@ -1109,7 +1109,7 @@ install-operator: _context ## Install the stardelt Operator (needs ../stardelt-o
 	  --namespace $(NAMESPACE) --create-namespace --wait --timeout 5m \
 	  -f helm-values/operator.yaml \
 	  --set 'imagePullSecrets[0].name=ghcr-creds'
-	@echo "Operator installed. CRDs: PlatformInstance, Tenant, Lakehouse, IngestionSource, Pipeline."
+	@echo "Operator installed. CRDs: PlatformInstance, Lakehouse, Catalog, SqlWarehouse, IngestionSource, Pipeline, Connection, ServicePrincipal, Volume."
 
 # ---------------------------------------------------------------------------
 # Upgrade (helm upgrade is idempotent — same as install)
