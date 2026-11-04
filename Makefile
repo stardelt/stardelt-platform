@@ -1101,11 +1101,13 @@ install-identity: deps _context ## Install the platform IdP (Keycloak) at id.$(B
 # Control plane — the stardelt Operator (dev: from the sibling checkout).
 # ---------------------------------------------------------------------------
 OPERATOR_DIR ?= ../stardelt-operator
+# The image is pinned in `helm-values/operator.yaml`; bump its digest after an operator merge.
 install-operator: _context ## Install the stardelt Operator (needs ../stardelt-operator)
 	@test -f $(OPERATOR_DIR)/chart/Chart.yaml || { \
 	  echo "operator chart not found at $(OPERATOR_DIR)/chart — set OPERATOR_DIR"; exit 1; }
 	@helm upgrade --install stardelt-operator $(OPERATOR_DIR)/chart \
 	  --namespace $(NAMESPACE) --create-namespace --wait --timeout 5m \
+	  -f helm-values/operator.yaml \
 	  --set 'imagePullSecrets[0].name=ghcr-creds'
 	@echo "Operator installed. CRDs: PlatformInstance, Tenant, Lakehouse, IngestionSource, Pipeline."
 
