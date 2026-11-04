@@ -118,7 +118,7 @@ lint: ## Syntax-check (bash -n) + ShellCheck the scripts under scripts/ and dev/
 # pods above their request are the ones the kubelet evicts first. Read-only, no cluster
 # change: three kubectl calls and a table.
 .PHONY: node-budget
-node-budget: ## Memory requests, limits and use on the node
+node-budget: ## Memory requests, limits and use on the node, and the root filesystem's headroom
 	@python3 scripts/node-budget.py
 
 # ---------------------------------------------------------------------------

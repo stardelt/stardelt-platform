@@ -197,6 +197,44 @@ def _node_block(node, running, top):
     return "\n".join(lines)
 
 
+DISK_WARN_PERCENT = 85
+
+
+def disk_line(summary):
+    """The node's root filesystem as one line, from the kubelet summary document.
+
+    `summary` is the parsed `/stats/summary` of one node. Returns None when the document
+    carries no `node.fs` block (an old or restricted kubelet), so the caller prints
+    `disk: unknown` instead of failing the whole command.
+    """
+    try:
+        node = summary.get("node") or {}
+        fs = node.get("fs")
+        if not fs:
+            return None
+        capacity = float(fs.get("capacityBytes") or 0)
+        used = float(fs.get("usedBytes") or 0)
+        available = float(fs.get("availableBytes") or 0)
+        if capacity == 0:
+            return None
+        used_gib = used / (1024 ** 3)
+        cap_gib = capacity / (1024 ** 3)
+        avail_gib = available / (1024 ** 3)
+        percent_float = 100.0 * used / capacity
+        percent = percent_float
+        line = "disk: %.1f GiB used of %.1f GiB (%.1f %%), %.1f GiB free" % (
+            used_gib,
+            cap_gib,
+            percent,
+            avail_gib,
+        )
+        if percent_float >= DISK_WARN_PERCENT:
+            line += " — WARNING: above 85 %% the local-path volumes (Postgres WAL, SeaweedFS, OpenBao, Trino spill) are at risk"
+        return line
+    except Exception:
+        return None
+
+
 def render(nodes, pods, top_text):
     """The whole report as one string; pure, so the tests need no cluster.
 
@@ -250,13 +288,43 @@ def main():
         return _fail("kubectl top is unavailable: %s" % _first_line(top.stderr))
 
     try:
-        report = render(json.loads(nodes.stdout), json.loads(pods.stdout), top.stdout)
+        nodes_json = json.loads(nodes.stdout)
+        pods_json = json.loads(pods.stdout)
+        report = render(nodes_json, pods_json, top.stdout)
     except json.JSONDecodeError as error:
         return _fail("kubectl returned unreadable JSON: %s" % error)
     if not report:
         return _fail("the cluster has no nodes")
 
     print(report)
+    try:
+        node_name = None
+        for item in nodes_json.get("items") or []:
+            node_name = (item.get("metadata") or {}).get("name")
+            if node_name:
+                break
+        if node_name:
+            summary_res = _kubectl(
+                "get",
+                "--raw",
+                "/api/v1/nodes/%s/proxy/stats/summary" % node_name,
+            )
+            if summary_res.returncode == 0 and summary_res.stdout:
+                try:
+                    summary_json = json.loads(summary_res.stdout)
+                    line = disk_line(summary_json)
+                    if line is not None:
+                        print(line)
+                    else:
+                        print("disk: unknown")
+                except Exception:
+                    print("disk: unknown (%s)" % _first_line(summary_res.stderr or ""))
+            else:
+                print("disk: unknown (%s)" % _first_line(summary_res.stderr or ""))
+        else:
+            print("disk: unknown")
+    except Exception:
+        print("disk: unknown")
     return 0
 
 
