@@ -6,7 +6,8 @@
 #
 # `tag@sha256:…` pins the digest; the tag is only a label. After an operator merge, take the
 # `Pin it: …` line the Image workflow prints (`gh run view <run> --log | grep 'Pin it'`) and
-# update `tag` in a one-line PR. # `./scripts/pin-image.sh stardelt-operator` moves both the cluster and this line.
+# update `tag` in a one-line PR; `./scripts/pin-image.sh stardelt-operator` moves the cluster and
+# this line together.
 #
 # Do NOT use the `Digest: sha256:…` line in the same log: that is the buildx export digest,
 # not the image manifest, and the kubelet answers `not found` for it. The correct value is
