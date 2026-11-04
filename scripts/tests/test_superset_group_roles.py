@@ -59,6 +59,17 @@ class TestSupersetGroupRoles(unittest.TestCase):
         self.assertEqual(self.mod.database_name_for_catalog("mobility"), "Trino Mobility")
         self.assertEqual(self.mod.database_name_for_catalog("mobility-lab"), "Trino Mobility Lab")
 
+    def test_a_role_keeps_the_grants_of_every_catalog_it_owns(self):
+        desired = self.mod.accumulate({}, "stardelt-group-mobility-analytics",
+                                      {("database_access", "[Trino Mobility].(id:2)"),
+                                       ("datasource_access", "[Mobility].[trips](id:1)")})
+        self.mod.accumulate(desired, "stardelt-group-mobility-analytics",
+                            {("database_access", "[Trino Mobilityref].(id:5)")})
+        self.assertEqual(desired["stardelt-group-mobility-analytics"],
+                         {("database_access", "[Trino Mobility].(id:2)"),
+                          ("datasource_access", "[Mobility].[trips](id:1)"),
+                          ("database_access", "[Trino Mobilityref].(id:5)")})
+
 
 if __name__ == "__main__":
     unittest.main()
