@@ -73,6 +73,44 @@ def table(report, header):
     return rows
 
 
+def summary(available_gib, capacity_gib=216.0):
+    """A kubelet `/stats/summary` document with one `node.fs` block (platform#549)."""
+    return {
+        "node": {
+            "fs": {
+                "capacityBytes": capacity_gib * 1024 ** 3,
+                "usedBytes": (capacity_gib - available_gib) * 1024 ** 3,
+                "availableBytes": available_gib * 1024 ** 3,
+            }
+        }
+    }
+
+
+class Disk(unittest.TestCase):
+    def test_disk_low_when_free_space_is_under_the_floor(self):
+        self.assertTrue(node_budget.disk_low(summary(4.0)))
+        self.assertTrue(node_budget.disk_low(summary(9.9)))
+
+    def test_disk_low_above_the_percentage_line_even_with_space_left(self):
+        # 191 GiB of 216 GiB used is 88 %, the state the dev node died in.
+        self.assertTrue(node_budget.disk_low(summary(25.0)))
+
+    def test_disk_low_is_false_with_headroom(self):
+        self.assertFalse(node_budget.disk_low(summary(40.0)))
+
+    def test_disk_low_without_a_fs_block_is_false(self):
+        self.assertFalse(node_budget.disk_low({}))
+        self.assertFalse(node_budget.disk_low({"node": {}}))
+
+    def test_disk_line_names_the_eviction_floor_below_it(self):
+        line = node_budget.disk_line(summary(4.0))
+        self.assertIn("nodefs.available<5Gi", line)
+        self.assertIn("platform#549", line)
+
+    def test_disk_line_is_quiet_with_headroom(self):
+        self.assertNotIn("WARNING", node_budget.disk_line(summary(40.0)))
+
+
 class ParseSize(unittest.TestCase):
     def test_parses_units_ki_mi_gi_and_bytes(self):
         self.assertEqual(node_budget.parse_size("1024Ki"), 1048576)
@@ -212,6 +250,23 @@ class Kubectl(unittest.TestCase):
         self.assertEqual(stderr.strip().splitlines(), [
             "node-budget: kubectl was not found (run 'make deps')"
         ])
+
+    def test_disk_below_the_floor_exits_two(self):
+        nodes = json.dumps({"items": [node()]})
+        pods = json.dumps(fixture_pods())
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        results = [
+            self.completed(0, stdout=nodes),
+            self.completed(0, stdout=pods),
+            self.completed(0, stdout=TOP),
+            self.completed(0, stdout=json.dumps(summary(4.0))),
+        ]
+        with mock.patch.object(node_budget.subprocess, "run", side_effect=results), \
+                contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = node_budget.main()
+        self.assertEqual(code, 2)
+        self.assertIn("nodefs.available<5Gi", stderr.getvalue())
 
     def test_success_prints_the_report_and_exits_zero(self):
         nodes = json.dumps({"items": [node()]})

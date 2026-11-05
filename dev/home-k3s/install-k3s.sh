@@ -113,6 +113,11 @@ installer_flags=(
   # fight it for the same ports and svclb would add a second binder.
   --disable traefik
   --disable servicelb
+  # The kubelet's default reserve is nodefs.available<10 %, which is ~22 GiB on a
+  # 216 GiB disk: at 16 GiB free it tainted the node disk-pressure, evicted every
+  # pod and refused new ones while the platform still fitted (platform#549). Reserve
+  # an absolute 5 GiB instead, so the guard scales with the platform, not the disk.
+  '--kubelet-arg=eviction-hard=nodefs.available<5Gi,imagefs.available<10%'
   "${TLS_SANS[@]}"
 )
 
