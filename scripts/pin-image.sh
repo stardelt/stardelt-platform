@@ -179,3 +179,19 @@ open(path, "w").write(text)
 print(f"› {path}: image pinned to …@{digest[:19]}…")
 PYEOF
 fi
+
+# The operator's image carries its API. Helm applies chart/crds/ on `helm install` only, never on
+# `helm upgrade`, so a cluster keeps the schema it was first installed with while the new binary
+# expects the new fields — and when the generated CRD itself is invalid the apply fails silently
+# for the schema and only the image moves (stardelt-platform#539, stardelt-operator#267). Moving
+# the operator's digest therefore moves its schemas too, from the checkout the chart comes from.
+# APPLY_CRDS=0 skips it; a missing checkout prints a note instead of failing, because this script
+# runs for other images on machines without the operator repo.
+if [ "$APP" = "stardelt-operator" ] && [ "${APPLY_CRDS:-1}" = "1" ]; then
+  crds="${OPERATOR_DIR:-../stardelt-operator}/chart/crds"
+  if [ -d "$crds" ]; then
+    kubectl apply --server-side --force-conflicts -f "$crds"
+  else
+    echo "  › no operator CRDs at $crds — the CRD schema was not updated (set OPERATOR_DIR)" >&2
+  fi
+fi
