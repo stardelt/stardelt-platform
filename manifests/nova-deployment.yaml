@@ -115,7 +115,7 @@ spec:
         - name: ghcr-creds
       containers:
         - name: nova
-          image: ghcr.io/stardelt/nova:dev@sha256:6704ab78683adc5caa402175dfdc565f60169e6d793215039661a47627337c42
+          image: ghcr.io/stardelt/nova:dev@sha256:69a877d5640bed910afa3a998e6916b2cd8c37bb5448d9c0c7b1ddf0a33fb71f
           # The reference is pinned by digest, so its content never changes and
           # IfNotPresent keeps a cached image usable when GHCR is unreachable or
           # the pull credential has expired — an `Always` policy turned both into
