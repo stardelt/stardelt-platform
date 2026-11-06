@@ -113,11 +113,14 @@ installer_flags=(
   # fight it for the same ports and svclb would add a second binder.
   --disable traefik
   --disable servicelb
-  # The kubelet's default reserve is nodefs.available<10 %, which is ~22 GiB on a
-  # 216 GiB disk: at 16 GiB free it tainted the node disk-pressure, evicted every
-  # pod and refused new ones while the platform still fitted (platform#549). Reserve
-  # an absolute 5 GiB instead, so the guard scales with the platform, not the disk.
-  '--kubelet-arg=eviction-hard=nodefs.available<5Gi,imagefs.available<10%'
+  # Reserve an absolute 5 GiB, so the guard scales with the platform (which runs in
+  # ~16 GiB) and not with the disk: k3s's own default is 5 %, ~10.8 GiB of this 216 GiB
+  # volume (written to agent/etc/kubelet.conf.d/00-k3s-defaults.conf on every start).
+  # Both signals need the absolute floor: on a single-node install imagefs and nodefs are
+  # the same ext4 volume, so a percentage on either one raises the effective line — an
+  # imagefs.available<10 % would evict at ~21.6 GiB free, twice the current reserve and
+  # the opposite of the intent (platform#549).
+  '--kubelet-arg=eviction-hard=nodefs.available<5Gi,imagefs.available<5Gi'
   "${TLS_SANS[@]}"
 )
 
