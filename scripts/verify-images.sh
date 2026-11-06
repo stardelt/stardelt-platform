@@ -21,12 +21,22 @@
 # It needs the *cluster's* credential, so it is a manual target (`make verify-images`), never CI.
 # Read-only: no pulls, no kubectl apply, no mutations.
 #
+#   scripts/verify-images.sh              check every pin with the cluster credential
+#   scripts/verify-images.sh --pins-only  print the pins it collected, no cluster needed
+#
 # Environment:
 #   NAMESPACE  default stardelt
 #   SECRET     default ghcr-creds  (the imagePullSecret)
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+pins_only=0
+case "${1:-}" in
+  --pins-only) pins_only=1 ;;
+  "") ;;
+  *) echo "usage: $0 [--pins-only]" >&2; exit 2 ;;
+esac
 
 NAMESPACE="${NAMESPACE:-stardelt}"
 SECRET="${SECRET:-ghcr-creds}"
@@ -59,6 +69,7 @@ def add(repo, digest):
 
 repo_line = re.compile(r'^\s*(?:repository|name)\s*:\s*["\']?(ghcr\.io/stardelt/[^\s"\']+)["\']?\s*$')
 tag_line = re.compile(r'^\s*tag\s*:\s*["\']?[^\s"\']*@sha256:([0-9a-f]{64})["\']?')
+digest_line = re.compile(r'^\s*digest\s*:\s*["\']?(?:sha256:)?([0-9a-f]{64})["\']?\s*$')
 image_line = re.compile(r'(ghcr\.io/stardelt/[^\s"\']+)@sha256:([0-9a-f]{64})')
 
 def repo_only(ref):
@@ -91,6 +102,10 @@ for path in sorted(glob.glob("helm-values/*.yaml") + glob.glob("manifests/*.yaml
         if tm and pending_repo and pending_repo.startswith(owned):
             add(pending_repo, tm.group(1))
             pending_repo = None
+        dm = digest_line.match(line)
+        if dm and pending_repo and pending_repo.startswith(owned):
+            add(pending_repo, dm.group(1))
+            pending_repo = None
 
 for repo, digest in order:
     print(repo + "\t" + digest)
@@ -101,6 +116,10 @@ if [ -z "$pins" ]; then
   unverified "no ghcr.io/stardelt/* pins found under helm-values/*.yaml or manifests/*.yaml"
   echo "UNVERIFIED (no pins found)" >&2
   exit 3
+fi
+if [ "$pins_only" = "1" ]; then
+  printf '%s\n' "$pins"
+  exit 0
 fi
 
 # ---------------------------------------------------------------------------
