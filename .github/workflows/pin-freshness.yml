@@ -1,0 +1,33 @@
+name: Pin freshness
+on:
+  schedule: [{cron: "17 4 * * *"}]
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+jobs:
+  pins:
+    name: The checked-in pins against the `dev` tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Compare
+        id: check
+        run: |
+          set +e
+          python3 scripts/check_pin_freshness.py | tee "$RUNNER_TEMP/pins.txt"
+          echo "code=$?" >> "$GITHUB_OUTPUT"
+      - name: File or refresh the issue
+        if: steps.check.outputs.code != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title='Pins are stale: the `dev` tag moved ahead of the checked-in manifests'
+          number="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search "in:title \"Pins are stale\"" --json number --jq '.[0].number // empty')"
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/pins.txt"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" \
+              --label bug --label P2 --body-file "$RUNNER_TEMP/pins.txt"
+          fi
