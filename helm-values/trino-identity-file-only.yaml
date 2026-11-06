@@ -46,3 +46,25 @@ server:
     query.max-execution-time=10m
     query.max-run-time=15m
     access-control.config-files=/etc/trino/access-control.properties
+
+initContainers:
+  coordinator:
+    - name: wait-for-idp
+      image: trinodb/trino:480
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: TRINO_OIDC_ISSUER
+          valueFrom:
+            configMapKeyRef:
+              name: stardelt-identity
+              key: issuerUrl
+              optional: true
+      command:
+        - /usr/bin/bash
+        - -c
+        - |
+          until /usr/bin/curl -fsS --max-time 5 \
+            "$TRINO_OIDC_ISSUER/.well-known/openid-configuration" >/dev/null; do
+            echo "waiting for $TRINO_OIDC_ISSUER"
+            sleep 3
+          done
