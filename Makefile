@@ -84,6 +84,7 @@ BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 .PHONY: backups verify-pgdump offsite-backup export-recovery-secrets import-recovery-secrets
 .PHONY: sync-oidc-clients verify-oidc-clients verify-trino-tls verify-trino-auth sync-trino-group-sync-client sync-pipeline-runner-client sync-dev-client sync-catalog-audience openbao test-openbao-policies seaweedfs-admin
 .PHONY: external-secrets eso-stores
+.PHONY: perf-baseline
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | \
@@ -122,6 +123,9 @@ lint: ## Syntax-check (bash -n) + ShellCheck the scripts under scripts/ and dev/
 .PHONY: node-budget
 node-budget: ## Memory requests, limits and use on the node, and the root filesystem's headroom
 	@python3 scripts/node-budget.py
+
+perf-baseline: ## Measure the Trino baseline on the dev node (manual)
+	@python3 perf/baseline.py
 
 # ---------------------------------------------------------------------------
 # Backup guards (issue #59): a client-side `kubectl apply` from a stale checkout
