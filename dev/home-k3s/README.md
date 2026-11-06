@@ -137,6 +137,12 @@ export CLOUDFLARE_API_TOKEN=…
   JupyterHub homes and Trino spill live under `/var/lib/rancher/k3s/storage` and are lost
   with the host. Backups go to `s3://backups/…` on the same SeaweedFS — not an off-site
   copy. Configure `Secret backup-offsite` if that matters.
+- **The disk has a hard line.** `install-k3s.sh` sets the kubelet's
+  `eviction-hard=nodefs.available<5Gi`: below 5 GiB free the node taints itself
+  `disk-pressure`, evicts every pod and refuses new ones, and nothing schedules again
+  until space is freed *and* the kubelet republishes the node status (minutes).
+  `make node-budget` prints the root filesystem and exits 2 below 10 GiB free or above
+  85 % used; run it before a data-heavy job (platform#549).
 - **No cloud controller, no load balancer, no firewall allowlist.** Reachability is the
   router's. Do not forward `6443` (the cluster API); reach it over a private network
   (Tailscale, WireGuard, SSH tunnel) or from the LAN.

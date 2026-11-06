@@ -23,6 +23,10 @@ as 0. Only `phase: Running` pods count — a completed or evicted object keeps i
 requests but runs nowhere. A running pod without a metrics row counts as 0 used and
 its USED cell is `?` (metrics can lag a few seconds behind a fresh pod).
 
+Exit codes: 0 a healthy report, 1 kubectl failed, 2 the root filesystem is below
+DISK_FLOOR_GIB or above DISK_WARN_PERCENT — the state in which the kubelet evicts
+every pod (platform#549).
+
 Standard library only, like `scripts/access-sync-job.py`; `render()` is pure (no I/O)
 and `main()` is the only part that talks to kubectl, so the unit tests run without a
 cluster.
@@ -198,6 +202,30 @@ def _node_block(node, running, top):
 
 
 DISK_WARN_PERCENT = 85
+# The root filesystem's free space, in GiB, below which the report is a warning and
+# the command exits 2. The kubelet evicts pods at nodefs.available<5Gi (the floor
+# dev/home-k3s/install-k3s.sh sets); 10 GiB is the line to act on, not the line to
+# discover the problem at (platform#549: at 16 GiB free the node evicted everything).
+DISK_FLOOR_GIB = 10.0
+
+
+def disk_low(summary):
+    """True when the root filesystem is close to the kubelet's eviction line.
+
+    False when the document carries no `node.fs` block, like `disk_line`.
+    """
+    try:
+        fs = (summary.get("node") or {}).get("fs") or {}
+        capacity = float(fs.get("capacityBytes") or 0)
+        available = float(fs.get("availableBytes") or 0)
+    except (AttributeError, TypeError, ValueError):
+        return False
+    if capacity == 0:
+        return False
+    return (
+        available / (1024 ** 3) < DISK_FLOOR_GIB
+        or 100.0 * (1.0 - available / capacity) >= DISK_WARN_PERCENT
+    )
 
 
 def disk_line(summary):
@@ -228,8 +256,12 @@ def disk_line(summary):
             percent,
             avail_gib,
         )
-        if percent_float >= DISK_WARN_PERCENT:
-            line += " — WARNING: above 85 %% the local-path volumes (Postgres WAL, SeaweedFS, OpenBao, Trino spill) are at risk"
+        if percent_float >= DISK_WARN_PERCENT or avail_gib < DISK_FLOOR_GIB:
+            line += (
+                " — WARNING: the kubelet evicts every pod at nodefs.available<5Gi"
+                " and above 85 % the local-path volumes (Postgres WAL, SeaweedFS,"
+                " OpenBao, Trino spill) are at risk; free space now (platform#549)"
+            )
         return line
     except Exception:
         return None
@@ -297,6 +329,7 @@ def main():
         return _fail("the cluster has no nodes")
 
     print(report)
+    disk_warning = False
     try:
         node_name = None
         for item in nodes_json.get("items") or []:
@@ -315,6 +348,7 @@ def main():
                     line = disk_line(summary_json)
                     if line is not None:
                         print(line)
+                        disk_warning = disk_low(summary_json)
                     else:
                         print("disk: unknown")
                 except Exception:
@@ -325,6 +359,13 @@ def main():
             print("disk: unknown")
     except Exception:
         print("disk: unknown")
+    if disk_warning:
+        print(
+            "node-budget: the root filesystem is below the %.0f GiB floor — the kubelet"
+            " evicts every pod at nodefs.available<5Gi (platform#549)" % DISK_FLOOR_GIB,
+            file=sys.stderr,
+        )
+        return 2
     return 0
 
 
