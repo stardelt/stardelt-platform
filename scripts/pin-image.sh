@@ -92,6 +92,18 @@ echo "› $NS/$DEPLOY $CONTAINER"
 echo "    now:  $current"
 echo "    new:  $pinned"
 
+# Validate the operator's CRDs before the image moves. `set -euo pipefail` turns a
+# refused dry run into an immediate exit, so a CRD the API server rejects (platform#555:
+# "estimated rule cost exceeds budget") cannot leave the cluster on a new binary with
+# the old schema.
+if [ "$APP" = "stardelt-operator" ] && [ "${APPLY_CRDS:-1}" = "1" ]; then
+  crds="${OPERATOR_DIR:-../stardelt-operator}/chart/crds"
+  if [ -d "$crds" ]; then
+    kubectl apply --server-side --force-conflicts --dry-run=server -f "$crds" >/dev/null
+    echo "  › CRDs pass a server-side dry run"
+  fi
+fi
+
 # The deployment and the manifest are updated independently: skipping the first because the
 # cluster already matches must not skip the second, or the manifest keeps the old digest and
 # the next `kubectl apply` puts it back. (That hole shipped once — the early exit said
