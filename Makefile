@@ -11,6 +11,8 @@
 #   make pf                   # open port-forwards
 
 NAMESPACE ?= stardelt
+GHCR_SECRET ?= ghcr-creds
+SECRET ?= $(GHCR_SECRET)
 
 # Pinned chart versions
 CNPG_VERSION       := 0.28.2
@@ -78,7 +80,7 @@ BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 
 .PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator openfga trino catalogs upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-refresh dev-watch dev-status check-pins dev-up dev-down dev-dns dev-dns-down platform-config
 .PHONY: chart-deps chart-template chart-install
-.PHONY: verify-backups verify-backups-identity verify-backups-nova verify-backups-openfga verify-backups-all verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
+.PHONY: verify-backups verify-backups-identity verify-backups-nova verify-backups-openfga verify-backups-all verify-images verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
 .PHONY: backups verify-pgdump offsite-backup export-recovery-secrets import-recovery-secrets
 .PHONY: sync-oidc-clients verify-oidc-clients verify-trino-tls verify-trino-auth sync-trino-group-sync-client sync-pipeline-runner-client sync-dev-client sync-catalog-audience openbao test-openbao-policies seaweedfs-admin
 .PHONY: external-secrets eso-stores
@@ -189,6 +191,9 @@ MAX_AGE_HOURS ?= 36
 
 verify-backups-all: _context ## Every PVC has a backup mechanism and a recent backup, or an accepted, ticketed exception (manual)
 	@NAMESPACE=$(NAMESPACE) MAX_AGE_HOURS=$(MAX_AGE_HOURS) bash scripts/verify-backups-all.sh
+
+verify-images: _context ## Every pinned stardelt image is readable with the cluster's pull credential (manual)
+	@NAMESPACE=$(NAMESPACE) SECRET=$(SECRET) bash scripts/verify-images.sh
 
 # ---------------------------------------------------------------------------
 # Recovery keys (platform#396, design platform#368): a database backup is
