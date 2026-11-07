@@ -118,5 +118,3 @@ cache, not DNS: `sudo resolvectl flush-caches`.
 
 - Single node, no HA — a development environment, not production.
 - **Do not put real data here.**
-- The build-plane AI fleet runs on the maintainer's laptop, not here. See
-  [AI development fleet](../../../stardelt-docs/docs/developer/ai-fleet).
