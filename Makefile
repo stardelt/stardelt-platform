@@ -234,6 +234,7 @@ _helm-repos:
 	@helm repo add stakater       https://stakater.github.io/stakater-charts         2>/dev/null || true
 	@helm repo add openbao        https://openbao.github.io/openbao-helm            2>/dev/null || true
 	@helm repo add external-secrets https://charts.external-secrets.io             2>/dev/null || true
+	@helm repo add strimzi        https://strimzi.io/charts/                        2>/dev/null || true
 	@helm repo update
 
 # ---------------------------------------------------------------------------
