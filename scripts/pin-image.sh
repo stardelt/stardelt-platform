@@ -92,14 +92,52 @@ echo "› $NS/$DEPLOY $CONTAINER"
 echo "    now:  $current"
 echo "    new:  $pinned"
 
+# Which CRD schema moves with the image: the one the image was built from, not whatever the
+# operator checkout happens to have. The digest comes from the registry (the build of the
+# merge on `origin/main`), so the schema must come from the same commit; a checkout that is
+# behind applies an old schema and the dry run passes against the old files (platform#588:
+# the image moved to a build whose `spec.stopped` the cluster's CRD did not have).
+# ALLOW_STALE_CRDS=1 is the only way to accept the working tree while it is behind, and it
+# names both revisions.
+CRDS_DIR=""
+CRDS_TMP=""
+if [ "$APP" = "stardelt-operator" ] && [ "${APPLY_CRDS:-1}" = "1" ]; then
+  op_dir="${OPERATOR_DIR:-../stardelt-operator}"
+  crds="$op_dir/chart/crds"
+  if [ -d "$crds" ] && git -C "$op_dir" rev-parse --git-dir >/dev/null 2>&1; then
+    head_rev=$(git -C "$op_dir" rev-parse HEAD)
+    main_ref=""
+    for ref in origin/main origin/master; do
+      if git -C "$op_dir" rev-parse --verify --quiet "$ref" >/dev/null; then
+        main_ref="$ref"
+        break
+      fi
+    done
+    if [ -n "$main_ref" ]; then
+      main_rev=$(git -C "$op_dir" rev-parse "$main_ref")
+      if [ "$head_rev" != "$main_rev" ]; then
+        if [ "${ALLOW_STALE_CRDS:-0}" = "1" ]; then
+          echo "  › WARNING: $op_dir is at ${head_rev:0:7}, $main_ref is ${main_rev:0:7} — applying the working tree's CRDs (ALLOW_STALE_CRDS=1)" >&2
+        else
+          CRDS_TMP=$(mktemp -d)
+          trap 'rm -rf "$CRDS_TMP"' EXIT
+          git -C "$op_dir" archive "$main_ref" chart/crds | tar -x -C "$CRDS_TMP"
+          crds="$CRDS_TMP/chart/crds"
+          echo "  › CRDs from $main_ref ${main_rev:0:7} (the checkout is at ${head_rev:0:7})"
+        fi
+      fi
+    fi
+  fi
+  CRDS_DIR="$crds"
+fi
+
 # Validate the operator's CRDs before the image moves. `set -euo pipefail` turns a
 # refused dry run into an immediate exit, so a CRD the API server rejects (platform#555:
 # "estimated rule cost exceeds budget") cannot leave the cluster on a new binary with
 # the old schema.
-if [ "$APP" = "stardelt-operator" ] && [ "${APPLY_CRDS:-1}" = "1" ]; then
-  crds="${OPERATOR_DIR:-../stardelt-operator}/chart/crds"
-  if [ -d "$crds" ]; then
-    kubectl apply --server-side --force-conflicts --dry-run=server -f "$crds" >/dev/null
+if [ -n "$CRDS_DIR" ]; then
+  if [ -d "$CRDS_DIR" ]; then
+    kubectl apply --server-side --force-conflicts --dry-run=server -f "$CRDS_DIR" >/dev/null
     echo "  › CRDs pass a server-side dry run"
   fi
 fi
@@ -196,14 +234,14 @@ fi
 # `helm upgrade`, so a cluster keeps the schema it was first installed with while the new binary
 # expects the new fields — and when the generated CRD itself is invalid the apply fails silently
 # for the schema and only the image moves (stardelt-platform#539, stardelt-operator#267). Moving
-# the operator's digest therefore moves its schemas too, from the checkout the chart comes from.
+# the operator's digest therefore moves its schemas too — resolved above from the same commit
+# the image was built from, never from a checkout that may be behind.
 # APPLY_CRDS=0 skips it; a missing checkout prints a note instead of failing, because this script
 # runs for other images on machines without the operator repo.
-if [ "$APP" = "stardelt-operator" ] && [ "${APPLY_CRDS:-1}" = "1" ]; then
-  crds="${OPERATOR_DIR:-../stardelt-operator}/chart/crds"
-  if [ -d "$crds" ]; then
-    kubectl apply --server-side --force-conflicts -f "$crds"
+if [ -n "$CRDS_DIR" ]; then
+  if [ -d "$CRDS_DIR" ]; then
+    kubectl apply --server-side --force-conflicts -f "$CRDS_DIR"
   else
-    echo "  › no operator CRDs at $crds — the CRD schema was not updated (set OPERATOR_DIR)" >&2
+    echo "  › no operator CRDs at $CRDS_DIR — the CRD schema was not updated (set OPERATOR_DIR)" >&2
   fi
 fi
