@@ -3,6 +3,14 @@
 # (stardelt-operator values/spark-operator.yaml, operator#293), so the two install paths cannot
 # drift. One controller replica on the dev node; the webhook is off because nothing here mutates
 # pods and its certificate is one more moving part.
+#
+# The chart's default is `jobNamespaces: [default]`, so a controller that only sets the release
+# namespace never looks at the `StreamApp`s beside it (platform#608). The empty string means every
+# namespace, which is what a `StreamApp` needs: it is created in the platform namespace and the
+# operator path installs into the same one, so the name is not known when this file is written.
+spark:
+  jobNamespaces:
+    - ""
 controller:
   replicas: 1
   resources:
