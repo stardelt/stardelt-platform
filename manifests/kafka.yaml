@@ -5,7 +5,7 @@
 #
 # The 5Gi claim keeps the topics across a restart while the dev node has little disk headroom
 # (platform#553); `deleteClaim: false` keeps the log when this resource is deleted.
-apiVersion: kafka.strimzi.io/v1beta2
+apiVersion: kafka.strimzi.io/v1
 kind: KafkaNodePool
 metadata:
   name: kafka
@@ -32,7 +32,7 @@ spec:
     -Xms: 1g
     -Xmx: 1g
 ---
-apiVersion: kafka.strimzi.io/v1beta2
+apiVersion: kafka.strimzi.io/v1
 kind: Kafka
 metadata:
   name: kafka

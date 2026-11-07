@@ -561,6 +561,7 @@ install-spark: deps _context ## Install the Spark Connect endpoint (Iceberg on t
 install-kafka: deps _context _helm-repos ## Install the streaming bus (Strimzi + one KRaft Kafka broker)
 	@helm upgrade --install strimzi strimzi/strimzi-kafka-operator \
 	  --namespace $(NAMESPACE) --version $(STRIMZI_VERSION) $(HELM_FLAGS)
+	@kubectl wait --for=condition=Established crd/kafkas.kafka.strimzi.io crd/kafkanodepools.kafka.strimzi.io --timeout=120s
 	@kubectl -n $(NAMESPACE) apply -f manifests/kafka.yaml
 	@kubectl -n $(NAMESPACE) wait kafka.kafka.strimzi.io/kafka --for=condition=Ready --timeout=10m
 	@echo "Kafka ready: kafka.$(NAMESPACE).svc.cluster.local:9092 (in-cluster only)"
