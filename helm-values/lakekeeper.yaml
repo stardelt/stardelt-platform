@@ -403,6 +403,42 @@ catalog:
     requests: { cpu: "50m",  memory: "256Mi" }
     limits:   { cpu: "1",    memory: "512Mi" }
 
+  # The IdP is not ready when the node is: Keycloak rebuilds its image for ~2 minutes and answers
+  # 503 on discovery, Lakekeeper exits on that ("Failed to parse openid configuration") and the
+  # kubelet's backoff turns a 2-minute restart into 5+ minutes of catalog outage (platform#516).
+  # `install-core` has no IdP, so the wait is a no-op when the ConfigMap key is absent.
+  extraInitContainers:
+    - name: wait-for-idp
+      image: trinodb/trino:480          # already pinned; has bash + curl, unlike the distroless catalog
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: OIDC_ISSUER
+          valueFrom:
+            configMapKeyRef:
+              name: stardelt-identity
+              key: issuerUrl
+              optional: true
+      command:
+        - /usr/bin/bash
+        - -c
+        - |
+          if [ -z "$OIDC_ISSUER" ]; then
+            echo "no identity provider configured"
+            exit 0
+          fi
+          # Five minutes at most: an outage longer than that should surface as the crash loop it
+          # already is today, not as an init container that never returns.
+          for _ in $(seq 1 100); do
+            if /usr/bin/curl -fsS --max-time 5 \
+              "$OIDC_ISSUER/.well-known/openid-configuration" >/dev/null; then
+              echo "identity provider answered at $OIDC_ISSUER"
+              exit 0
+            fi
+            echo "waiting for $OIDC_ISSUER"
+            sleep 3
+          done
+          echo "identity provider did not answer within 5 minutes; starting the catalog anyway" >&2
+
   # Authentication (platform#285, step 5 of the catalog turn-on): the two settings
   # the spike verified (platform#271, P1.1) — `LAKEKEEPER__OPENID_PROVIDER_URI` and
   # `LAKEKEEPER__OPENID_AUDIENCE`. A request without a valid token is now 401; the
