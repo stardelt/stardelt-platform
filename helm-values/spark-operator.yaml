@@ -1,0 +1,16 @@
+# The Kubeflow Spark Operator (D42): reconciles `SparkApplication` objects in the namespace it
+# watches — the runtime of a `StreamApp`. The same file the operator's streaming pillar carries
+# (stardelt-operator values/spark-operator.yaml, operator#293), so the two install paths cannot
+# drift. One controller replica on the dev node; the webhook is off because nothing here mutates
+# pods and its certificate is one more moving part.
+controller:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+webhook:
+  enable: false
