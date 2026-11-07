@@ -66,6 +66,7 @@ class DemoAccess(unittest.TestCase):
         self.assertIn("name: pipeline-demo", done.stdout)
         self.assertIn("ownerGroup: demo", done.stdout)
         self.assertIn("purpose: pipeline", done.stdout)
+        self.assertIn("audiences: [trino, lakekeeper]", done.stdout)
         self.assertEqual(self.calls(), [], "--manifest asks nobody")
         shop = self.run_script("--manifest", GROUP="shop", NAMESPACE="other")
         self.assertIn("name: pipeline-shop", shop.stdout)
