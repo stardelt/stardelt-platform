@@ -235,6 +235,11 @@ config:
     remote_base_log_folder: s3://backups/airflow-logs
     remote_log_conn_id: stardelt_s3
 
+# D42 phase 2a: the demo DAG publishes to the bus only when this is set. Left empty unless the
+# streaming pillar is installed (`make step-kafka`); the Makefile passes KAFKA_BOOTSTRAP in.
+kafka:
+  bootstrap: ""
+
 # Plain-value envs on every Airflow container (including spawned K8s task pods).
 env:
   # Connection `stardelt_s3`: the object store speaks S3 with path-style addressing. The endpoint
@@ -260,6 +265,10 @@ env:
 
 # Secret-backed envs use extraEnv (templated string accepting valueFrom).
 extraEnv: |
+  {{- if .Values.kafka.bootstrap }}
+  - name: PEGELONLINE_KAFKA_BOOTSTRAP
+    value: {{ .Values.kafka.bootstrap | quote }}
+  {{- end }}
   - name: S3_ENDPOINT
     valueFrom:
       secretKeyRef:
