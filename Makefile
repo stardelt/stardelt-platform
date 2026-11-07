@@ -21,6 +21,7 @@ LAKEKEEPER_VERSION := 0.11.0
 OPENFGA_VERSION    ?= 0.2.62
 TRINO_VERSION      := 1.42.2
 AIRFLOW_VERSION    := 1.21.0
+KAFKA_BOOTSTRAP    ?=
 RELOADER_VERSION   := 2.2.18
 OPENBAO_VERSION    := 0.30.4
 EXTERNAL_SECRETS_VERSION := 2.13.0
@@ -399,7 +400,8 @@ step-airflow: ## Airflow and the pipeline templates
 	@helm upgrade --install airflow apache-airflow/airflow \
 	  --version $(AIRFLOW_VERSION) \
 	  $(HELM_FLAGS) \
-	  -f helm-values/airflow.yaml
+	  -f helm-values/airflow.yaml \
+	  --set-string kafka.bootstrap=$(KAFKA_BOOTSTRAP)
 	@kubectl apply -f manifests/airflow-pipelines.yaml
 	@kubectl -n $(NAMESPACE) create configmap airflow-group-roles-script --from-file=sync.py=scripts/airflow-group-roles.py --dry-run=client -o yaml | kubectl apply -f -
 	@kubectl apply -f manifests/airflow-group-roles.yaml
@@ -578,6 +580,7 @@ install-kafka: deps _context _helm-repos ## Install the streaming bus (Strimzi +
 	@kubectl -n $(NAMESPACE) apply -f manifests/kafka.yaml
 	@kubectl -n $(NAMESPACE) wait kafka.kafka.strimzi.io/kafka --for=condition=Ready --timeout=10m
 	@echo "Kafka ready: kafka.$(NAMESPACE).svc.cluster.local:9092 (in-cluster only)"
+	@echo "Next: make step-airflow KAFKA_BOOTSTRAP=kafka-kafka-bootstrap.$(NAMESPACE).svc.cluster.local:9092"
 
 # ---------------------------------------------------------------------------
 # Trino — the query engine, and the one component whose authentication state

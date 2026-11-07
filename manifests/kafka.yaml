@@ -56,3 +56,18 @@ spec:
   entityOperator:
     topicOperator: {}
     userOperator: {}
+---
+# The D42 example's topic (dags/pegelonline_hourly.py: TOPIC). The DAG publishes keyed records
+# here; a StreamApp reads them back later (design/streaming.md §7).
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: pegelonline.measurements
+  labels:
+    strimzi.io/cluster: kafka
+    app.kubernetes.io/part-of: stardelt
+spec:
+  partitions: 1
+  replicas: 1
+  config:
+    retention.ms: "604800000"
