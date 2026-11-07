@@ -1,0 +1,58 @@
+# The streaming bus (D42): one KRaft Kafka on Strimzi, one node that is both controller and
+# broker. In-cluster only (no Ingress, no TLS, port 9092) — the same shape the operator builds
+# in crates/stardelt-operator/src/kafka.rs (stardelt-operator#287), so the dev path and the
+# operator path run the same bus.
+#
+# The 5Gi claim keeps the topics across a restart while the dev node has little disk headroom
+# (platform#553); `deleteClaim: false` keeps the log when this resource is deleted.
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaNodePool
+metadata:
+  name: kafka
+  labels:
+    strimzi.io/cluster: kafka
+    app.kubernetes.io/part-of: stardelt
+spec:
+  replicas: 1
+  roles:
+    - controller
+    - broker
+  storage:
+    type: persistent-claim
+    size: 5Gi
+    deleteClaim: false
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "1"
+      memory: 1536Mi
+  jvmOptions:
+    -Xms: 1g
+    -Xmx: 1g
+---
+apiVersion: kafka.strimzi.io/v1
+kind: Kafka
+metadata:
+  name: kafka
+  labels:
+    app.kubernetes.io/part-of: stardelt
+  annotations:
+    strimzi.io/node-pools: enabled
+spec:
+  kafka:
+    listeners:
+      - name: plain
+        port: 9092
+        type: internal
+        tls: false
+    config:
+      offsets.topic.replication.factor: 1
+      transaction.state.log.replication.factor: 1
+      transaction.state.log.min.isr: 1
+      default.replication.factor: 1
+      min.insync.replicas: 1
+  entityOperator:
+    topicOperator: {}
+    userOperator: {}

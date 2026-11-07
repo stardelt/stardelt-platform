@@ -553,6 +553,20 @@ install-spark: deps _context ## Install the Spark Connect endpoint (Iceberg on t
 	@echo "Spark Connect ready: sc://spark-connect.$(NAMESPACE).svc.cluster.local:15002 (in-cluster only)"
 
 # ---------------------------------------------------------------------------
+# The streaming bus (D42): Strimzi and one KRaft Kafka, for the near-live example.
+# The operator's streaming pillar installs the same bus (stardelt-operator#285/#287);
+# this target keeps the dev cluster — which runs this Makefile path — able to run it.
+# Opt-in like `install-notebooks` and `install-spark`: the bus is not part of `make install`.
+# ---------------------------------------------------------------------------
+install-kafka: deps _context _helm-repos ## Install the streaming bus (Strimzi + one KRaft Kafka broker)
+	@helm upgrade --install strimzi strimzi/strimzi-kafka-operator \
+	  --namespace $(NAMESPACE) --version $(STRIMZI_VERSION) $(HELM_FLAGS)
+	@kubectl wait --for=condition=Established crd/kafkas.kafka.strimzi.io crd/kafkanodepools.kafka.strimzi.io --timeout=120s
+	@kubectl -n $(NAMESPACE) apply -f manifests/kafka.yaml
+	@kubectl -n $(NAMESPACE) wait kafka.kafka.strimzi.io/kafka --for=condition=Ready --timeout=10m
+	@echo "Kafka ready: kafka.$(NAMESPACE).svc.cluster.local:9092 (in-cluster only)"
+
+# ---------------------------------------------------------------------------
 # Trino — the query engine, and the one component whose authentication state
 # depends on whether the platform has an IdP: with `stardelt-identity` present
 # (make install-identity / the umbrella chart) every statement needs a Keycloak
@@ -1349,6 +1363,8 @@ dev-dns-down: ## Remove the playground DNS records
 step-notebooks: install-notebooks ## JupyterHub (the notebooks) and the bucket they publish into
 
 step-spark: install-spark ## The Spark Connect endpoint (heavy compute on the same tables)
+
+step-kafka: install-kafka ## The streaming bus (Strimzi + one KRaft Kafka)
 
 # ---------------------------------------------------------------------------
 # One command installs, one command upgrades (platform#422). The flow is
