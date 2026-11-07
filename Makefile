@@ -26,6 +26,7 @@ OPENBAO_VERSION    := 0.30.4
 EXTERNAL_SECRETS_VERSION := 2.13.0
 SUPERSET_VERSION   := 0.15.5
 JUPYTERHUB_VERSION := 4.4.3
+STRIMZI_VERSION    := 1.3.1
 
 # Pinned image versions (no chart: plain manifests in manifests/keycloak.yaml).
 # Mirrored in manifests/keycloak.yaml and chart/values.yaml
