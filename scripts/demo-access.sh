@@ -68,6 +68,7 @@ metadata:
 spec:
   ownerGroup: $GROUP
   purpose: pipeline
+  audiences: [trino, lakekeeper]
 EOF
 }
 
