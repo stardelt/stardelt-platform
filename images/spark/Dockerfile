@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # stardelt's Spark image: Apache Spark 4.1 (Spark Connect server) plus the
-# Iceberg runtime and AWS bundle that the upstream image does not ship.
+# Iceberg runtime, AWS bundle, and Kafka source connector that the upstream
+# image does not ship.
 #
 # Why a derived image instead of `spark.jars.packages`: the platform installs
 # from pinned artifacts, not from Maven Central at pod startup (master spec §4,
@@ -60,10 +61,32 @@ ADD --checksum=sha256:62638f33045690c6bc5e496b54b0b2e89a9ad38cbedacdf6e017fea6bc
     https://repo1.maven.org/maven2/software/amazon/awssdk/bundle/2.29.52/bundle-2.29.52.jar \
     /opt/spark/jars/bundle-2.29.52.jar
 
+# The Kafka source for a StreamApp (D42): `readStream.format("kafka")` needs this
+# connector, which upstream Spark does not ship. Spark 4.1.3 is Scala 2.13, so the
+# artifact is the `_2.13` one at the same version as the base image; a 2.12 jar
+# links against a different Spark ABI. The remaining three are its runtime deps:
+# spark-token-provider (same version), kafka-clients 3.9.1 and commons-pool2
+# 2.12.1 — the image's commons-pool-1.5.4 is the v1 API and is not it. lz4,
+# snappy, zstd, jsr305 and slf4j come from the base image already.
+ADD --checksum=sha256:cb31ffd9c8f5527dba061db8af671d295562092e4f3f5ff42fc249fab8a8fde6 \
+    https://repo1.maven.org/maven2/org/apache/spark/spark-sql-kafka-0-10_2.13/4.1.3/spark-sql-kafka-0-10_2.13-4.1.3.jar \
+    /opt/spark/jars/spark-sql-kafka-0-10_2.13.jar
+ADD --checksum=sha256:0535a111d7d11b2859c0a0548d5c8d172c6925f9b8d041d0f0dd38ddc5a3497c \
+    https://repo1.maven.org/maven2/org/apache/spark/spark-token-provider-kafka-0-10_2.13/4.1.3/spark-token-provider-kafka-0-10_2.13-4.1.3.jar \
+    /opt/spark/jars/spark-token-provider-kafka-0-10_2.13.jar
+ADD --checksum=sha256:7568b998572d256f0b7bc0afdc1b7a2588b8b08415c62ce314c864a6851ae9d9 \
+    https://repo1.maven.org/maven2/org/apache/kafka/kafka-clients/3.9.1/kafka-clients-3.9.1.jar \
+    /opt/spark/jars/kafka-clients-3.9.1.jar
+ADD --checksum=sha256:5273c8bc8c0dca2211175c0d27efbd7228efae99689aac001a8e1ef8e872e9ef \
+    https://repo1.maven.org/maven2/org/apache/commons/commons-pool2/2.12.1/commons-pool2-2.12.1.jar \
+    /opt/spark/jars/commons-pool2-2.12.1.jar
+
 # `ADD <url>` lands the file as mode 0600; the container runs as the `spark`
 # user (uid 185), so make the jars world-readable or the JVM cannot load them.
 RUN chmod 0644 /opt/spark/jars/iceberg-spark-runtime.jar /opt/spark/jars/iceberg-aws-bundle.jar \
-    /opt/spark/jars/hadoop-aws-3.4.2.jar /opt/spark/jars/bundle-2.29.52.jar
+    /opt/spark/jars/hadoop-aws-3.4.2.jar /opt/spark/jars/bundle-2.29.52.jar \
+    /opt/spark/jars/spark-sql-kafka-0-10_2.13.jar /opt/spark/jars/spark-token-provider-kafka-0-10_2.13.jar \
+    /opt/spark/jars/kafka-clients-3.9.1.jar /opt/spark/jars/commons-pool2-2.12.1.jar
 
 # --- Python on the workers: the notebook's Python minor ----------------------
 # Python code travels to a worker as a pickle: the notebook pickles it on the
