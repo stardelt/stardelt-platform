@@ -87,6 +87,9 @@ rules:
     resources: ["serviceprincipals"]
     verbs: ["get", "list"]
   - apiGroups: ["stardelt.io"]
+    resources: ["streamapps"]
+    verbs: ["get", "list"]
+  - apiGroups: ["stardelt.io"]
     resources: ["catalogs"]
     verbs: ["get", "list", "patch"]
   # `SqlWarehouse` resources: which compute class a person uses (nova#236, platform#473).
