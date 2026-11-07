@@ -553,6 +553,19 @@ install-spark: deps _context ## Install the Spark Connect endpoint (Iceberg on t
 	@echo "Spark Connect ready: sc://spark-connect.$(NAMESPACE).svc.cluster.local:15002 (in-cluster only)"
 
 # ---------------------------------------------------------------------------
+# The Kubeflow Spark Operator (D42): the controller that runs a `StreamApp` as a
+# `SparkApplication`. The operator's streaming pillar installs the same chart with the same values
+# (stardelt-operator#293); this keeps the dev cluster — which runs this Makefile path — able to run
+# a stream. Opt-in like `install-kafka` and `install-spark`.
+# ---------------------------------------------------------------------------
+install-spark-operator: deps _context _helm-repos ## Install the Kubeflow Spark Operator (StreamApp runtime)
+	@helm upgrade --install spark-operator spark-operator/spark-operator \
+	  --namespace $(NAMESPACE) --version $(SPARK_OPERATOR_VERSION) \
+	  --values helm-values/spark-operator.yaml $(HELM_FLAGS)
+	@kubectl -n $(NAMESPACE) rollout status deploy/spark-operator-controller --timeout=5m
+	@echo "Spark Operator ready: SparkApplications in namespace $(NAMESPACE)"
+
+# ---------------------------------------------------------------------------
 # The streaming bus (D42): Strimzi and one KRaft Kafka, for the near-live example.
 # The operator's streaming pillar installs the same bus (stardelt-operator#285/#287);
 # this target keeps the dev cluster — which runs this Makefile path — able to run it.
@@ -1363,6 +1376,8 @@ dev-dns-down: ## Remove the playground DNS records
 step-notebooks: install-notebooks ## JupyterHub (the notebooks) and the bucket they publish into
 
 step-spark: install-spark ## The Spark Connect endpoint (heavy compute on the same tables)
+
+step-spark-operator: install-spark-operator ## The Kubeflow Spark Operator (StreamApp runtime)
 
 step-kafka: install-kafka ## The streaming bus (Strimzi + one KRaft Kafka)
 
