@@ -77,6 +77,12 @@ spec:
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: spark-connect
+        # StreamApp driver (D42) — the Spark driver reads and writes the sink
+        # table through the REST catalog. The executors read data files only;
+        # the label selects both pods and is harmless for the executor.
+        - podSelector:
+            matchLabels:
+              stardelt.io/component: stream
         # Airflow KubernetesExecutor task pods — pyiceberg in the DAGs
         # (CATALOG_URI); the scheduler and API server do not call the catalog.
         - podSelector:
