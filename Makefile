@@ -27,6 +27,7 @@ EXTERNAL_SECRETS_VERSION := 2.13.0
 SUPERSET_VERSION   := 0.15.5
 JUPYTERHUB_VERSION := 4.4.3
 STRIMZI_VERSION    := 1.3.1
+SPARK_OPERATOR_VERSION := 2.5.2
 
 # Pinned image versions (no chart: plain manifests in manifests/keycloak.yaml).
 # Mirrored in manifests/keycloak.yaml and chart/values.yaml
@@ -235,6 +236,7 @@ _helm-repos:
 	@helm repo add openbao        https://openbao.github.io/openbao-helm            2>/dev/null || true
 	@helm repo add external-secrets https://charts.external-secrets.io             2>/dev/null || true
 	@helm repo add strimzi        https://strimzi.io/charts/                        2>/dev/null || true
+	@helm repo add spark-operator  https://kubeflow.github.io/spark-operator    2>/dev/null || true
 	@helm repo update
 
 # ---------------------------------------------------------------------------
@@ -531,6 +533,11 @@ openfga: deps _context _helm-repos ## Install OpenFGA (catalog permission store;
 # without touching the running driver, so the target restarts the driver only
 # when the rendered config actually changed; an unchanged re-run leaves open
 # sessions alone.
+#
+# The Kubeflow Spark Operator is installed separately, by the operator's streaming pillar
+# (stardelt-operator#293, D42): a StreamApp runs as a SparkApplication, which needs that
+# controller. `SPARK_OPERATOR_VERSION` above is the pin the operator's chart table is checked
+# against (scripts/check-platform-pins.sh); nothing in this Makefile installs it today.
 # ---------------------------------------------------------------------------
 install-spark: deps _context ## Install the Spark Connect endpoint (Iceberg on the Lakekeeper catalog)
 	@old=$$(kubectl -n $(NAMESPACE) get configmap spark-connect-config \
