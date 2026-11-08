@@ -12,6 +12,12 @@
 # namespace never looks at the `StreamApp`s beside it (platform#608). The empty string means every
 # namespace, which is what a `StreamApp` needs: it is created in the platform namespace and the
 # operator path installs into the same one, so the name is not known when this file is written.
+#
+# The 2 Gi memory limit is not headroom for the controller itself: it runs `spark-submit` as a
+# child JVM for every application, and two submissions at once (a resubmit of both streams) went
+# over the old 512 Mi limit and the kubelet OOM-killed it every ~60 s (`exitCode: 137`,
+# `reason: OOMKilled`; 2026-11-08 14:40Z). The chart warns about exactly this ("increase memory
+# limits"). The request stays 256 Mi: the controller idles between submissions.
 spark:
   jobNamespaces:
     - ""
@@ -23,6 +29,6 @@ controller:
       memory: 256Mi
     limits:
       cpu: 500m
-      memory: 512Mi
+      memory: 2Gi
 webhook:
   enable: true
