@@ -162,30 +162,59 @@ print(json.dumps({"lines": lines, "failures": failures, "count": len(items)}))
 fi
 
 # ---------------------------------------------------------------------------
-# 5. The Strimzi controller pod. A restart is a warning, not a failure: the
-#    operator comes back and the broker it manages stays up (platform#665).
+# 5. The Strimzi controller pod. The warning is limited to the operator's
+#    ten-minute restart window (RESTART_WINDOW_SECS, override for a test), so a
+#    controller that came back long ago is not an active alarm; the root cause
+#    stays platform#665.
 # ---------------------------------------------------------------------------
 pods="$(kubectl -n "$NS" get pods -l name=strimzi-cluster-operator -o json 2>/dev/null || true)"
-restarts="$(printf '%s' "$pods" | python3 -c '
+restart_window="${RESTART_WINDOW_SECS:-600}"
+restart_report="$(printf '%s' "$pods" | python3 -c '
 import json, sys
+from datetime import datetime, timezone
 
+window = int(sys.argv[1]) if len(sys.argv) > 1 else 600
 try:
     items = json.load(sys.stdin).get("items") or []
 except ValueError:
     items = []
 if not items:
     print("")
-else:
-    pod = items[0]
-    print(sum(c.get("restartCount", 0) for c in (pod.get("status") or {}).get("containerStatuses") or []))
-' 2>/dev/null || true)"
-if [ -z "$restarts" ]; then
+    sys.exit(0)
+
+restarts, newest = 0, None
+for pod in items:
+    for c in (pod.get("status") or {}).get("containerStatuses") or []:
+        restarts += c.get("restartCount", 0) or 0
+        finished = ((c.get("lastState") or {}).get("terminated") or {}).get("finishedAt")
+        if finished:
+            try:
+                t = datetime.fromisoformat(finished.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if newest is None or t > newest:
+                newest = t
+
+inside, age_min = False, None
+if newest is not None:
+    age_min = int((datetime.now(timezone.utc) - newest).total_seconds() // 60)
+    inside = age_min * 60 < window
+print(json.dumps({"restarts": restarts, "age_minutes": age_min, "inside": inside}))
+' "$restart_window" 2>/dev/null || true)"
+if [ -z "$restart_report" ]; then
   echo "✗ strimzi-operator   no pod"
   problems=$((problems + 1))
-elif [ "$restarts" -gt 0 ]; then
-  echo "! strimzi-operator   $restarts restart(s) — see stardelt-platform#665"
 else
-  echo "✓ strimzi-operator   no restarts"
+  restarts="$(printf '%s' "$restart_report" | python3 -c 'import json,sys; print(json.load(sys.stdin)["restarts"])')"
+  inside="$(printf '%s' "$restart_report" | python3 -c 'import json,sys; print("yes" if json.load(sys.stdin)["inside"] else "no")')"
+  age="$(printf '%s' "$restart_report" | python3 -c 'import json,sys; a=json.load(sys.stdin)["age_minutes"]; print("unknown" if a is None else ("%dm" % a if a < 120 else "%dh" % (a // 60)))')"
+  if [ "$restarts" -eq 0 ]; then
+    echo "✓ strimzi-operator   no restarts"
+  elif [ "$inside" = "yes" ]; then
+    echo "! strimzi-operator   $restarts restart(s), last $age ago — inside the $((restart_window / 60))-minute window; see stardelt-platform#665"
+  else
+    echo "✓ strimzi-operator   $restarts restart(s), last $age ago (outside the window)"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
