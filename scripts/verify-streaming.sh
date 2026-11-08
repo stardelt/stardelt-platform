@@ -67,9 +67,10 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 4. Every StreamApp's status is current: a phase other than Failed and an
-#    observedGeneration that has caught up with the spec. A StreamApp the
-#    controller never reconciled keeps an old generation and looks fine.
+# 4. Every StreamApp's status is current and running: a stream that is not
+#    running is never a checkmark: `Pending` is a warning, `Failed` or a stale
+#    generation is a failure. A StreamApp the controller never reconciled keeps
+#    an old generation and looks fine.
 # ---------------------------------------------------------------------------
 if ! apps="$(kubectl -n "$NS" get streamapps.stardelt.io -o json 2>&1)"; then
   echo "✗ streamapps   cannot list streamapps.stardelt.io in $NS: $apps"
@@ -87,11 +88,19 @@ for item in items:
     phase = status.get("phase") or ""
     generation = meta.get("generation")
     observed = status.get("observedGeneration")
-    if phase != "Failed" and observed is not None and observed == generation:
-        lines.append("✓ %s   %s" % (name, phase))
-    else:
+    if observed != generation:
         lines.append("✗ %s   phase %s, observedGeneration %s != generation %s"
                      % (name, phase or "(none)", observed, generation))
+        failures += 1
+    elif phase == "Running":
+        lines.append("✓ %s   Running" % (name,))
+    elif phase == "Pending":
+        lines.append("! %s   Pending, lastSubmittedAt %s (not running now)"
+                     % (name, status.get("lastSubmittedAt") or "never"))
+    elif phase == "Stopped":
+        lines.append("✓ %s   Stopped" % (name,))
+    else:
+        lines.append("✗ %s   phase %s" % (name, phase or "(none)"))
         failures += 1
 print(json.dumps({"lines": lines, "failures": failures, "count": len(items)}))
 ')"
