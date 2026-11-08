@@ -77,6 +77,11 @@ fi
 #    look is green most of the time (platform#671). SparkApplication
 #    status.executionAttempts counts the resubmissions; a running stream with
 #    more than one is a warning, not a failure (a one-off restart is not broken).
+#
+#    The warning is limited to the operator's ten-minute restart window
+#    (RESTART_WINDOW_SECS, override with RESTART_WINDOW_SECS): a stream whose
+#    last submission is older than the window keeps a checkmark, because its
+#    attempts are historical, not an active restart (platform#677).
 # ---------------------------------------------------------------------------
 spark_apps=""
 if spark_json="$(kubectl -n "$NS" get sparkapplications.sparkoperator.k8s.io -o json 2>&1)"; then
@@ -91,11 +96,14 @@ if ! apps="$(kubectl -n "$NS" get streamapps.stardelt.io -o json 2>&1)"; then
   echo "✗ streamapps   cannot list streamapps.stardelt.io in $NS: $apps"
   problems=$((problems + 1))
 else
+restart_window="${RESTART_WINDOW_SECS:-600}"
   report="$(printf '%s' "$apps" | python3 -c '
 import json, sys
+from datetime import datetime, timezone
 
 items = json.load(sys.stdin).get("items") or []
 attempts = {}
+window = int(sys.argv[2]) if len(sys.argv) > 2 else 600
 spark_raw = sys.argv[1] if len(sys.argv) > 1 else ""
 if spark_raw.strip():
     try:
@@ -118,10 +126,22 @@ for item in items:
                      % (name, phase or "(none)", observed, generation))
         failures += 1
     elif phase == "Running":
-        lines.append("✓ %s   Running" % (name,))
-        if attempts.get(name, 0) > 1:
-            lines.append("! %s   %d execution attempts — the driver is restarting"
-                         % (name, attempts[name]))
+        submitted = status.get("lastSubmittedAt")
+        recent = False
+        if submitted:
+            try:
+                then = datetime.fromisoformat(submitted.replace("Z", "+00:00"))
+                recent = (datetime.now(timezone.utc) - then).total_seconds() < window
+            except ValueError:
+                recent = False
+        if attempts.get(name, 0) > 1 and recent:
+            lines.append("! %s   %d execution attempts, last submitted %s — inside the %d-minute restart window"
+                         % (name, attempts[name], submitted, window // 60))
+        elif attempts.get(name, 0) > 1:
+            lines.append("✓ %s   Running, %d execution attempts, last submitted %s"
+                         % (name, attempts[name], submitted or "never"))
+        else:
+            lines.append("✓ %s   Running" % (name,))
     elif phase == "Pending":
         lines.append("! %s   Pending, lastSubmittedAt %s (not running now)"
                      % (name, status.get("lastSubmittedAt") or "never"))
@@ -131,7 +151,7 @@ for item in items:
         lines.append("✗ %s   phase %s" % (name, phase or "(none)"))
         failures += 1
 print(json.dumps({"lines": lines, "failures": failures, "count": len(items)}))
-' "$spark_apps")"
+' "$spark_apps" "$restart_window")"
   streams="$(printf '%s' "$report" | python3 -c 'import json,sys; print(json.load(sys.stdin)["count"])')"
   app_failures="$(printf '%s' "$report" | python3 -c 'import json,sys; print(json.load(sys.stdin)["failures"])')"
   printf '%s' "$report" | python3 -c 'import json,sys; [print(line) for line in json.load(sys.stdin)["lines"]]'
