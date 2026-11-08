@@ -549,6 +549,11 @@ nova:
   # External base domain for deep-linking platform apps in Nova.
   # Empty = no links. The dev playground sets this to alpha.dev.stardelt.io.
   baseDomain: ""
+  # The stage this install is, shown as a badge in Nova. Empty = no badge.
+  # kind: dev | test | prod. prod adds an amber frame in Nova.
+  stage:
+    name: ""
+    kind: dev
   logLevel: info,tower_http=info
 
   resources:
