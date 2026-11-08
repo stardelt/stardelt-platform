@@ -49,6 +49,9 @@
 #
 # Every 2 minutes; `concurrencyPolicy: Forbid` so runs never overlap,
 # `activeDeadlineSeconds: 110` so a hung run is gone before the next tick, and
+#
+# The Job waits for the identity provider first (wait-for-idp, platform#621's follow-up): a boot
+# that reaches this CronJob before Keycloak answers used to burn two failed ticks on every restart.
 # `backoffLimit: 1` so a failed tick is visible as a failed Job and retried once.
 #
 #   make access-sync       # create/refresh the script ConfigMap and apply this file
@@ -141,6 +144,45 @@ spec:
             runAsUser: 65534
             runAsGroup: 65534
             seccompProfile: { type: RuntimeDefault }
+          initContainers:
+            # The IdP is not ready when the node is (platform#621/#622): Keycloak rebuilds its
+            # image for ~2 minutes after a boot and refuses the token endpoint until it is done.
+            # Twelve attempts with a 3 s connect timeout and a 3 s sleep stay inside the Job's
+            # `activeDeadlineSeconds: 110` (12 x 6 s = 72 s); if the IdP still does not answer the
+            # sync runs anyway and fails the way it does today.
+            - name: wait-for-idp
+              image: python:3.13.16-slim-bookworm
+              command: ["python3", "-c"]
+              args:
+                - |
+                  import os, sys, time, urllib.request
+                  issuer = os.environ.get("OIDC_ISSUER", "").rstrip("/")
+                  if not issuer:
+                      print("no identity provider configured")
+                      sys.exit(0)
+                  url = issuer + "/.well-known/openid-configuration"
+                  for _ in range(12):
+                      try:
+                          urllib.request.urlopen(url, timeout=3)
+                          print("identity provider answered at", issuer)
+                          sys.exit(0)
+                      except Exception as exc:
+                          print("waiting for", url, exc)
+                          time.sleep(3)
+                  print("identity provider did not answer; starting the sync anyway", file=sys.stderr)
+              env:
+                - name: OIDC_ISSUER
+                  valueFrom:
+                    configMapKeyRef:
+                      name: stardelt-identity
+                      key: issuerUrl
+                      optional: true
+              resources:
+                requests: { cpu: "10m", memory: "32Mi" }
+                limits: { cpu: "100m", memory: "128Mi" }
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: { drop: ["ALL"] }
           containers:
             - name: sync
               # stdlib only, no build of ours.
