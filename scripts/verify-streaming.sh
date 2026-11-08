@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Prove the streaming pillar is wired: the broker is Ready, the Spark Operator watches this
-# namespace, every StreamApp's status is current, and the Strimzi controller is not crash-looping.
+# namespace, every StreamApp's status is current, every running StreamApp executes the job script
+# its ConfigMap carries today, and the Strimzi controller is not crash-looping.
 #
 #   NS=stardelt bash scripts/verify-streaming.sh
 #
@@ -162,7 +163,62 @@ print(json.dumps({"lines": lines, "failures": failures, "count": len(items)}))
 fi
 
 # ---------------------------------------------------------------------------
-# 5. The Strimzi controller pod. The warning is limited to the operator's
+# 5. Every running StreamApp executes the job script its ConfigMap carries
+#    today. A driver submitted hours earlier keeps running the script it was
+#    submitted with, so the StreamApp phase says nothing about which code runs:
+#    the ConfigMap can carry the new script while the driver executes the old
+#    one (platform#689, operator#372/#373). The operator writes the sha256
+#    prefix of `stream.py` into the `stardelt.io/job-script` annotation and
+#    resubmits on the next reconcile (operator#376, #377), so a mismatch is a
+#    warning — the operator fixes it on its own.
+#
+#    `stream_script_warning` is the comparison on its own, so it can be called
+#    with fixed hashes outside a cluster.
+# ---------------------------------------------------------------------------
+stream_script_warning() { # <name> <annotation> <configmap sha256 prefix>
+  local name="$1" annotation="$2" configmap_hash="$3"
+  if [ -z "$annotation" ]; then
+    echo "! $name predates the job-script annotation — the operator resubmits it on the next reconcile"
+  elif [ "$annotation" != "$configmap_hash" ]; then
+    echo "! $name runs an older job script (application $annotation, job ConfigMap $configmap_hash) — the operator resubmits it on the next reconcile"
+  fi
+}
+
+if [ -n "${apps:-}" ]; then
+  running_streams="$(printf '%s' "$apps" | python3 -c '
+import json, sys
+for item in (json.load(sys.stdin).get("items") or []):
+    if (item.get("status") or {}).get("phase") == "Running":
+        print((item.get("metadata") or {}).get("name", ""))
+')"
+  script_streams=0
+  script_warnings=0
+  for name in $running_streams; do
+    [ -n "$name" ] || continue
+    script_streams=$((script_streams + 1))
+    script="$(kubectl -n "$NS" get cm "$name-job" -o jsonpath='{.data.stream\.py}' 2>/dev/null || true)"
+    if ! kubectl -n "$NS" get sparkapplication "$name" >/dev/null 2>&1 || [ -z "$script" ]; then
+      echo "! $name cannot read its job script (ConfigMap $name-job / SparkApplication $name)"
+      script_warnings=$((script_warnings + 1))
+      continue
+    fi
+    annotation="$(kubectl -n "$NS" get sparkapplication "$name" -o jsonpath='{.metadata.annotations.stardelt\.io/job-script}' 2>/dev/null || true)"
+    # kubectl ends a jsonpath value with a newline and `$(…)` strips it again; put
+    # it back so the hash is the one `kubectl … | sha256sum` prints, which is what
+    # the operator writes into the annotation.
+    configmap_hash="$(printf '%s\n' "$script" | sha256sum | cut -c1-12)"
+    if warning="$(stream_script_warning "$name" "$annotation" "$configmap_hash")" && [ -n "$warning" ]; then
+      echo "$warning"
+      script_warnings=$((script_warnings + 1))
+    fi
+  done
+  if [ "$script_streams" -gt 0 ] && [ "$script_warnings" -eq 0 ]; then
+    echo "✓ stream-scripts   every running StreamApp carries the job script in its ConfigMap"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 6. The Strimzi controller pod. The warning is limited to the operator's
 #    ten-minute restart window (RESTART_WINDOW_SECS, override for a test), so a
 #    controller that came back long ago is not an active alarm; the root cause
 #    stays platform#665.
@@ -218,7 +274,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 6. Verdict.
+# 7. Verdict.
 # ---------------------------------------------------------------------------
 if [ "$problems" -gt 0 ]; then
   echo "FAIL ($problems problem(s))"
