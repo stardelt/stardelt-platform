@@ -301,7 +301,10 @@ singleuser:
     limit: 1
     guarantee: 0.1
   storage:
-    type: none
+    type: dynamic
+    capacity: 2Gi
+    dynamic:
+      storageClass: ""
     # The CA that signs the coordinator certificate (manifests/trino-tls.yaml),
     # mounted as ca.crt for REQUESTS_CA_BUNDLE in `25-notebook-trino`. Only that
     # one key is mounted, never tls.key of the server certificate. `optional:
