@@ -117,7 +117,7 @@ jobs:
       - name: Bridge decision-table policy (stub Lakekeeper + opa eval)
         run: |
           # The OPA the chart's bridge sidecar runs (openpolicyagent/opa:1.16.1).
-          curl -sSL -o "$RUNNER_TEMP/opa" \
+          bash scripts/retry.sh curl -sSfL -o "$RUNNER_TEMP/opa" \
             https://openpolicyagent.org/downloads/v1.16.1/opa_linux_amd64_static
           chmod +x "$RUNNER_TEMP/opa"
           OPA="$RUNNER_TEMP/opa" bash scripts/test-bridge-policies.sh
