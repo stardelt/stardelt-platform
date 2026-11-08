@@ -106,7 +106,7 @@ helm_rc=${helm_rc:-0}
 parity_out="$(bash scripts/check-version-parity.sh 2>&1)" || parity_rc=$?
 parity_rc=${parity_rc:-0}
 
-body_file="$(mktemp "${TMPDIR:-$HOME/.cache/opencode-scratch}/pin-rollup-body.XXXXXX")"
+body_file="$(mktemp "${TMPDIR:-/tmp}/pin-rollup-body.XXXXXX")"
 trap 'rm -f "$body_file"' EXIT
 {
   echo "## Digest changes"
@@ -116,6 +116,8 @@ trap 'rm -f "$body_file"' EXIT
   echo "## Verification (bot push suppresses pull-request checks)"
   echo ""
   echo "Pull-request checks do not run for pushes made with \`GITHUB_TOKEN\`, so the rollup ran these two checks itself. A reviewer can trust these results instead."
+  echo ""
+  echo "\`helm lint chart\` renders the umbrella chart's templates with its sub-charts not fetched (a GitHub release download 504 blocks the roll; they are unrelated to a digest pin). The merge to \`main\` runs the full CI \`Helm lint\` job with every dependency."
   echo ""
   echo "### helm lint chart (exit ${helm_rc})"
   echo '```'
@@ -138,12 +140,28 @@ git commit -m "chore(pins): rollup image digests
 
 $(for c in "${changes[@]}"; do echo "- $c"; done)"
 
+# The checkout has no remote-tracking ref for the rolling branch, and
+# `--force-with-lease` refuses to overwrite a ref it has not seen ("stale info"):
+# fetch it first (it is absent on the very first run, which is fine).
+if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+  git fetch --quiet origin "$branch"
+fi
 git push --force-with-lease origin "$branch"
 
+# Reuse the open PR only. A merged or closed one for the same branch must not be
+# edited: after a merge the branch is deleted and the next run opens a new PR.
 title="chore(pins): rollup image digests"
-if gh pr view "$branch" --json number >/dev/null 2>&1; then
-  gh pr edit "$branch" --title "$title" --body-file "$body_file"
-  echo "updated PR for $branch"
+pr_number="$(gh pr list --head "$branch" --state open --json number --jq '.[0].number // ""')"
+if [ -n "$pr_number" ]; then
+  gh pr edit "$pr_number" --title "$title" --body-file "$body_file"
+  echo "updated PR #$pr_number for $branch"
 else
   gh pr create --head "$branch" --base main --title "$title" --body-file "$body_file"
+fi
+
+# The bot push suppresses the pull-request checks, so these two are the gate: a
+# red workflow is the only signal left. The PR body already carries both results.
+if [ "$helm_rc" -ne 0 ] || [ "$parity_rc" -ne 0 ]; then
+  echo "rollup checks failed (helm lint chart: $helm_rc, version parity: $parity_rc)" >&2
+  exit 1
 fi

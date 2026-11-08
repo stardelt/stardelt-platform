@@ -13,8 +13,19 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: azure/setup-helm@v4
-      - run: bash -n scripts/pin-rollup.sh && shellcheck scripts/pin-rollup.sh
-      - run: OPEN_PR=1 bash scripts/pin-rollup.sh
+      - name: Install Helm
+        uses: azure/setup-helm@v5
+        with:
+          # Exact version, for the reason in ci.yml: a partial pin resolves through
+          # the get.helm.sh metadata and fails the job.
+          version: "3.18.5"
+      - name: Lint the script
+        run: bash -n scripts/pin-rollup.sh && shellcheck scripts/pin-rollup.sh
+      # `helm lint chart` renders the umbrella chart's templates. Its sub-charts are
+      # not fetched here on purpose: GitHub release downloads have answered 504 twice
+      # in one day, and a roll must not depend on that weather. The pins live in
+      # helm-values/ and manifests/, not in chart/, so the templates are what matters.
+      - name: Roll the pins, refresh the rolling PR
+        run: OPEN_PR=1 bash scripts/pin-rollup.sh
         env:
           GH_TOKEN: ${{ github.token }}
