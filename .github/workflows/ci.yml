@@ -118,8 +118,9 @@ jobs:
         run: |
           # The OPA the chart's bridge sidecar runs (openpolicyagent/opa:1.16.1).
           bash scripts/retry.sh curl -sSfL -o "$RUNNER_TEMP/opa" \
-            https://openpolicyagent.org/downloads/v1.16.1/opa_linux_amd64_static
+            https://github.com/open-policy-agent/opa/releases/download/v1.16.1/opa_linux_amd64_static
           chmod +x "$RUNNER_TEMP/opa"
+          "$RUNNER_TEMP/opa" version
           OPA="$RUNNER_TEMP/opa" bash scripts/test-bridge-policies.sh
 
       - name: helm template — openfga
