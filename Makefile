@@ -1175,11 +1175,9 @@ install-operator: _context ## Install the stardelt Operator (needs ../stardelt-o
 	@# cluster keeps the CRD schema it was first installed with, and the API server then rejects
 	@# any resource that uses a field added since ("unknown field spec.pillars.pipelines",
 	@# stardelt-platform#539). The CRDs are generated in the operator repo, so they are applied
-	@# from there every time, before the check below proves the new schema landed.
+	@# from there every time, before verify-crds proves the live schemas are this checkout's.
 	@kubectl apply --server-side --force-conflicts -f $(OPERATOR_DIR)/chart/crds/
-	@kubectl get crd platforminstances.stardelt.io \
-	  -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.pillars.properties.dashboards.type}' \
-	  | grep -q boolean || { echo "the PlatformInstance CRD schema did not update (expected spec.pillars.dashboards)"; exit 1; }
+	@$(MAKE) --no-print-directory verify-crds
 	@echo "Operator installed. CRDs: PlatformInstance, Lakehouse, Catalog, SqlWarehouse, IngestionSource, Pipeline, Connection, ServicePrincipal, Volume."
 
 # ---------------------------------------------------------------------------
