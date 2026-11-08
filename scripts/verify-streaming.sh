@@ -71,7 +71,22 @@ fi
 #    running is never a checkmark: `Pending` is a warning, `Failed` or a stale
 #    generation is a failure. A StreamApp the controller never reconciled keeps
 #    an old generation and looks fine.
+#
+#    The phase alone is not health: a driver that fails is resubmitted from the
+#    checkpoint and the phase is `Running` again between failures, so a single
+#    look is green most of the time (platform#671). SparkApplication
+#    status.executionAttempts counts the resubmissions; a running stream with
+#    more than one is a warning, not a failure (a one-off restart is not broken).
 # ---------------------------------------------------------------------------
+spark_apps=""
+if spark_json="$(kubectl -n "$NS" get sparkapplications.sparkoperator.k8s.io -o json 2>&1)"; then
+  spark_apps="$spark_json"
+elif printf '%s' "$spark_json" | grep -Eq 'NotFound|have a resource type'; then
+  echo "– sparkapplications: not installed (no SparkApplication CRD in $NS)"
+else
+  echo "! sparkapplications   cannot list: $spark_json (execution attempts not checked)"
+fi
+
 if ! apps="$(kubectl -n "$NS" get streamapps.stardelt.io -o json 2>&1)"; then
   echo "✗ streamapps   cannot list streamapps.stardelt.io in $NS: $apps"
   problems=$((problems + 1))
@@ -80,6 +95,16 @@ else
 import json, sys
 
 items = json.load(sys.stdin).get("items") or []
+attempts = {}
+spark_raw = sys.argv[1] if len(sys.argv) > 1 else ""
+if spark_raw.strip():
+    try:
+        for app in (json.loads(spark_raw).get("items") or []):
+            name = (app.get("metadata") or {}).get("name")
+            if name:
+                attempts[name] = (app.get("status") or {}).get("executionAttempts") or 0
+    except ValueError:
+        attempts = {}
 lines, failures = [], 0
 for item in items:
     meta = item.get("metadata") or {}
@@ -94,6 +119,9 @@ for item in items:
         failures += 1
     elif phase == "Running":
         lines.append("✓ %s   Running" % (name,))
+        if attempts.get(name, 0) > 1:
+            lines.append("! %s   %d execution attempts — the driver is restarting"
+                         % (name, attempts[name]))
     elif phase == "Pending":
         lines.append("! %s   Pending, lastSubmittedAt %s (not running now)"
                      % (name, status.get("lastSubmittedAt") or "never"))
@@ -103,7 +131,7 @@ for item in items:
         lines.append("✗ %s   phase %s" % (name, phase or "(none)"))
         failures += 1
 print(json.dumps({"lines": lines, "failures": failures, "count": len(items)}))
-')"
+' "$spark_apps")"
   streams="$(printf '%s' "$report" | python3 -c 'import json,sys; print(json.load(sys.stdin)["count"])')"
   app_failures="$(printf '%s' "$report" | python3 -c 'import json,sys; print(json.load(sys.stdin)["failures"])')"
   printf '%s' "$report" | python3 -c 'import json,sys; [print(line) for line in json.load(sys.stdin)["lines"]]'
