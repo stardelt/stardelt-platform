@@ -264,6 +264,12 @@ if kind != "service":
             "introspection.token.claim": "true",
         },
     })
+attributes = {"stardelt-managed": kind}
+if kind == "principal":
+    # operator#334: Iceberg's OAuth2 refresh at 300 s answers invalid_client and the stream
+    # dies; a token that outlives the stream never needs to refresh. The operator sets the
+    # same value in `principal_keycloak.rs` (`client_payload`).
+    attributes["access.token.lifespan"] = "28800"
 sys.stdout.write(json.dumps({
     "clientId": client_id,
     "name": ("Service client " if kind == "service" else "Service principal ") + client_id,
@@ -281,7 +287,7 @@ sys.stdout.write(json.dumps({
     "serviceAccountsEnabled": True,
     "redirectUris": [],
     "webOrigins": [],
-    "attributes": {"stardelt-managed": kind},
+    "attributes": attributes,
     "protocolMappers": mappers,
 }))
 PY
@@ -324,6 +330,9 @@ if client.get("webOrigins"):
 attributes = dict(client.get("attributes") or {})
 if attributes.get("stardelt-managed") != kind:
     attributes["stardelt-managed"] = kind
+    update["attributes"] = attributes
+if kind == "principal" and attributes.get("access.token.lifespan") != "28800":
+    attributes["access.token.lifespan"] = "28800"
     update["attributes"] = attributes
 if update:
     json.dump(update, open(sys.argv[2], "w"))
@@ -601,9 +610,11 @@ else:
         problems.append("groups is %r (expected [%s])" % (groups, group))
 if claims.get("preferred_username") != "service-account-" + client:
     problems.append("preferred_username is %r" % claims.get("preferred_username"))
+lifetime = claims.get("exp", 0) - claims.get("iat", 0)
+if kind == "principal" and lifetime < 28800:
+    problems.append("token lifespan is %s s, a principal needs 28800" % lifetime)
 if problems:
     sys.exit("; ".join(problems))
-lifetime = claims.get("exp", 0) - claims.get("iat", 0)
 if kind == "service":
     print("› token claims: azp=%s aud=%s" % (claims["azp"], audiences))
 else:
