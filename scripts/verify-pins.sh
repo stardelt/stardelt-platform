@@ -22,6 +22,8 @@ rows=(
   "nova|nova|manifests/nova-deployment.yaml|image"
   "stardelt-operator|stardelt-operator|helm-values/operator.yaml|tag"
   "spark|spark-connect|manifests/spark.yaml|image"
+  "superset|superset|helm-values/superset.yaml|tag"
+  "airflow|airflow-api-server|helm-values/airflow.yaml|value"
 )
 
 pins="$(python3 - "${rows[@]}" <<'PY'
@@ -30,14 +32,14 @@ import re, sys
 for row in sys.argv[1:]:
     app, deploy, path, kind = row.split("|")
     text = open(path, encoding="utf-8").read()
-    if kind == "tag":
-        m = re.search(r"^\s*tag:\s*[\"']?\S+@(sha256:[0-9a-f]{64})", text, re.M)
+    if kind in ("tag", "value"):
+        m = re.search(r"^\s*(?:tag|value):\s*[\"']?\S+@(sha256:[0-9a-f]{64})", text, re.M)
     else:
         m = re.search(r"^\s*image:\s*(ghcr\.io/stardelt/[^\s\"']+@sha256:[0-9a-f]{64})", text, re.M)
     if not m:
         print(f"{app}\t{deploy}\t{path}\tERROR: no digest pin")
         continue
-    digest = m.group(1) if kind == "tag" else m.group(1).rsplit("@", 1)[1]
+    digest = m.group(1) if kind in ("tag", "value") else m.group(1).rsplit("@", 1)[1]
     print(f"{app}\t{deploy}\t{path}\t{digest}")
 PY
 )"
