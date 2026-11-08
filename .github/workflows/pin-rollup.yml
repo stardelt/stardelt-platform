@@ -1,0 +1,20 @@
+name: Pin rollup
+on:
+  schedule: [{ cron: "*/30 * * * *" }]
+  workflow_dispatch:
+permissions:
+  contents: write
+  pull-requests: write
+concurrency: { group: pin-rollup, cancel-in-progress: true }
+jobs:
+  rollup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: azure/setup-helm@v4
+      - run: bash -n scripts/pin-rollup.sh && shellcheck scripts/pin-rollup.sh
+      - run: OPEN_PR=1 bash scripts/pin-rollup.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
