@@ -2,6 +2,8 @@
 # Roll the three image pins to the digests `dev` resolves to right now, in one PR.
 #   bash scripts/pin-rollup.sh            # local: rewrite the files, no git
 #   OPEN_PR=1 bash scripts/pin-rollup.sh  # CI: commit, force-push branch, open/refresh the PR
+#                                          # (a repository that forbids Actions from opening PRs
+#                                          # keeps the branch and exits 0 — platform#648)
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
@@ -156,7 +158,24 @@ if [ -n "$pr_number" ]; then
   gh pr edit "$pr_number" --title "$title" --body-file "$body_file"
   echo "updated PR #$pr_number for $branch"
 else
-  gh pr create --head "$branch" --base main --title "$title" --body-file "$body_file"
+  # The repository forbids Actions from creating pull requests (platform#648, option 2):
+  # keep the pushed branch, say how to open the PR, and do not fail the roll for a
+  # repository setting. The daily `pin-freshness` workflow files the visible issue
+  # while the pins on `main` are behind.
+  if pr_out="$(gh pr create --head "$branch" --base main --title "$title" --body-file "$body_file" 2>&1)"; then
+    printf '%s\n' "$pr_out"
+  else
+    case "$pr_out" in
+      *"not permitted to create"*|*"permitted to create or approve pull requests"*)
+        echo "branch $branch pushed but no PR was opened: this repository forbids Actions from creating pull requests (platform#648)." >&2
+        echo "open it by hand: gh pr create --head $branch --base main --title '$title'" >&2
+        ;;
+      *)
+        printf '%s\n' "$pr_out" >&2
+        exit 1
+        ;;
+    esac
+  fi
 fi
 
 # The bot push suppresses the pull-request checks, so these two are the gate: a
