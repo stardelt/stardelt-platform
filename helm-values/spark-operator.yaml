@@ -1,8 +1,12 @@
 # The Kubeflow Spark Operator (D42): reconciles `SparkApplication` objects in the namespace it
 # watches — the runtime of a `StreamApp`. The same file the operator's streaming pillar carries
 # (stardelt-operator values/spark-operator.yaml, operator#293), so the two install paths cannot
-# drift. One controller replica on the dev node; the webhook is off because nothing here mutates
-# pods and its certificate is one more moving part.
+# drift. One controller replica on the dev node.
+#
+# The mutating webhook stays ON, as in the operator's copy: it copies a SparkApplication's
+# `spec.volumes` and driver/executor `volumeMounts` into the pods. With it off, a StreamApp's job
+# ConfigMap mounts nowhere and `local:///opt/job/stream.py` cannot be read (operator#314,
+# operator commit 3a008f0 "enable the Spark webhook"). The dev release already runs it enabled.
 #
 # The chart's default is `jobNamespaces: [default]`, so a controller that only sets the release
 # namespace never looks at the `StreamApp`s beside it (platform#608). The empty string means every
@@ -21,4 +25,4 @@ controller:
       cpu: 500m
       memory: 512Mi
 webhook:
-  enable: false
+  enable: true
