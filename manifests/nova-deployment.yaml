@@ -120,7 +120,7 @@ spec:
         - name: ghcr-creds
       containers:
         - name: nova
-          image: ghcr.io/stardelt/nova:dev@sha256:09e1a73df98ee7ccaf5308190ec7884c6c24d8a4bb9a28352ec14620e2512f7e
+          image: ghcr.io/stardelt/nova:dev@sha256:9ff53334b5d3e4e280171a6894aae2bf124d5387deb1a7fc393263f2ee5cca37
           # The reference is pinned by digest, so its content never changes and
           # IfNotPresent keeps a cached image usable when GHCR is unreachable or
           # the pull credential has expired — an `Always` policy turned both into
@@ -248,6 +248,14 @@ spec:
                   name: stardelt-platform-config
                   key: baseDomain
                   optional: true
+            # The stage this install is (stardelt-nova#533, stardelt-platform#638):
+            # Nova shows the name as a badge in the header and, for kind `prod`, an
+            # amber frame. Inline because this manifest is the dev cluster's source of
+            # truth; the umbrella chart emits the same names from `nova.stage`.
+            - name: NOVA_STAGE_NAME
+              value: "alpha"
+            - name: NOVA_STAGE_KIND
+              value: "dev"
             # The state store (stardelt-nova#103): CloudNative-PG generates Secret
             # `nova-pg-app` for the Cluster in manifests/nova-pg.yaml and its `uri` key is
             # a complete postgresql:// URL. Deliberately NOT optional: a missing Secret
