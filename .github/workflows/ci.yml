@@ -117,7 +117,7 @@ jobs:
       - name: Bridge decision-table policy (stub Lakekeeper + opa eval)
         run: |
           # The OPA the chart's bridge sidecar runs (openpolicyagent/opa:1.16.1).
-          curl -sSL -o "$RUNNER_TEMP/opa" \
+          bash scripts/retry.sh curl -sSfL -o "$RUNNER_TEMP/opa" \
             https://openpolicyagent.org/downloads/v1.16.1/opa_linux_amd64_static
           chmod +x "$RUNNER_TEMP/opa"
           OPA="$RUNNER_TEMP/opa" bash scripts/test-bridge-policies.sh
@@ -272,7 +272,11 @@ jobs:
             -f helm-values/jupyterhub.yaml > /dev/null
 
       - name: helm dependency update — umbrella chart
-        run: helm dependency update chart
+        # The same GitHub release downloads that answer 504 in the `helm template`
+        # steps (see scripts/retry.sh), so this step retries too. Found when the
+        # run after #646 failed here at 11:05Z: #645 wrapped `helm template` and
+        # left this step bare, so main was still red on the same 504.
+        run: bash scripts/retry.sh helm dependency update chart
       - name: Nova's permissions agree (manifest and umbrella chart, platform#473)
         run: bash scripts/check-nova-rbac-parity.sh
       - name: helm lint + template — umbrella chart

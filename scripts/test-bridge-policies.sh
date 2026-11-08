@@ -60,7 +60,7 @@ rendered="$(mktemp)"
 helm_log="$(mktemp)"
 trap 'rm -f "$rendered" "$helm_log"' EXIT
 
-helm template lakekeeper lakekeeper/lakekeeper \
+bash scripts/retry.sh helm template lakekeeper lakekeeper/lakekeeper \
   --version "$LAKEKEEPER_VERSION" \
   --namespace "$NAMESPACE" \
   -f helm-values/lakekeeper.yaml \
