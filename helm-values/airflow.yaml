@@ -399,8 +399,9 @@ migrateDatabaseJob:
 # with the same command reading username and password from the airflow-admin
 # Secret through `createUserJob.env` (a supported chart field); role, email and
 # names are not credentials and stay literal. The same Job creates the `nova-api`
-# service user Nova signs in with (airflow-nova-api Secret, platform#476), read-only
-# (Viewer): `users create` prints "already exists" and succeeds for a user that is
+# service user Nova signs in with (airflow-nova-api Secret, platform#476), then moves it
+# from `Viewer` to `stardelt-nova-operator` — Viewer's permissions plus run, pause and stop
+# (platform#680): `users create` prints "already exists" and succeeds for a user that is
 # there, so `reset-password` then makes the Secret's password the user's password.
 createUserJob:
   useHelmHooks: false
