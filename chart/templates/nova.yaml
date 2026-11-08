@@ -267,6 +267,14 @@ spec:
             # Empty = no links. Defaults to platform.baseDomain.
             - name: NOVA_BASE_DOMAIN
               value: {{ .Values.nova.baseDomain | default .Values.platform.baseDomain | quote }}
+            {{- with .Values.nova.stage }}
+            {{- if .name }}
+            - name: NOVA_STAGE_NAME
+              value: {{ .name | quote }}
+            - name: NOVA_STAGE_KIND
+              value: {{ .kind | default "dev" | quote }}
+            {{- end }}
+            {{- end }}
             {{- if .Values.nova.database.enabled }}
             # The state store: CloudNative-PG generates Secret `nova-pg-app` for the
             # Cluster in templates/nova-pg.yaml; `uri` is a complete postgresql:// URL.
