@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Fail when the Airflow create-user Job in helm-values/airflow.yaml would not create the `nova-api`
-# service user: read-only (Viewer), with the username and password of the airflow-nova-api Secret,
-# and with its password reset to the Secret's value when the user already exists (platform#476).
-# A clean install without this user leaves Nova's Pipelines page with HTTP 401 from Airflow.
+# service user with the username and password of the airflow-nova-api Secret, and with its password
+# reset to the Secret's value when the user already exists (platform#476). It is created as Viewer
+# and then moved to `stardelt-nova-operator`, which holds Viewer's permissions plus `can_edit DAGs`,
+# `can_create DAG Runs` and `can_edit DAG Runs` so Nova can run, pause, resume and stop pipelines;
+# only `nova-api` holds that role (platform#680). A clean install without this user leaves Nova's
+# Pipelines page with HTTP 401 from Airflow. If the password is wrong: HTTP 403.
 # It also checks that people who sign in are `stardelt-member`, not `Viewer`: the global read on
 # DAGs and DAG Runs of a plain Viewer shows every group's DAGs, runs, logs and code (platform#477).
 #
@@ -29,10 +32,15 @@ fail() {
 [ "$(grep -cF -e 'AUTH_USER_REGISTRATION_ROLE = "stardelt-member"' "$file")" -eq 1 ] \
   || fail "the registration role must be stardelt-member: a plain Viewer sees every group's DAGs"
 grep -qF -e 'sm.add_role("stardelt-member")' "$file" || fail "createUserJob must create the role stardelt-member"
-[ "$(printf '%s\n' "$block" | grep -cF -e 'sm.find_role("Viewer").permissions')" -eq 1 ] \
-  || fail "stardelt-member must be built from the permissions of Viewer"
+[ "$(printf '%s\n' "$block" | grep -cF -e 'sm.find_role("Viewer").permissions')" -eq 2 ] \
+  || fail "stardelt-member and stardelt-nova-operator must be built from the permissions of Viewer"
 [ "$(printf '%s\n' "$block" | grep -cF -e 'GLOBAL = {("can_read", "DAGs"), ("can_read", "DAG Runs")}')" -eq 1 ] \
   || fail "stardelt-member must not hold the global read on DAGs and DAG Runs"
+[ "$(printf '%s\n' "$block" | grep -cF -e 'WRITE = {("can_edit", "DAGs"), ("can_create", "DAG Runs"), ("can_edit", "DAG Runs")}')" -eq 1 ] \
+  || fail "stardelt-nova-operator must hold exactly can_edit DAGs, can_create and can_edit DAG Runs"
+printf '%s\n' "$block" | grep -qF -e 'sm.add_permission_to_role(op, permission)' \
+  || fail "stardelt-nova-operator must inherit Viewer's permissions"
+printf '%s\n' "$block" | grep -qF -e 'nova.roles = [op]' || fail "nova-api must hold only stardelt-nova-operator"
 
 # platform#477 S1b checks
 [ "$(grep -cF -e 'AUTH_ROLES_MAPPING = {_admin_group: ["Admin"]}' "$file")" -eq 0 ] \
