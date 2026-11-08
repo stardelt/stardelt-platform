@@ -69,6 +69,14 @@ jobs:
           # literal `helm-v3.18.x-…` URL and failing the whole job.
           version: "3.18.5"
 
+      # Helm's repository cache holds the downloaded tarballs, so a warm cache
+      # makes the template steps independent of github.com releases.
+      - name: Cache the Helm chart cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/helm
+          key: helm-${{ runner.os }}-${{ hashFiles('.github/workflows/ci.yml') }}
+
       - name: Add helm repos
         run: |
           helm repo add cnpg           https://cloudnative-pg.github.io/charts
@@ -79,24 +87,24 @@ jobs:
           helm repo add apache-airflow https://airflow.apache.org
           helm repo add superset       https://apache.github.io/superset
           helm repo add jupyterhub     https://jupyterhub.github.io/helm-chart/
-          helm repo update
+          bash scripts/retry.sh helm repo update --fail-on-repo-update-fail
 
       - name: helm template — cnpg
         run: |
-          helm template cnpg cnpg/cloudnative-pg \
+          bash scripts/retry.sh helm template cnpg cnpg/cloudnative-pg \
             --version 0.28.2 \
             --namespace stardelt > /dev/null
 
       - name: helm template — seaweedfs
         run: |
-          helm template seaweedfs seaweedfs/seaweedfs \
+          bash scripts/retry.sh helm template seaweedfs seaweedfs/seaweedfs \
             --version 4.25.1 \
             --namespace stardelt \
             -f helm-values/seaweedfs.yaml > /dev/null
 
       - name: helm template — lakekeeper
         run: |
-          helm template lakekeeper lakekeeper/lakekeeper \
+          bash scripts/retry.sh helm template lakekeeper lakekeeper/lakekeeper \
             --version 0.11.0 \
             --namespace stardelt \
             -f helm-values/lakekeeper.yaml > /dev/null
@@ -116,7 +124,7 @@ jobs:
 
       - name: helm template — openfga
         run: |
-          helm template openfga openfga/openfga \
+          bash scripts/retry.sh helm template openfga openfga/openfga \
             --version 0.2.62 \
             --namespace stardelt \
             -f helm-values/openfga.yaml > /tmp/openfga.yaml
@@ -132,14 +140,14 @@ jobs:
 
       - name: helm template — trino
         run: |
-          helm template trino trino/trino \
+          bash scripts/retry.sh helm template trino trino/trino \
             --version 1.42.2 \
             --namespace stardelt \
             -f helm-values/trino.yaml > /dev/null
 
       - name: helm template — trino identity overlay (preview UI off, #181)
         run: |
-          helm template trino trino/trino \
+          bash scripts/retry.sh helm template trino trino/trino \
             --version 1.42.2 \
             --namespace stardelt \
             -f helm-values/trino.yaml \
@@ -215,7 +223,7 @@ jobs:
 
       - name: helm template — trino rollback overlay (file rules only, #311)
         run: |
-          helm template trino trino/trino \
+          bash scripts/retry.sh helm template trino trino/trino \
             --version 1.42.2 \
             --namespace stardelt \
             -f helm-values/trino.yaml \
@@ -244,21 +252,21 @@ jobs:
 
       - name: helm template — airflow
         run: |
-          helm template airflow apache-airflow/airflow \
+          bash scripts/retry.sh helm template airflow apache-airflow/airflow \
             --version 1.21.0 \
             --namespace stardelt \
             -f helm-values/airflow.yaml > /dev/null
 
       - name: helm template — superset
         run: |
-          helm template superset superset/superset \
+          bash scripts/retry.sh helm template superset superset/superset \
             --version 0.15.5 \
             --namespace stardelt \
             -f helm-values/superset.yaml > /dev/null
 
       - name: helm template — jupyterhub
         run: |
-          helm template jupyterhub jupyterhub/jupyterhub \
+          bash scripts/retry.sh helm template jupyterhub jupyterhub/jupyterhub \
             --version 4.4.3 \
             --namespace stardelt \
             -f helm-values/jupyterhub.yaml > /dev/null
