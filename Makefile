@@ -205,6 +205,9 @@ verify-images: _context ## Every pinned stardelt image is readable with the clus
 verify-streaming: _context ## The broker, the Spark Operator's watch and every StreamApp are wired (manual)
 	@NS=$(NAMESPACE) bash scripts/verify-streaming.sh
 
+verify-airflow-actions: _context ## Prove Nova's Airflow service user can run, pause and resume a pipeline
+	@bash scripts/verify-airflow-actions.sh
+
 # ---------------------------------------------------------------------------
 # Recovery keys (platform#396, design platform#368): a database backup is
 # useless without the keys that encrypted what is inside it, and those keys
