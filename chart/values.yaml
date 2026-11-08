@@ -1261,10 +1261,14 @@ jupyterhub:
     cpu:
       limit: 1
       guarantee: 0.1
-    # Ephemeral per-user storage (dev). For persistent volumes set `type: dynamic`
-    # and, to pick a class, `dynamic.storageClass` (empty = the default StorageClass).
+    # A persistent home per person (claim-<user>, 2 GiB, the cluster's default
+    # StorageClass), so a stopped server keeps its files. Set
+    # `dynamic.storageClass` to pick a class, or `type: none` for throwaway servers.
     storage:
-      type: none
+      type: dynamic
+      capacity: 2Gi
+      dynamic:
+        storageClass: ""
     # The chart's default denies egress to every private address
     # (`egressAllowRules.privateIPs: false`), which is right: a user pod has no
     # business reaching arbitrary cluster-internal services. One private
