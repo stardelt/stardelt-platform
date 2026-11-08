@@ -208,6 +208,14 @@ verify-streaming: _context ## The broker, the Spark Operator's watch and every S
 verify-airflow-actions: _context ## Prove Nova's Airflow service user can run, pause and resume a pipeline
 	@bash scripts/verify-airflow-actions.sh
 
+# The operator's image carries its API and Helm applies chart/crds/ on `helm install` only.
+# `pin-image.sh` and `install-operator` apply the CRDs; this proves the live schema is the
+# checkout's, so a merge that moved the binary but not the schema cannot pass silently
+# (operator#386 on 2026-11-08: the live platforminstances CRD had no clusterOperation).
+.PHONY: verify-crds
+verify-crds: _context ## The live CRD schemas match the operator checkout (needs ../stardelt-operator)
+	@OPERATOR_DIR=$(OPERATOR_DIR) bash scripts/verify-crds.sh
+
 # ---------------------------------------------------------------------------
 # Recovery keys (platform#396, design platform#368): a database backup is
 # useless without the keys that encrypted what is inside it, and those keys
@@ -450,7 +458,7 @@ step-pins: ## The image digests this cluster runs
 	fi
 
 step-verify: ## The verify targets the upgrade path runs after it converged the cluster
-	@$(MAKE) --no-print-directory verify-trino-auth verify-catalog-permissions verify-backups-all verify-streaming
+	@$(MAKE) --no-print-directory verify-trino-auth verify-catalog-permissions verify-backups-all verify-streaming verify-crds
 
 install-core: deps _context _helm-repos ## Install the core only (storage+catalog+query+Nova)
 	@echo "› Reloader (restarts workloads when a credential they read changes)"
