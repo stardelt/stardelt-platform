@@ -604,6 +604,14 @@ nova:
     user: nova-api
     passwordSecret: { name: airflow-nova-api, key: password }
 
+  # The person's notebook server (JupyterHub, stardelt-nova#652 W3): Nova reads its
+  # state and starts or stops it through the hub API as the JupyterHub service
+  # `nova` (`jupyterhub.hub.services` above). `idleSeconds` is the idle timeout Nova
+  # shows ("idle stop in 47 min"); it must equal the hub's `cull.timeout` — the
+  # culler is what actually stops the server — or the countdown lies.
+  workspace:
+    idleSeconds: 3600
+
 # ===========================================================================
 # Heavy components — off by default, same as `make install-core`.
 # Enable with `--set <name>.enabled=true` or in your own values file.
@@ -1076,6 +1084,12 @@ jupyterhub:
   # Do not set fullnameOverride here: the chart prefixes everything with it.
   enabled: false
 
+  # The idle culler stops a server nobody uses (jupyterhub-idle-culler, on by
+  # default, upstream default 3600). This timeout is the number Nova counts down
+  # from, so it must equal `nova.workspace.idleSeconds` below.
+  cull:
+    timeout: 3600
+
   hub:
     # Values files are not templated, so the identity contract reaches the hub
     # through the environment and `extraConfig` turns it into OIDC endpoints.
@@ -1245,6 +1259,32 @@ jupyterhub:
     resources:
       requests: { cpu: "50m", memory: "256Mi" }
       limits:   { cpu: "500m", memory: "512Mi" }
+    # Nova shows and controls the person's workspace (stardelt-nova#652 W3):
+    # state, start, stop. No access:servers — Nova can never open a server or run
+    # code in it. The chart generates the service token and stores it in Secret
+    # `hub` under the key `hub.services.nova.apiToken`; Nova reads exactly that
+    # key (chart/templates/nova.yaml, NOVA_JUPYTERHUB_API_TOKEN).
+    services:
+      nova: {}
+    loadRoles:
+      nova-workspace:
+        description: Nova reads workspace state and starts or stops servers for the signed-in person
+        services: [nova]
+        scopes: ["read:servers", "servers", "read:users:activity", "read:users:name"]
+    # The chart's own hub NetworkPolicy (on by default) admits only pods labelled
+    # `hub.jupyter.org/network-access-hub: "true"` and the allowedIngressPorts on
+    # the hub's port. Nova is a service, not a spawner-connected pod, so it gets
+    # the hub API port by its own pod label — TCP 8081 only, and only for the
+    # `nova` pod (chart/templates/nova.yaml points Nova at http://hub:8081/hub/api).
+    networkPolicy:
+      ingress:
+        - from:
+            - podSelector:
+                matchLabels:
+                  app.kubernetes.io/name: nova
+          ports:
+            - port: 8081
+              protocol: TCP
 
   proxy:
     service:

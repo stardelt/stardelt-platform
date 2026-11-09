@@ -254,6 +254,39 @@ hub:
   resources:
     requests: { cpu: "50m", memory: "256Mi" }
     limits:   { cpu: "500m", memory: "512Mi" }
+  # Nova shows and controls the person's workspace (stardelt-nova#652 W3): state,
+  # start, stop. No access:servers — Nova can never open a server or run code in
+  # it. The chart generates the service token and stores it in Secret `hub` under
+  # the key `hub.services.nova.apiToken`; Nova reads exactly that key
+  # (`NOVA_JUPYTERHUB_API_TOKEN`, manifests/nova-deployment.yaml). Same block as
+  # the umbrella chart's `jupyterhub.hub` — keep both in sync.
+  services:
+    nova: {}
+  loadRoles:
+    nova-workspace:
+      description: Nova reads workspace state and starts or stops servers for the signed-in person
+      services: [nova]
+      scopes: ["read:servers", "servers", "read:users:activity", "read:users:name"]
+  # The chart's own hub NetworkPolicy (on by default) admits only pods labelled
+  # `hub.jupyter.org/network-access-hub: "true"` on the hub's port. Nova is a
+  # service, not a spawner-connected pod, so it gets the hub API port by its own
+  # pod label — TCP 8081 only.
+  networkPolicy:
+    ingress:
+      - from:
+          - podSelector:
+              matchLabels:
+                app.kubernetes.io/name: nova
+        ports:
+          - port: 8081
+            protocol: TCP
+
+# The idle culler stops a server nobody uses (upstream default 3600). Nova counts
+# down from this timeout, so it must equal `NOVA_WORKSPACE_IDLE_SECONDS`
+# (manifests/nova-deployment.yaml) and the umbrella chart's
+# `nova.workspace.idleSeconds`.
+cull:
+  timeout: 3600
 
 proxy:
   service:
