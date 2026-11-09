@@ -3,7 +3,8 @@
 
 No cluster, no kubectl: it resolves each pin's tag with `PRINT_DIGEST=1` mode of
 `scripts/pin-image.sh` and compares that digest with the one the manifests pin.
-See stardelt-platform#556.
+The notebook image is checked in both helm-values/jupyterhub.yaml and
+helm-values/airflow.yaml because it is pinned twice. See stardelt-platform#556.
 """
 
 from __future__ import annotations
@@ -25,6 +26,8 @@ APPS = [
     ("stardelt-operator", "helm-values/operator.yaml", "tag", "dev"),
     ("superset", "helm-values/superset.yaml", "tag", "dev"),
     ("airflow", "helm-values/airflow.yaml", "digest", "demo"),
+    ("jupyter", "helm-values/jupyterhub.yaml", "tag", "dev"),
+    ("jupyter", "helm-values/airflow.yaml", "notebook", "dev"),
 ]
 
 DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
@@ -44,6 +47,8 @@ def parse_pins(text: str, kind: str) -> list[str]:
                   or quoted (helm-values/superset.yaml).
     kind="digest": the single bare `digest: sha256:<digest>` line
     (helm-values/airflow.yaml); anything but exactly one is "no pin".
+    kind="notebook": the single `value: ghcr.io/stardelt/jupyter-singleuser:dev@sha256:<digest>`
+    line (PIPELINE_NOTEBOOK_IMAGE in helm-values/airflow.yaml); exactly one, like "digest".
     """
     if kind == "image":
         pattern = re.compile(
@@ -56,6 +61,14 @@ def parse_pins(text: str, kind: str) -> list[str]:
         pattern = re.compile(r'^\s*tag:\s*"?\S+@(sha256:[0-9a-f]{64})"?\s*$', re.M)
     elif kind == "digest":
         pattern = re.compile(r"^\s*digest: (sha256:[0-9a-f]{64})\s*$", re.M)
+        found = pattern.findall(text)
+        return found if len(found) == 1 else []
+    elif kind == "notebook":
+        # `value: ghcr.io/stardelt/jupyter-singleuser:dev@sha256:<digest>` — the task pods'
+        # image in helm-values/airflow.yaml (PIPELINE_NOTEBOOK_IMAGE). Exactly one, like `digest`.
+        pattern = re.compile(
+            r"^\s*value: ghcr\.io/stardelt/jupyter-singleuser:dev@(sha256:[0-9a-f]{64})\s*$", re.M
+        )
         found = pattern.findall(text)
         return found if len(found) == 1 else []
     else:
