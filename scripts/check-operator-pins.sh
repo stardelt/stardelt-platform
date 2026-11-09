@@ -21,6 +21,7 @@ images=(
   "loader|helm-values/airflow.yaml|crates/stardelt-operator/values/airflow.yaml"
   "spark|manifests/spark.yaml|crates/stardelt-operator/values/spark.yaml"
   "superset|helm-values/superset.yaml|crates/stardelt-operator/values/superset.yaml"
+  "notebook|helm-values/jupyterhub.yaml|crates/stardelt-operator/values/jupyterhub.yaml"
 )
 
 if [ ! -d "$OPERATOR_DIR" ]; then
@@ -29,8 +30,10 @@ if [ ! -d "$OPERATOR_DIR" ]; then
 fi
 
 # The loader file pins with `digest: sha256:`; the Spark files carry the digest twice inside a
-# `ghcr.io/stardelt/spark:dev@sha256:…` reference. Read whichever form the file has: the first
-# `digest:` line, else the first `sha256:<64 hex>` match.
+# `ghcr.io/stardelt/spark:dev@sha256:…` reference; the notebook files pin with
+# `tag: "dev@sha256:…"` (quoted) and carry one digest each, so the first `sha256:` match is the
+# pin. Read whichever form the file has: the first `digest:` line, else the first
+# `sha256:<64 hex>` match.
 digest_of() {
   local d
   d="$(grep -m1 -E '^[[:space:]]+digest: sha256:' "$1" | grep -oE 'sha256:[0-9a-f]{64}' || true)"
