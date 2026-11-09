@@ -7,7 +7,7 @@ permissions:
   issues: write
 jobs:
   pins:
-    name: The checked-in pins against the `dev` tag
+    name: The checked-in pins and the operator's golden values
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -20,14 +20,26 @@ jobs:
         id: check
         run: |
           set +e
-          python3 scripts/check_pin_freshness.py | tee "$RUNNER_TEMP/pins.txt"
-          echo "code=$?" >> "$GITHUB_OUTPUT"
+          # `$?` after a pipeline is tee's status, not the check's: that is why the
+          # issue was never filed (found 2026-11-09; `false | tee` answers 0). Redirect,
+          # read the code, print. Both checks feed one issue: an operator whose golden
+          # values disagree is the same class of drift as an image pin that is behind.
+          python3 scripts/check_pin_freshness.py > "$RUNNER_TEMP/pins.txt" 2>&1
+          freshness=$?
+          OPERATOR_DIR=operator bash scripts/check-operator-pins.sh >> "$RUNNER_TEMP/pins.txt" 2>&1
+          operator=$?
+          cat "$RUNNER_TEMP/pins.txt"
+          if [ "$freshness" -ne 0 ] || [ "$operator" -ne 0 ]; then
+            echo "code=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=0" >> "$GITHUB_OUTPUT"
+          fi
       - name: File or refresh the issue
         if: steps.check.outputs.code != '0'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          title='Pins are stale: the `dev` tag moved ahead of the checked-in manifests'
+          title='Pins are stale: an image pin or the operator’s golden values disagree'
           number="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
             --search "in:title \"Pins are stale\"" --json number --jq '.[0].number // empty')"
           if [ -n "$number" ]; then
@@ -36,5 +48,3 @@ jobs:
             gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" \
               --label bug --label P2 --body-file "$RUNNER_TEMP/pins.txt"
           fi
-      - name: The operator's golden values against this repository's pins
-        run: OPERATOR_DIR=operator bash scripts/check-operator-pins.sh
