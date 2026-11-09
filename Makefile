@@ -220,6 +220,10 @@ verify-crds: _context ## The live CRD schemas match the operator checkout (needs
 verify-pins: _context ## The live Deployment images match the checked-in pins
 	@bash scripts/verify-pins.sh
 
+.PHONY: verify-connections
+verify-connections: _context ## The live connection path is wired (CRD field, reader Role, loader image)
+	@bash scripts/verify-connections.sh
+
 # ---------------------------------------------------------------------------
 # Recovery keys (platform#396, design platform#368): a database backup is
 # useless without the keys that encrypted what is inside it, and those keys
@@ -462,7 +466,7 @@ step-pins: ## The image digests this cluster runs
 	fi
 
 step-verify: ## The verify targets the upgrade path runs after it converged the cluster
-	@$(MAKE) --no-print-directory verify-trino-auth verify-catalog-permissions verify-backups-all verify-streaming verify-crds verify-pins
+	@$(MAKE) --no-print-directory verify-trino-auth verify-catalog-permissions verify-backups-all verify-streaming verify-crds verify-pins verify-connections
 
 install-core: deps _context _helm-repos ## Install the core only (storage+catalog+query+Nova)
 	@echo "› Reloader (restarts workloads when a credential they read changes)"
