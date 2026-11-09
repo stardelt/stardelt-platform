@@ -4,6 +4,7 @@
 #   ./scripts/pin-image.sh nova              # ghcr.io/stardelt/nova:dev → namespace stardelt
 #   ./scripts/pin-image.sh stardelt-operator stardelt main
 #   APP=trino NS=lab TAG=v480 ./scripts/pin-image.sh
+#   ./scripts/pin-image.sh airflow           # the loader (`:demo`, airflow-api-server, three files)
 #
 # Why this exists: a moving tag is not an upgrade path. CI publishes `dev` on
 # every merge to main, but a node that already has layers for that tag can keep
@@ -19,14 +20,24 @@ set -euo pipefail
 # `spark-connect`. `DEPLOY=` still overrides it.
 deployment_for() {
   case "$1" in
-    spark) echo "spark-connect" ;;
-    *)     echo "$1" ;;
+    spark)   echo "spark-connect" ;;
+    airflow) echo "airflow-api-server" ;;
+    *)       echo "$1" ;;
+  esac
+}
+
+# The tag an app publishes, when it is not `dev`: the Airflow loader is built by
+# stardelt-demos and published as `demo`. `TAG=` still overrides it.
+default_tag() {
+  case "$1" in
+    airflow) echo "demo" ;;
+    *)       echo "dev" ;;
   esac
 }
 
 APP="${1:-${APP:-nova}}"
 NS="${2:-${NS:-stardelt}}"
-TAG="${3:-${TAG:-dev}}"
+TAG="${3:-${TAG:-$(default_tag "$APP")}}"
 REGISTRY="${REGISTRY:-ghcr.io}"
 OWNER="${OWNER:-stardelt}"
 REPO="$OWNER/$APP"
@@ -227,6 +238,37 @@ if replaced != 1:
     sys.exit(f"expected exactly one `tag:` line in {path}, found {replaced}")
 open(path, "w").write(text)
 print(f"› {path}: image pinned to …@{digest[:19]}…")
+PYEOF
+fi
+
+if [ "${WRITE_MANIFEST:-1}" = "1" ] && [ "$APP" = "airflow" ]; then
+  # The loader is pinned three times, in two files, and none of them matches the
+  # generic `image:` writer above: a bare `digest:` under `images.airflow` and a
+  # `demo@sha256:…` tag value in helm-values/airflow.yaml, and the group-roles
+  # CronJob image in manifests/airflow-group-roles.yaml. They must move together;
+  # `scripts/check-airflow-pin.sh` is what proves that. Each pattern must match
+  # exactly once, or the pin would silently drift from one of the three.
+  python3 - "$digest" <<'PYEOF'
+import re, sys
+digest = sys.argv[1]
+
+def rewrite(path, patterns):
+    text = open(path).read()
+    for pattern, repl in patterns:
+        text, count = re.subn(pattern, repl, text, flags=re.M)
+        if count != 1:
+            sys.exit(f"expected exactly one {pattern!r} in {path}, found {count}")
+    open(path, "w").write(text)
+    print(f"› {path}: image pinned to …@{digest[:19]}…")
+
+rewrite("helm-values/airflow.yaml", [
+    (r"^(\s*digest: )sha256:[0-9a-f]{64}$", lambda m: m.group(1) + digest),
+    (r"demo@sha256:[0-9a-f]{64}", "demo@" + digest),
+])
+rewrite("manifests/airflow-group-roles.yaml", [
+    (r"ghcr\.io/stardelt/airflow:demo@sha256:[0-9a-f]{64}",
+     "ghcr.io/stardelt/airflow:demo@" + digest),
+])
 PYEOF
 fi
 
