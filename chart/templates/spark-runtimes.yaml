@@ -1,0 +1,20 @@
+{{- if .Values.sparkRuntimes.enabled }}
+# The Spark runtime catalogue (internal#161 slice 4a, platform#809). The operator's
+# SparkCluster controller reads this ConfigMap: each data key is a runtime name, each value is
+# JSON {image, sparkVersion, serviceAccount, sparkConf} (stardelt-operator#460).
+#
+# Kept equal to the Makefile path (manifests/spark.yaml) by scripts/check-spark-runtimes.sh;
+# the excluded keys there are the ones SparkConnect owns.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: stardelt-spark-runtimes
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/part-of: stardelt
+{{- $runtimes := .Files.Get "files/spark-runtimes.json" | fromJson }}
+data:
+{{- range $name, $entry := $runtimes }}
+  {{ $name }}: {{ $entry | toJson | quote }}
+{{- end }}
+{{- end }}

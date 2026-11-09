@@ -74,6 +74,13 @@ ingress:
   # Keycloak only when identity.mode=platform. Example: exposeUnauthenticated: [trino]
   exposeUnauthenticated: []
 
+# The Spark runtime catalogue (internal#161 slice 4a): the ConfigMap
+# `stardelt-spark-runtimes`, one runtime per entry. The image pair (Spark image + the notebook
+# image whose Python minor matches) is named by the runtime key; the content lives in
+# `chart/files/spark-runtimes.json`, so a digest bump is one file in both paths.
+sparkRuntimes:
+  enabled: true
+
 storage:
   # StorageClass for the volumes this chart creates itself (the Postgres
   # Cluster). Empty = the cluster default StorageClass, which is what most
