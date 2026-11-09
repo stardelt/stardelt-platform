@@ -20,13 +20,15 @@ image:
   repository: ghcr.io/stardelt/superset
   # The tag stays for readability; the digest is what the kubelet actually pulls. A bare `dev`
   # tag resolved to a stale manifest on the dev node — the pod came up without `authlib` and
-  # crash-looped while the chart enables `AUTH_OAUTH` (platform#231). `make pin-images` does not
-  # cover this release (it pins Deployments only), so this digest is bumped by hand after a
-  # merge publishes a new image — same shape as helm-values/jupyterhub.yaml.
-  tag: "dev@sha256:b9ced85d81a0c9efd2ca993f27bba5470e4815aad9d246b93e3ca5e62d26e8cd"
+  # crash-looped while the chart enables `AUTH_OAUTH` (platform#231). The package is public now,
+  # so the pod pulls without credentials; the digest is still bumped by hand because
+  # `make pin-images` does not cover this release (it pins Deployments only) — same shape as
+  # helm-values/jupyterhub.yaml.
+  tag: "dev@sha256:a211452c22434ebed850738a51614d03367de9074d84c01e058f31dc4a42c6fa"
   pullPolicy: IfNotPresent
 
-# The package is private, so the pod needs the same pull secret as Nova.
+# The Superset package is public now, so pulling this image needs no credentials; the secret stays
+# because the chart's init Job shares this value, and a private rebuild may need it again.
 # Kubernetes' shape: a list of {name: …} objects. The chart passes this through
 # verbatim, so the string form fails the release with a type error on apply.
 imagePullSecrets:
