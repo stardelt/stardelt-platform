@@ -1295,6 +1295,12 @@ pin-images: _context ## The stable channel: pin every image AND write the digest
 	  APP=spark DEPLOY=spark-connect NS=$(NAMESPACE) bash scripts/pin-image.sh || \
 	    echo "  › could not pin spark — leaving the tag in place"; \
 	fi
+	@# The loader is the demos image (`demo`, airflow-api-server); its writer pins three
+	# places in two files (helm-values/airflow.yaml, manifests/airflow-group-roles.yaml).
+	@if kubectl -n $(NAMESPACE) get deploy airflow-api-server >/dev/null 2>&1; then \
+	  APP=airflow NS=$(NAMESPACE) bash scripts/pin-image.sh || \
+	    echo "  › could not pin airflow — leaving the tag in place"; \
+	fi
 
 dev-refresh: _context ## The fast channel: newest `dev` build of every stardelt image, cluster only (APP=nova for one, NOWAIT=1 to not wait)
 	@echo "› dev channel: the newest \`dev\` build of every stardelt image (nothing is written to the repository)"
