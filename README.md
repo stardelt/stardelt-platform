@@ -913,6 +913,9 @@ name: an `ExternalSecret` that points at `openbao-finance` but names
 `connections/group/analytics/…` ends in `SecretSyncedError` and creates no Secret. A `SecretStore`
 is namespaced, so it can only be used by `ExternalSecret`s in its own namespace — the stores live in
 the workload namespace, and personal paths (`connections/user/`) never reach a Kubernetes Secret.
+`make verify-external-secrets` proves that mechanism end to end on a cluster where
+`make external-secrets` has run: a Fake-provider `ClusterSecretStore`, one `ExternalSecret`, and
+the Secret it creates — then deletes both. Run it after any ESO or chart change.
 
 *Developer sign-in (platform#157).* Tools on a laptop (an editor extension, a notebook kernel, a
 script) sign in as the person with the public client `stardelt-dev`: **device grant** (the tool shows a
