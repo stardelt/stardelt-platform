@@ -21,6 +21,17 @@ class ParsePinsTest(unittest.TestCase):
 
         self.assertEqual(parse_pins("image:\n  repository: x\n  tag: dev\n", "tag"), [])
 
+    def test_parse_superset_quoted_tag(self):
+        text = (REPO / "helm-values/superset.yaml").read_text()
+        pins = parse_pins(text, "tag")
+        self.assertEqual(len(pins), 1)
+        self.assertTrue(pins[0].startswith("sha256:"))
+        self.assertEqual(len(pins[0]), len("sha256:") + 64)
+
+    def test_parse_unquoted_tag(self):
+        digest = "sha256:" + "a" * 64
+        self.assertEqual(parse_pins("  tag: dev@{}\n".format(digest), "tag"), [digest])
+
     def test_parse_two_spark_pins(self):
         digest = "sha256:" + "a" * 64
         text = (
