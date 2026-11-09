@@ -81,8 +81,12 @@ storage:
   #
   # Sub-charts take their own key, because Helm cannot template a values file:
   #   seaweedfs.master.data.storageClass / seaweedfs.volume.dataDirs[0].storageClass
-  #   seaweedfs.filer.data.storageClass  / jupyterhub.singleuser.storage.dynamic.storageClass
-  # All of them default to "" (= cluster default) in this file.
+  #   seaweedfs.filer.data.storageClass
+  # All three default to "" (= cluster default) in this file.
+  #
+  # The notebook home is not templated here: `jupyterhub.singleuser.storage` carries no
+  # `dynamic.storageClass` on purpose — for KubeSpawner "" means *no class*, not the default,
+  # and the spawn fails (platform#786, #790). A named class is required if anyone overrides it.
   className: ""
 
 images:
