@@ -300,6 +300,11 @@ singleuser:
   storage:
     type: dynamic
     capacity: 2Gi
+    dynamic:
+      # The local lab is k3s: local-path is its only (default) StorageClass. An
+      # empty class makes KubeSpawner skip PVC creation, leaving the pod waiting
+      # on a claim-<user> that never exists; set it explicitly.
+      storageClass: local-path
     # The CA that signs the coordinator certificate (manifests/trino-tls.yaml),
     # mounted as ca.crt for REQUESTS_CA_BUNDLE in `25-notebook-trino`. Only that
     # one key is mounted, never tls.key of the server certificate. `optional:
