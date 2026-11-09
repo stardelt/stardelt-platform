@@ -568,6 +568,8 @@ openfga: deps _context _helm-repos ## Install OpenFGA (catalog permission store;
 # against (scripts/check-platform-pins.sh); nothing in this Makefile installs it today.
 # ---------------------------------------------------------------------------
 install-spark: deps _context ## Install the Spark Connect endpoint (Iceberg on the Lakekeeper catalog)
+	@jq '{apiVersion:"v1",kind:"ConfigMap",metadata:{name:"stardelt-spark-runtimes"},data:(with_entries(.value |= tojson))}' \
+	  chart/files/spark-runtimes.json | kubectl -n $(NAMESPACE) apply -f -
 	@old=$$(kubectl -n $(NAMESPACE) get configmap spark-connect-config \
 	  -o jsonpath='{.data.spark-defaults\.conf}' 2>/dev/null | sha256sum | cut -d' ' -f1 || true); \
 	kubectl apply -f manifests/spark.yaml; \
@@ -578,6 +580,7 @@ install-spark: deps _context ## Install the Spark Connect endpoint (Iceberg on t
 	  kubectl -n $(NAMESPACE) rollout restart deploy/spark-connect; \
 	fi
 	@kubectl -n $(NAMESPACE) rollout status deploy/spark-connect --timeout=5m
+	@kubectl -n $(NAMESPACE) get configmap stardelt-spark-runtimes -o name
 	@echo "Spark Connect ready: sc://spark-connect.$(NAMESPACE).svc.cluster.local:15002 (in-cluster only)"
 
 # ---------------------------------------------------------------------------
@@ -1213,6 +1216,7 @@ uninstall: _context ## Uninstall all stardelt components (reverse order)
 	@kubectl -n $(NAMESPACE) delete configmap access-sync-script --ignore-not-found
 	@kubectl -n $(NAMESPACE) delete configmap trino-warehouses trino-group-file --ignore-not-found
 	@kubectl delete -f manifests/spark.yaml                   --ignore-not-found
+	@kubectl -n $(NAMESPACE) delete configmap stardelt-spark-runtimes --ignore-not-found
 	@kubectl delete -f manifests/trino-tls.yaml               --ignore-not-found
 	@kubectl delete -f manifests/nova-deployment.yaml        --ignore-not-found
 	@kubectl delete -f manifests/nova-pg.yaml                --ignore-not-found
