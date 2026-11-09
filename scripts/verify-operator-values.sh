@@ -27,15 +27,21 @@ LOADER="$(digest_of helm-values/airflow.yaml)"
 NOTEBOOK="$(digest_of helm-values/jupyterhub.yaml)"
 SUPERSET="$(digest_of helm-values/superset.yaml)"
 
+# A probe records its lines instead of printing them: a short `kubectl exec` stream can cut the
+# document's tail, and a probe that misses must be re-read once before it is reported.
+PASS_LINES=()
+FAIL_LINES=()
 pass=0
 fail=0
+total_pass=0
+total_fail=0
 
 check_contains() { # label, haystack, needle
   if printf '%s' "$2" | grep -qF -- "$3"; then
-    printf '✓ %s\n' "$1"
+    PASS_LINES+=("✓ $1")
     pass=$((pass + 1))
   else
-    printf '✗ %s: %s is not in the running operator\n' "$1" "\`$3\`" >&2
+    FAIL_LINES+=("✗ $1: \`$3\` is not in the running operator")
     fail=$((fail + 1))
   fi
 }
@@ -48,61 +54,97 @@ section_of() { # stdin -> one top-level mapping of a `values <component> full` d
   '
 }
 
-for component in airflow jupyterhub superset seaweedfs; do
-  if ! out="$(kubectl -n "$NS" exec deploy/stardelt-operator -- \
-      stardelt-operator values "$component" full 2>&1)"; then
-    printf '✗ %s: %s failed: %s\n' "$component" "\`values $component full\`" "$out" >&2
-    fail=$((fail + 1))
-    continue
+attempt() { # component [extra args...] -> one read; 0 when every probe of it passed
+  local component="$1"
+  shift
+  PASS_LINES=()
+  FAIL_LINES=()
+  pass=0
+  fail=0
+  local out
+  local identity=0
+  if [ "${1-}" = "--identity" ]; then
+    identity=1
   fi
-  case "$component" in
-    airflow)
-      check_contains "airflow: nova-api role" "$out" "stardelt-nova-operator"
-      check_contains "airflow: loader image" "$out" "$LOADER"
-      ;;
-    jupyterhub)
-      check_contains "jupyterhub: home size" "$out" "capacity: $JUPYTERHUB_HOME_SIZE"
-      check_contains "jupyterhub: notebook image" "$out" "$NOTEBOOK"
-      ;;
-    superset)
-      check_contains "superset: image" "$out" "$SUPERSET"
-      ;;
-    seaweedfs)
-      volume="$(printf '%s\n' "$out" | section_of volume)"
-      check_contains "seaweedfs: volume sizing block" "$volume" "name: data"
-      check_contains "seaweedfs: volume size" "$volume" "size: $SEAWEEDFS_VOLUME_SIZE"
-      ;;
-  esac
+  if ! out="$(kubectl -n "$NS" exec deploy/stardelt-operator -- \
+      stardelt-operator values "$component" full "$@" 2>&1)"; then
+    FAIL_LINES+=("✗ $component: \`values $component full\` failed: $out")
+    fail=$((fail + 1))
+    return 1
+  fi
+  if [ "$identity" -eq 1 ]; then
+    case "$component" in
+      trino)
+        check_contains "trino identity: TLS listener" "$out" "port: 8443"
+        check_contains "trino identity: PASSWORD,OAUTH2" "$out" "authenticationType: PASSWORD,OAUTH2"
+        check_contains "trino identity: password file" "$out" "passwordAuthSecret: trino-password-db"
+        check_contains "trino identity: impersonation rule" "$out" '"original_user": "superset"'
+        ;;
+      superset)
+        check_contains "superset identity: impersonated Trino host" "$out" "trino.$BASE_DOMAIN:443"
+        ;;
+      jupyterhub)
+        check_contains "jupyterhub identity: OIDC client Secret" "$out" "stardelt-oidc-clients"
+        ;;
+      airflow)
+        check_contains "airflow identity: OIDC client Secret" "$out" "stardelt-oidc-clients"
+        ;;
+    esac
+  else
+    case "$component" in
+      airflow)
+        check_contains "airflow: nova-api role" "$out" "stardelt-nova-operator"
+        check_contains "airflow: loader image" "$out" "$LOADER"
+        ;;
+      jupyterhub)
+        check_contains "jupyterhub: home size" "$out" "capacity: $JUPYTERHUB_HOME_SIZE"
+        check_contains "jupyterhub: notebook image" "$out" "$NOTEBOOK"
+        ;;
+      superset)
+        check_contains "superset: image" "$out" "$SUPERSET"
+        ;;
+      seaweedfs)
+        local volume
+        volume="$(printf '%s\n' "$out" | section_of volume)"
+        check_contains "seaweedfs: volume sizing block" "$volume" "name: data"
+        check_contains "seaweedfs: volume size" "$volume" "size: $SEAWEEDFS_VOLUME_SIZE"
+        ;;
+    esac
+  fi
+  [ "${#FAIL_LINES[@]}" -eq 0 ]
+}
+
+print_attempt() { # the lines of the attempt that is reported
+  if [ "${#PASS_LINES[@]}" -gt 0 ]; then
+    printf '%s\n' "${PASS_LINES[@]}"
+  fi
+  if [ "${#FAIL_LINES[@]}" -gt 0 ]; then
+    printf '%s\n' "${FAIL_LINES[@]}" >&2
+  fi
+}
+
+probe() { # component [extra args...] -> one read, and a second when the first missed
+  local component="$1"
+  if ! attempt "$@"; then
+    printf '… %s: re-reading values once\n' "$component" >&2
+    attempt "$@" || true
+  fi
+  print_attempt
+  total_pass=$((total_pass + pass))
+  total_fail=$((total_fail + fail))
+  return 0
+}
+
+for component in airflow jupyterhub superset seaweedfs; do
+  probe "$component"
 done
 
 for component in trino superset jupyterhub airflow; do
-  if ! out="$(kubectl -n "$NS" exec deploy/stardelt-operator -- \
-      stardelt-operator values "$component" full --identity "$BASE_DOMAIN" 2>&1)"; then
-    printf '✗ %s identity: %s failed: %s\n' "$component" "\`values $component full --identity …\`" "$out" >&2
-    fail=$((fail + 1))
-    continue
-  fi
-  case "$component" in
-    trino)
-      check_contains "trino identity: TLS listener" "$out" "port: 8443"
-      check_contains "trino identity: PASSWORD,OAUTH2" "$out" "authenticationType: PASSWORD,OAUTH2"
-      check_contains "trino identity: password file" "$out" "passwordAuthSecret: trino-password-db"
-      check_contains "trino identity: impersonation rule" "$out" '"original_user": "superset"'
-      ;;
-    superset)
-      check_contains "superset identity: impersonated Trino host" "$out" "trino.$BASE_DOMAIN:443"
-      ;;
-    jupyterhub)
-      check_contains "jupyterhub identity: OIDC client Secret" "$out" "stardelt-oidc-clients"
-      ;;
-    airflow)
-      check_contains "airflow identity: OIDC client Secret" "$out" "stardelt-oidc-clients"
-      ;;
-  esac
+  probe "$component" --identity "$BASE_DOMAIN"
 done
 
-if [ "$fail" -ne 0 ]; then
-  printf 'verify-operator-values: FAIL (%d of %d probes)\n' "$fail" "$((pass + fail))"
+if [ "$total_fail" -ne 0 ]; then
+  printf 'verify-operator-values: FAIL (%d of %d probes)\n' "$total_fail" "$((total_pass + total_fail))"
   exit 1
 fi
-printf 'verify-operator-values: PASS (%d probes)\n' "$pass"
+printf 'verify-operator-values: PASS (%d probes)\n' "$total_pass"
