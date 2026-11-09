@@ -2,7 +2,9 @@
 # Prove the RUNNING operator carries the golden values that were merged, not only that its image
 # tag is current. values/*.yaml is compiled into the binary: an image built before a values merge
 # prints the old values. Unlike scripts/check-operator-pins.sh (two checkouts) and verify-pins.sh
-# (image digests), this asks the Deployment.
+# (image digests), this asks the Deployment. A second loop passes `--identity`: that proves the
+# identity overlays (values/<component>-identity.yaml) are compiled in too, which the plain output
+# cannot show because it never contains them.
 #
 # Exit codes: 0 every probe passes, 1 a value differs or the binary cannot answer, 3 the check
 # proved nothing (no kubectl, no Deployment). Needs: kubectl, grep.
@@ -12,6 +14,9 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 NS="${NAMESPACE:-stardelt}"
 SEAWEEDFS_VOLUME_SIZE="${SEAWEEDFS_VOLUME_SIZE:-20Gi}"
 JUPYTERHUB_HOME_SIZE="${JUPYTERHUB_HOME_SIZE:-2Gi}"
+# The identity overlays substitute this placeholder host; the check only proves the overlay is
+# compiled into the binary, so any reserved domain works (RFC 2606).
+BASE_DOMAIN="${BASE_DOMAIN:-example.test}"
 
 command -v kubectl >/dev/null || { echo "verify-operator-values: UNVERIFIED (kubectl not found)" >&2; exit 3; }
 kubectl -n "$NS" get deploy stardelt-operator >/dev/null 2>&1 \
@@ -66,6 +71,32 @@ for component in airflow jupyterhub superset seaweedfs; do
       volume="$(printf '%s\n' "$out" | section_of volume)"
       check_contains "seaweedfs: volume sizing block" "$volume" "name: data"
       check_contains "seaweedfs: volume size" "$volume" "size: $SEAWEEDFS_VOLUME_SIZE"
+      ;;
+  esac
+done
+
+for component in trino superset jupyterhub airflow; do
+  if ! out="$(kubectl -n "$NS" exec deploy/stardelt-operator -- \
+      stardelt-operator values "$component" full --identity "$BASE_DOMAIN" 2>&1)"; then
+    printf '✗ %s identity: %s failed: %s\n' "$component" "\`values $component full --identity …\`" "$out" >&2
+    fail=$((fail + 1))
+    continue
+  fi
+  case "$component" in
+    trino)
+      check_contains "trino identity: TLS listener" "$out" "port: 8443"
+      check_contains "trino identity: PASSWORD,OAUTH2" "$out" "authenticationType: PASSWORD,OAUTH2"
+      check_contains "trino identity: password file" "$out" "passwordAuthSecret: trino-password-db"
+      check_contains "trino identity: impersonation rule" "$out" '"original_user": "superset"'
+      ;;
+    superset)
+      check_contains "superset identity: impersonated Trino host" "$out" "trino.$BASE_DOMAIN:443"
+      ;;
+    jupyterhub)
+      check_contains "jupyterhub identity: OIDC client Secret" "$out" "stardelt-oidc-clients"
+      ;;
+    airflow)
+      check_contains "airflow identity: OIDC client Secret" "$out" "stardelt-oidc-clients"
       ;;
   esac
 done
