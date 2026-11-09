@@ -21,6 +21,16 @@ NAMESPACE="${NAMESPACE:-stardelt}"
 command -v kubectl >/dev/null || { echo "verify-pins: UNVERIFIED (kubectl not found)" >&2; exit 3; }
 command -v python3 >/dev/null || { echo "verify-pins: UNVERIFIED (python3 not found)" >&2; exit 3; }
 
+# The rows read the pin files from this working tree. A checkout behind origin/main compares the
+# cluster with old pins and prints a confident FAIL (2026-11-09: the main checkout was three days
+# behind). Name the two revisions, like pin-image.sh does for the operator checkout; do not fail.
+head_rev="$(git rev-parse HEAD 2>/dev/null || true)"
+main_rev="$(git rev-parse --verify --quiet origin/main 2>/dev/null || true)"
+if [ -n "$head_rev" ] && [ -n "$main_rev" ] && [ "$head_rev" != "$main_rev" ]; then
+  printf '! verify-pins: this checkout is at %s, origin/main is %s — the pins below may be stale (git pull)\n' \
+    "${head_rev:0:7}" "${main_rev:0:7}" >&2
+fi
+
 # app | Deployment | pin file | how to read the pin
 rows=(
   "nova|nova|manifests/nova-deployment.yaml|image"
