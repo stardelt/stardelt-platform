@@ -8,6 +8,11 @@
 # No access to Secrets: the credentials reach the task pod through a `secretKeyRef` the kubelet
 # resolves. Nothing here can create, change or delete anything, and the Role is limited to this
 # namespace. Applied by `make install` after the Airflow release.
+#
+# The loader also resolves a task's `connection` against the namespace's `Connection` resources
+# before it builds the DAG (`spec.tasks[].connection`, stardelt-platform#161). It reads the
+# resource (scope, owner group, secret key names), never the Secret: each `CONN_<NAME>_<KEY>`
+# is a `secretKeyRef` the kubelet resolves at pod start.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -16,7 +21,7 @@ metadata:
   labels: { app.kubernetes.io/part-of: stardelt }
 rules:
   - apiGroups: ["stardelt.io"]
-    resources: ["pipelines", "serviceprincipals"]
+    resources: ["pipelines", "serviceprincipals", "connections"]
     verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
