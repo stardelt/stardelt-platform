@@ -6,6 +6,7 @@
 #   APP=trino NS=lab TAG=v480 ./scripts/pin-image.sh
 #   ./scripts/pin-image.sh airflow           # the loader (`:demo`, airflow-api-server, three files)
 #   WRITE_MANIFEST_ONLY=1 ./scripts/pin-image.sh jupyter   # the notebook image, two files, no cluster
+#   ./scripts/pin-image.sh superset          # the BI image, two files (values + group-roles CronJob)
 #
 # Why this exists: a moving tag is not an upgrade path. CI publishes `dev` on
 # every merge to main, but a node that already has layers for that tag can keep
@@ -322,6 +323,29 @@ def rewrite(path, marker, key):
 
 rewrite("helm-values/jupyterhub.yaml", r"name: ghcr\.io/stardelt/jupyter-singleuser$", r"^\s*tag:")
 rewrite("helm-values/airflow.yaml", r"name: PIPELINE_NOTEBOOK_IMAGE$", r"^\s*value:")
+PYEOF
+fi
+
+if [ "${WRITE_MANIFEST:-1}" = "1" ] && [ "$APP" = "superset" ]; then
+  # Superset is pinned twice and neither spelling matches the generic writer: a quoted
+  # `tag:` under `image:` and the group-roles CronJob's full reference. Both must move
+  # together; scripts/check-superset-roles.sh proves it.
+  python3 - "$digest" <<'PYEOF'
+import re, sys
+digest = sys.argv[1]
+
+def rewrite(path, pattern):
+    text = open(path).read()
+    # The trailing `()` is an empty second group so the lambda below is the same for both
+    # files: group(1) is the text before the digest, group(2) the text after it.
+    text, count = re.subn(pattern + "()", lambda m: m.group(1) + digest + m.group(2), text, flags=re.M)
+    if count != 1:
+        sys.exit(f"expected exactly one Superset digest in {path}, found {count}")
+    open(path, "w").write(text)
+    print(f"› {path}: image pinned to …@{digest[:19]}…")
+
+rewrite("helm-values/superset.yaml", r'(^\s*tag:\s*"dev@)sha256:[0-9a-f]{64}("\s*$)')
+rewrite("manifests/superset-group-roles.yaml", r'(ghcr\.io/stardelt/superset:dev@)sha256:[0-9a-f]{64}')
 PYEOF
 fi
 

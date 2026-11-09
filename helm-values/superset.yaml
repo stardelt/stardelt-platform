@@ -21,9 +21,9 @@ image:
   # The tag stays for readability; the digest is what the kubelet actually pulls. A bare `dev`
   # tag resolved to a stale manifest on the dev node — the pod came up without `authlib` and
   # crash-looped while the chart enables `AUTH_OAUTH` (platform#231). The package is public now,
-  # so the pod pulls without credentials; the digest is still bumped by hand because
-  # `make pin-images` does not cover this release (it pins Deployments only) — same shape as
-  # helm-values/jupyterhub.yaml.
+  # so the pod pulls without credentials. The daily pin rollup rewrites this tag and the
+  # group-roles CronJob together (scripts/pin-rollup.sh → `pin-image.sh superset`);
+  # `make step-superset` still rolls the chart's two Deployments and applies the CronJob.
   tag: "dev@sha256:a211452c22434ebed850738a51614d03367de9074d84c01e058f31dc4a42c6fa"
   pullPolicy: IfNotPresent
 

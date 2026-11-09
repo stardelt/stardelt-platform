@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Roll the four image pins to the digests their tags resolve to right now, in one PR.
-# The fourth is the pipeline loader, `ghcr.io/stardelt/airflow:demo` (tag `demo`, not `dev`).
+# Roll the five image pins to the digests their tags resolve to right now, in one PR.
+# The fourth is the pipeline loader, `ghcr.io/stardelt/airflow:demo` (tag `demo`, not `dev`);
+# the fifth is the BI image, `ghcr.io/stardelt/superset:dev` (two files).
 #   bash scripts/pin-rollup.sh            # local: rewrite the files, no git
 #   OPEN_PR=1 bash scripts/pin-rollup.sh  # CI: commit, force-push branch, open/refresh the PR
 #                                          # (a repository that forbids Actions from opening PRs
@@ -23,6 +24,8 @@ elif kind == 'spark':
     m = re.search(r'ghcr\.io/stardelt/spark:[^\s@]+@(sha256:[0-9a-f]{64})', text)
 elif kind == 'airflow':
     m = re.search(r'^\s*digest:\s*(sha256:[0-9a-f]{64})\s*$', text, re.M)
+elif kind == 'superset':
+    m = re.search(r'^\s+tag:\s*"dev@(sha256:[0-9a-f]{64})"\s*$', text, re.M)
 else:
     sys.exit(f'unknown kind {kind}')
 if not m:
@@ -75,31 +78,37 @@ NOVA_FILE="manifests/nova-deployment.yaml"
 SPARK_FILE="manifests/spark.yaml"
 AIRFLOW_FILE="helm-values/airflow.yaml"
 AIRFLOW_GROUP_FILE="manifests/airflow-group-roles.yaml"
+SUPERSET_FILE="helm-values/superset.yaml"
+SUPERSET_GROUP_FILE="manifests/superset-group-roles.yaml"
 
 old_operator="$(extract_digest "$OP_FILE" operator)"
 old_nova="$(extract_digest "$NOVA_FILE" nova)"
 old_spark="$(extract_digest "$SPARK_FILE" spark)"
 old_airflow="$(extract_digest "$AIRFLOW_FILE" airflow)"
+old_superset="$(extract_digest "$SUPERSET_FILE" superset)"
 
 operator_digest="$(pin stardelt-operator)"
 nova_digest="$(pin nova)"
 spark_digest="$(pin spark)"
 airflow_digest="$(pin airflow)"
+superset_digest="$(pin superset)"
 
 # Normalize: pin-image.sh may print whitespace
 operator_digest="$(printf '%s' "$operator_digest" | tr -d '[:space:]')"
 nova_digest="$(printf '%s' "$nova_digest" | tr -d '[:space:]')"
 spark_digest="$(printf '%s' "$spark_digest" | tr -d '[:space:]')"
 airflow_digest="$(printf '%s' "$airflow_digest" | tr -d '[:space:]')"
+superset_digest="$(printf '%s' "$superset_digest" | tr -d '[:space:]')"
 
 changes=()
 [ "$old_operator" != "$operator_digest" ] && changes+=("operator $(short "$old_operator") → $(short "$operator_digest")")
 [ "$old_nova" != "$nova_digest" ] && changes+=("nova $(short "$old_nova") → $(short "$nova_digest")")
 [ "$old_spark" != "$spark_digest" ] && changes+=("spark $(short "$old_spark") → $(short "$spark_digest")")
 [ "$old_airflow" != "$airflow_digest" ] && changes+=("airflow $(short "$old_airflow") → $(short "$airflow_digest")")
+[ "$old_superset" != "$superset_digest" ] && changes+=("superset $(short "$old_superset") → $(short "$superset_digest")")
 
 if [ "${#changes[@]}" -eq 0 ]; then
-  echo "pins current (operator $(short "$operator_digest"), nova $(short "$nova_digest"), spark $(short "$spark_digest"), airflow $(short "$airflow_digest"))"
+  echo "pins current (operator $(short "$operator_digest"), nova $(short "$nova_digest"), spark $(short "$spark_digest"), superset $(short "$superset_digest"), airflow $(short "$airflow_digest"))"
   exit 0
 fi
 
@@ -110,6 +119,12 @@ rewrite_files "$OP_FILE" "$NOVA_FILE" "$SPARK_FILE" "$operator_digest" "$nova_di
 # cluster call — this script runs on a GitHub runner with no kubeconfig.
 if [ "$old_airflow" != "$airflow_digest" ]; then
   APP=airflow WRITE_MANIFEST_ONLY=1 ./scripts/pin-image.sh >/dev/null
+fi
+
+# Superset is pinned in two files; its writer lives in pin-image.sh so the manual and
+# the rollup path cannot drift.
+if [ "$old_superset" != "$superset_digest" ]; then
+  APP=superset WRITE_MANIFEST_ONLY=1 ./scripts/pin-image.sh >/dev/null
 fi
 
 for c in "${changes[@]}"; do echo "$c"; done
@@ -153,7 +168,7 @@ git config user.email "41898282+github-actions[bot]@users.noreply.github.com" 2>
 
 branch="chore/pin-rollup"
 git switch -C "$branch"
-git add "$OP_FILE" "$NOVA_FILE" "$SPARK_FILE" "$AIRFLOW_FILE" "$AIRFLOW_GROUP_FILE"
+git add "$OP_FILE" "$NOVA_FILE" "$SPARK_FILE" "$AIRFLOW_FILE" "$AIRFLOW_GROUP_FILE" "$SUPERSET_FILE" "$SUPERSET_GROUP_FILE"
 git commit -m "chore(pins): rollup image digests
 
 $(for c in "${changes[@]}"; do echo "- $c"; done)"
