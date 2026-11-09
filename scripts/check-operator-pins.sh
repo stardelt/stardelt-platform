@@ -20,6 +20,7 @@ OPERATOR_DIR="${OPERATOR_DIR:-../stardelt-operator}"
 images=(
   "loader|helm-values/airflow.yaml|crates/stardelt-operator/values/airflow.yaml"
   "spark|manifests/spark.yaml|crates/stardelt-operator/values/spark.yaml"
+  "superset|helm-values/superset.yaml|crates/stardelt-operator/values/superset.yaml"
 )
 
 if [ ! -d "$OPERATOR_DIR" ]; then
