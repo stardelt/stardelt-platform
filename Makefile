@@ -598,6 +598,8 @@ install-spark-operator: deps _context _helm-repos ## Install the Kubeflow Spark 
 # The operator's streaming pillar installs the same bus (stardelt-operator#285/#287);
 # this target keeps the dev cluster — which runs this Makefile path — able to run it.
 # Opt-in like `install-notebooks` and `install-spark`: the bus is not part of `make install`.
+# The controller's probes are patched after the release because the chart hard-codes a 1 s
+# timeout (platform#665).
 # ---------------------------------------------------------------------------
 install-kafka: deps _context _helm-repos ## Install the streaming bus (Strimzi + one KRaft Kafka broker)
 	@helm upgrade --install strimzi strimzi/strimzi-kafka-operator \
@@ -605,6 +607,7 @@ install-kafka: deps _context _helm-repos ## Install the streaming bus (Strimzi +
 	@kubectl wait --for=condition=Established crd/kafkas.kafka.strimzi.io crd/kafkanodepools.kafka.strimzi.io --timeout=120s
 	@kubectl -n $(NAMESPACE) apply -f manifests/kafka.yaml
 	@kubectl -n $(NAMESPACE) wait kafka.kafka.strimzi.io/kafka --for=condition=Ready --timeout=10m
+	@NAMESPACE=$(NAMESPACE) bash scripts/patch-strimzi-probes.sh
 	@echo "Kafka ready: kafka.$(NAMESPACE).svc.cluster.local:9092 (in-cluster only)"
 	@echo "Next: make step-airflow KAFKA_BOOTSTRAP=kafka-kafka-bootstrap.$(NAMESPACE).svc.cluster.local:9092"
 
