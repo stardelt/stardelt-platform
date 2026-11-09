@@ -284,6 +284,8 @@ jobs:
         run: |
           helm lint chart
           helm template stardelt chart -n stardelt > /dev/null
+          # The Spark runtime catalogue reaches the operator path (platform#809 slice 4a).
+          helm template stardelt chart -n stardelt | grep -q 'name: stardelt-spark-runtimes'
           helm template stardelt chart -n stardelt --set superset.enabled=true > /dev/null
           helm template stardelt chart -n stardelt -f chart/values-slim.yaml > /dev/null
           # chart-path catalog backups (#51): the Cluster declares the

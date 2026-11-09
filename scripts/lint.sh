@@ -66,6 +66,12 @@ bash scripts/check-bridge-uri.sh
 echo "› script: check-spark-parity"
 bash scripts/check-spark-parity.sh
 
+# The operator's Spark runtime catalogue and the Makefile path's spark-defaults.conf are one
+# set of settings (internal#161 slice 4a): the difference between them is exactly the block
+# SparkConnect owns, and check-spark-runtimes.sh names any other drift.
+echo "› script: check-spark-runtimes"
+bash scripts/check-spark-runtimes.sh
+
 # The notebook image installs the stardelt library from a pinned release
 # (platform#417): the Dockerfile's pin and the Makefile's must be the same
 # commit, and a commit — a moving tag is not an upgrade path.
