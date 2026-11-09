@@ -2789,7 +2789,8 @@ spawn (see [Notebooks](#notebooks-the-users-own-identity-inside-the-pod)).
 
 The same digest is pinned a second time, as `PIPELINE_NOTEBOOK_IMAGE` in
 `helm-values/airflow.yaml`, because a notebook task runs in a pod of its own on this
-image (see [Notebook tasks](#notebook-tasks)): **bump both**, and
+image (see [Notebook tasks](#notebook-tasks)): `WRITE_MANIFEST_ONLY=1
+./scripts/pin-image.sh jupyter` moves both pins and needs no cluster, and
 `scripts/check-notebook-image-pin.sh` — run by `make lint` and therefore by CI — fails
 with both digests when they differ.
 

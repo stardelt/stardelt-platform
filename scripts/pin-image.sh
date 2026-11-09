@@ -5,6 +5,7 @@
 #   ./scripts/pin-image.sh stardelt-operator stardelt main
 #   APP=trino NS=lab TAG=v480 ./scripts/pin-image.sh
 #   ./scripts/pin-image.sh airflow           # the loader (`:demo`, airflow-api-server, three files)
+#   WRITE_MANIFEST_ONLY=1 ./scripts/pin-image.sh jupyter   # the notebook image, two files, no cluster
 #
 # Why this exists: a moving tag is not an upgrade path. CI publishes `dev` on
 # every merge to main, but a node that already has layers for that tag can keep
@@ -22,6 +23,7 @@ deployment_for() {
   case "$1" in
     spark)   echo "spark-connect" ;;
     airflow) echo "airflow-api-server" ;;
+    jupyter) echo "" ;;
     *)       echo "$1" ;;
   esac
 }
@@ -35,12 +37,21 @@ default_tag() {
   esac
 }
 
+# The image an app publishes, when it is not the app name: the notebook image is
+# `jupyter-singleuser`.
+image_name() {
+  case "$1" in
+    jupyter) echo "jupyter-singleuser" ;;
+    *)       echo "$1" ;;
+  esac
+}
+
 APP="${1:-${APP:-nova}}"
 NS="${2:-${NS:-stardelt}}"
 TAG="${3:-${TAG:-$(default_tag "$APP")}}"
 REGISTRY="${REGISTRY:-ghcr.io}"
 OWNER="${OWNER:-stardelt}"
-REPO="$OWNER/$APP"
+REPO="$OWNER/$(image_name "$APP")"
 DEPLOY="${DEPLOY:-$(deployment_for "$APP")}"
 CONTAINER="${CONTAINER:-}"
 
@@ -98,7 +109,7 @@ if [ "${WRITE_MANIFEST_ONLY:-0}" = "1" ]; then
   echo "› $NS/$DEPLOY: manifest only (no cluster)"
 fi
 
-if [ "${WRITE_MANIFEST_ONLY:-0}" != "1" ]; then
+if [ "${WRITE_MANIFEST_ONLY:-0}" != "1" ] && [ -n "$DEPLOY" ]; then
 
 if [ -z "$CONTAINER" ]; then
   CONTAINER=$(kubectl -n "$NS" get deploy "$DEPLOY" -o jsonpath='{.spec.template.spec.containers[0].name}')
@@ -280,6 +291,37 @@ rewrite("manifests/airflow-group-roles.yaml", [
     (r"ghcr\.io/stardelt/airflow:demo@sha256:[0-9a-f]{64}",
      "ghcr.io/stardelt/airflow:demo@" + digest),
 ])
+PYEOF
+fi
+
+if [ "${WRITE_MANIFEST:-1}" = "1" ] && [ "$APP" = "jupyter" ]; then
+  # The notebook image is pinned twice and neither spelling matches the generic writer:
+  # a quoted `tag:` under `singleuser.image`, and a full reference under
+  # PIPELINE_NOTEBOOK_IMAGE. Find each block by its marker line, then the first key line
+  # after it — the same rule scripts/check-notebook-image-pin.sh applies. Each must match
+  # exactly once, or the pin drifts from one place.
+  python3 - "$digest" <<'PYEOF'
+import re, sys
+digest = sys.argv[1]
+
+def rewrite(path, marker, key):
+    lines = open(path).read().splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        if re.search(marker, line):
+            for j in range(i + 1, len(lines)):
+                if re.match(key, lines[j]):
+                    new, count = re.subn(r"sha256:[0-9a-f]{64}", digest, lines[j])
+                    if count != 1:
+                        sys.exit(f"expected one digest on {path}:{j + 1}, found {count}")
+                    lines[j] = new
+                    open(path, "w").writelines(lines)
+                    print(f"› {path}: notebook image pinned to …@{digest[:19]}…")
+                    return
+            sys.exit(f"no {key!r} line after {marker!r} in {path}")
+    sys.exit(f"no {marker!r} line in {path}")
+
+rewrite("helm-values/jupyterhub.yaml", r"name: ghcr\.io/stardelt/jupyter-singleuser$", r"^\s*tag:")
+rewrite("helm-values/airflow.yaml", r"name: PIPELINE_NOTEBOOK_IMAGE$", r"^\s*value:")
 PYEOF
 fi
 
