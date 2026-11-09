@@ -35,6 +35,14 @@ check_contains() { # label, haystack, needle
   fi
 }
 
+section_of() { # stdin -> one top-level mapping of a `values <component> full` document
+  awk -v name="$1" '
+    $0 == name ":" { inside = 1; print; next }
+    inside && /^[^[:space:]#]/ { exit }
+    inside { print }
+  '
+}
+
 for component in airflow jupyterhub superset seaweedfs; do
   if ! out="$(kubectl -n "$NS" exec deploy/stardelt-operator -- \
       stardelt-operator values "$component" full 2>&1)"; then
@@ -55,7 +63,9 @@ for component in airflow jupyterhub superset seaweedfs; do
       check_contains "superset: image" "$out" "$SUPERSET"
       ;;
     seaweedfs)
-      check_contains "seaweedfs: volume size" "$out" "size: $SEAWEEDFS_VOLUME_SIZE"
+      volume="$(printf '%s\n' "$out" | section_of volume)"
+      check_contains "seaweedfs: volume sizing block" "$volume" "name: data"
+      check_contains "seaweedfs: volume size" "$volume" "size: $SEAWEEDFS_VOLUME_SIZE"
       ;;
   esac
 done
