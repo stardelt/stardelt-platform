@@ -201,7 +201,11 @@ hub:
           return value if len(value) <= 63 and _LABEL_NAME.match(value) else None
 
       def _stardelt_labels(spawner, pod):
-          labels = pod.setdefault("metadata", {}).setdefault("labels", {})
+          # KubeSpawner hands a V1Pod, not a dict (platform#841).
+          if pod.metadata is None:
+              return pod
+          labels = pod.metadata.labels if pod.metadata.labels is not None else {}
+          pod.metadata.labels = labels
           user = getattr(spawner.user, "name", "") or ""
           if _label_segment(user):
               labels["stardelt.io/user"] = user

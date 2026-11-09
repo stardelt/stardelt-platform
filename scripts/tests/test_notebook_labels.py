@@ -50,6 +50,11 @@ def _fake_spawner(groups):
     )
 
 
+def _pod():
+    """KubeSpawner passes a V1Pod, not a dict (platform#841)."""
+    return types.SimpleNamespace(metadata=types.SimpleNamespace(labels={}))
+
+
 class NotebookLabelsTest(unittest.TestCase):
     def test_admin_gets_the_user_and_group_labels(self):
         for label, (path, keys) in LABEL_SOURCES.items():
@@ -57,10 +62,10 @@ class NotebookLabelsTest(unittest.TestCase):
                 hook, _ = _install(path, keys)
                 pod = hook(
                     _fake_spawner(["stardelt-admins", "stardelt-users"]),
-                    {"metadata": {"labels": {}}},
+                    _pod(),
                 )
                 self.assertEqual(
-                    pod["metadata"]["labels"],
+                    pod.metadata.labels,
                     {
                         "stardelt.io/user": "admin",
                         "stardelt.io/group.stardelt-admins": "true",
@@ -74,9 +79,9 @@ class NotebookLabelsTest(unittest.TestCase):
                 hook, _ = _install(path, keys)
                 pod = hook(
                     _fake_spawner(["Analytics Team", "stardelt-admins"]),
-                    {"metadata": {"labels": {}}},
+                    _pod(),
                 )
-                labels = pod["metadata"]["labels"]
+                labels = pod.metadata.labels
                 self.assertIn("stardelt.io/group.stardelt-admins", labels)
                 self.assertFalse(
                     [key for key in labels if "Analytics" in key],
@@ -85,8 +90,8 @@ class NotebookLabelsTest(unittest.TestCase):
 
                 # `group.` plus 60 characters is 66 > 63: too long for a label value.
                 long_name = "a" * 60
-                pod = hook(_fake_spawner([long_name]), {"metadata": {"labels": {}}})
-                self.assertEqual(pod["metadata"]["labels"], {"stardelt.io/user": "admin"})
+                pod = hook(_fake_spawner([long_name]), _pod())
+                self.assertEqual(pod.metadata.labels, {"stardelt.io/user": "admin"})
 
     def test_the_hook_is_installed(self):
         for label, (path, keys) in LABEL_SOURCES.items():
