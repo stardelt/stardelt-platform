@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Prove that the live Deployments run the digests this repository pins.
+# Prove that the live Deployments, the group-roles CronJob and the two spawned-notebook pins run
+# the digests this repository pins.
 #
 # Why: the recurring failure is a correct pin plus a Deployment that was never rolled to it
 # (stardelt-platform#697, #704, #503, #501, #509, #510). verify-images proves a pin is readable,
 # check-pins proves the registry tag has not moved; neither asks the cluster what it runs.
-# The two notebook pins are not Deployments: the JupyterHub spawn image lives in Secret hub and
-# the pipeline notebook image in Airflow's PIPELINE_NOTEBOOK_IMAGE, both pinned by hand.
+# The group-roles CronJob is applied by make step-airflow, and the two notebook pins are not
+# Deployments: the JupyterHub spawn image lives in Secret hub and the pipeline notebook image in
+# Airflow's PIPELINE_NOTEBOOK_IMAGE, both pinned by hand.
 #
 #   scripts/verify-pins.sh
 #
@@ -28,6 +30,7 @@ rows=(
   "airflow|airflow-api-server|helm-values/airflow.yaml|value"
   "notebook|hub|helm-values/jupyterhub.yaml|hub"
   "notebook-task|airflow-dag-processor|helm-values/airflow.yaml|env"
+  "group-roles|airflow-group-roles|manifests/airflow-group-roles.yaml|cronjob"
 )
 
 pins="$(python3 - "${rows[@]}" <<'PY'
@@ -40,6 +43,12 @@ for row in sys.argv[1:]:
         m = re.search(r"^\s*tag:\s*[\"']?\S+@(sha256:[0-9a-f]{64})", text, re.M)
     elif kind == "env":
         m = re.search(r"name:\s*PIPELINE_NOTEBOOK_IMAGE\s*\n\s*value:\s*\S+@(sha256:[0-9a-f]{64})", text, re.M)
+    elif kind == "cronjob":
+        m = re.search(
+            r"^\s*image:\s*>-\s*ghcr\.io/stardelt/[^\s\"']+@(sha256:[0-9a-f]{64})",
+            text,
+            re.M,
+        )
     elif kind in ("tag", "value"):
         m = re.search(r"^\s*(?:tag|value):\s*[\"']?\S+@(sha256:[0-9a-f]{64})", text, re.M)
     else:
@@ -62,6 +71,8 @@ while IFS=$'\t' read -r app deploy path digest kind; do
              -o jsonpath='{.data.values\.yaml}' 2>/dev/null | base64 -d \
              | grep -m1 'tag: dev@sha256:' || true)" ;;
     env) live="$(kubectl -n "$NAMESPACE" get deploy "$deploy" -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="PIPELINE_NOTEBOOK_IMAGE")].value}' 2>/dev/null || true)" ;;
+    cronjob) live="$(kubectl -n "$NAMESPACE" get cronjob "$deploy" \
+             -o jsonpath='{.spec.jobTemplate.spec.template.spec.containers[0].image}' 2>/dev/null || true)" ;;
     *) live="$(kubectl -n "$NAMESPACE" get deploy "$deploy" -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)" ;;
   esac
   if [[ -z "$live" ]]; then
@@ -73,6 +84,7 @@ while IFS=$'\t' read -r app deploy path digest kind; do
     case "$kind" in
       hub) hint="run make install-notebooks" ;;
       env) hint="run make step-airflow" ;;
+      cronjob) hint="run make step-airflow" ;;
       *) hint="run ./scripts/pin-image.sh $app" ;;
     esac
     live_digest="${live##*@}"
@@ -83,7 +95,7 @@ while IFS=$'\t' read -r app deploy path digest kind; do
 done <<< "$pins"
 
 case "$status" in
-  0) echo "verify-pins: PASS (live Deployments and spawned-notebook pins carry the checked-in pins)" ;;
+  0) echo "verify-pins: PASS (live Deployments, the group-roles CronJob and spawned-notebook pins carry the checked-in pins)" ;;
   1) echo "verify-pins: FAIL (a pin does not match the live configuration)" >&2 ;;
   *) echo "verify-pins: UNVERIFIED (a pin or Deployment could not be read)" >&2 ;;
 esac
