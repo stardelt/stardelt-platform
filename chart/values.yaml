@@ -1263,12 +1263,10 @@ jupyterhub:
       guarantee: 0.1
     # A persistent home per person (claim-<user>, 2 GiB, the cluster's default
     # StorageClass), so a stopped server keeps its files. Set
-    # `dynamic.storageClass` to pick a class, or `type: none` for throwaway servers.
+    # `dynamic.storageClass: <name>` to pick a class (never ""), or `type: none` for throwaway servers.
     storage:
       type: dynamic
       capacity: 2Gi
-      dynamic:
-        storageClass: ""
     # The chart's default denies egress to every private address
     # (`egressAllowRules.privateIPs: false`), which is right: a user pod has no
     # business reaching arbitrary cluster-internal services. One private
