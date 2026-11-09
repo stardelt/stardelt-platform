@@ -32,6 +32,24 @@ class ParsePinsTest(unittest.TestCase):
         pins = parse_pins(text, "image")
         self.assertEqual(pins, [digest, digest])
 
+    def test_parse_airflow_digest(self):
+        text = (REPO / "helm-values/airflow.yaml").read_text()
+        pins = parse_pins(text, "digest")
+        self.assertEqual(len(pins), 1)
+        self.assertTrue(pins[0].startswith("sha256:"))
+        self.assertEqual(len(pins[0]), len("sha256:") + 64)
+
+        digest = "sha256:" + "a" * 64
+        self.assertEqual(parse_pins("  digest: {}\n".format(digest), "digest"), [digest])
+        # Exactly one bare digest line: none or two are "no pin".
+        self.assertEqual(parse_pins("  tag: demo\n", "digest"), [])
+        self.assertEqual(
+            parse_pins(
+                "  digest: {}\n  digest: {}\n".format(digest, digest), "digest"
+            ),
+            [],
+        )
+
 
 class CompareTest(unittest.TestCase):
     def test_compare_reports_a_stale_pin(self):
@@ -52,6 +70,16 @@ class CompareTest(unittest.TestCase):
         self.assertEqual(len(lines), 1)
         self.assertTrue(lines[0].startswith("✓"))
         self.assertEqual(exit_code(lines), 0)
+
+    def test_compare_prints_the_pin_tag(self):
+        digest = "sha256:" + "d" * 64
+        lines = compare("airflow", [digest], digest, "helm-values/airflow.yaml", "demo")
+        self.assertEqual(lines, ["✓ airflow demo@dddddddd… matches helm-values/airflow.yaml"])
+        stale = compare(
+            "airflow", ["sha256:" + "e" * 64], digest, "helm-values/airflow.yaml", "demo"
+        )
+        self.assertIn("demo resolves to dddddddd…", stale[0])
+        self.assertNotIn(" dev@", stale[0])
 
 
 if __name__ == "__main__":
