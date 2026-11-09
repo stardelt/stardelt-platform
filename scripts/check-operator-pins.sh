@@ -9,7 +9,8 @@
 # behind does not report a false mismatch (stardelt-platform#734). A checkout without an
 # `origin/main` ref (tarball, shallow clone) falls back to the working tree and says so.
 #
-# Exit codes: 0 they agree or the operator checkout is absent (CI), 1 they differ, 3 a pin unreadable.
+# Exit codes: 0 they agree or the operator checkout is absent (a local run outside the platform
+# repository), 1 they differ, 3 a pin unreadable.
 # Needs: bash, git, grep.
 set -euo pipefail
 

@@ -11,6 +11,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: stardelt/stardelt-operator
+          path: operator
+          fetch-depth: 0
       - name: Compare
         id: check
         run: |
@@ -31,3 +36,5 @@ jobs:
             gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" \
               --label bug --label P2 --body-file "$RUNNER_TEMP/pins.txt"
           fi
+      - name: The operator's golden values against this repository's pins
+        run: OPERATOR_DIR=operator bash scripts/check-operator-pins.sh
