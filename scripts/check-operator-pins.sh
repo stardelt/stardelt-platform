@@ -18,6 +18,7 @@ OPERATOR_DIR="${OPERATOR_DIR:-../stardelt-operator}"
 
 # name|platform file|operator file (relative to the operator checkout)
 images=(
+  "nova|manifests/nova-deployment.yaml|crates/stardelt-operator/src/provision.rs"
   "loader|helm-values/airflow.yaml|crates/stardelt-operator/values/airflow.yaml"
   "spark|manifests/spark.yaml|crates/stardelt-operator/values/spark.yaml"
   "superset|helm-values/superset.yaml|crates/stardelt-operator/values/superset.yaml"
@@ -32,8 +33,9 @@ fi
 # The loader file pins with `digest: sha256:`; the Spark files carry the digest twice inside a
 # `ghcr.io/stardelt/spark:dev@sha256:…` reference; the notebook files pin with
 # `tag: "dev@sha256:…"` (quoted) and carry one digest each, so the first `sha256:` match is the
-# pin. Read whichever form the file has: the first `digest:` line, else the first
-# `sha256:<64 hex>` match.
+# pin. Nova has no values file on the operator side: its pin is the `NOVA_IMAGE` constant in
+# provision.rs, whose only full digest it is. Read whichever form the file has: the first
+# `digest:` line, else the first `sha256:<64 hex>` match.
 digest_of() {
   local d
   d="$(grep -m1 -E '^[[:space:]]+digest: sha256:' "$1" | grep -oE 'sha256:[0-9a-f]{64}' || true)"
