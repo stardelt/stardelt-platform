@@ -86,7 +86,7 @@ BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 .PHONY: verify-backups verify-backups-identity verify-backups-nova verify-backups-openfga verify-backups-all verify-images verify-streaming verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
 .PHONY: backups verify-pgdump offsite-backup export-recovery-secrets import-recovery-secrets
 .PHONY: sync-oidc-clients verify-oidc-clients verify-trino-tls verify-trino-auth sync-trino-group-sync-client sync-pipeline-runner-client sync-dev-client sync-catalog-audience openbao test-openbao-policies seaweedfs-admin
-.PHONY: external-secrets eso-stores
+.PHONY: external-secrets verify-external-secrets eso-stores
 .PHONY: perf-baseline
 
 help: ## Show this help
@@ -1053,6 +1053,9 @@ sync-catalog-audience: _context ## Converge the live realm so hub and dev-client
 # External Secrets Operator (decision D23): syncs a secret store into Kubernetes Secrets. Opt-in.
 external-secrets: deps _context _helm-repos ## Install External Secrets Operator (opt-in)
 	@helm upgrade --install external-secrets external-secrets/external-secrets --version $(EXTERNAL_SECRETS_VERSION) $(HELM_FLAGS) -f helm-values/external-secrets.yaml
+
+verify-external-secrets: _context ## Prove external secret mode: ESO, a Fake store, the synced Secret
+	@NAMESPACE=$(NAMESPACE) bash scripts/verify-external-secrets.sh
 
 # The sandbox secret store (decision D23, platform#160): OpenBao, opt-in, never part of `install`. Production
 # installs use the customer's own store through External Secrets and do not run this. The seal key and the
