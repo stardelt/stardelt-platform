@@ -67,6 +67,18 @@ resources:
 livenessProbe:
   enabled: false
 
+# Caches for checks (platform ticket, measured 2026-11-09: lists 0.2–0.6 s, table load up to 1 s,
+# all of it permission checks). A grant change is visible within the TTL; the cache controller
+# drops entries older than the latest tuple write, so a fresh grant usually shows at once.
+checkQueryCache:
+  enabled: true
+  limit: 10000
+  ttl: 10s
+extraEnvVars:
+  - { name: OPENFGA_CHECK_ITERATOR_CACHE_ENABLED, value: "true" }
+  - { name: OPENFGA_LIST_OBJECTS_ITERATOR_CACHE_ENABLED, value: "true" }
+  - { name: OPENFGA_CACHE_CONTROLLER_ENABLED, value: "true" }
+
 # No tracing, no Prometheus metrics: the platform does not scrape this release
 # yet, and the node's spare memory goes to the engines. The store is load-bearing
 # since the cut-over, so turn metrics on together with a scrape target — restarts
