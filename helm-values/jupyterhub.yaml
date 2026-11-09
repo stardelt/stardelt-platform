@@ -1,5 +1,5 @@
 # JupyterHub — multi-user notebook environment (the front door for interactive analysis).
-# Chart: jupyterhub/jupyterhub 4.4.3, appVersion 5.5.3.
+# Chart: jupyterhub/jupyterhub 4.4.5, appVersion 5.5.5.
 #
 # Sign-in is OIDC against the platform IdP: realm `stardelt`, client `jupyterhub`
 # (chart/files/keycloak-realm.json), redirect `/hub/oauth_callback`. There is no
