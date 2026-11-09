@@ -90,6 +90,16 @@ if [ "${PRINT_DIGEST:-0}" = "1" ]; then
   exit 0
 fi
 
+# `WRITE_MANIFEST_ONLY=1` rewrites the pinned files and exits without a cluster: the daily
+# pin rollup (scripts/pin-rollup.sh) runs on a GitHub runner with no kubeconfig and needs
+# the airflow writer below, which needs only the digest (platform#739).
+CRDS_DIR=""
+if [ "${WRITE_MANIFEST_ONLY:-0}" = "1" ]; then
+  echo "› $NS/$DEPLOY: manifest only (no cluster)"
+fi
+
+if [ "${WRITE_MANIFEST_ONLY:-0}" != "1" ]; then
+
 if [ -z "$CONTAINER" ]; then
   CONTAINER=$(kubectl -n "$NS" get deploy "$DEPLOY" -o jsonpath='{.spec.template.spec.containers[0].name}')
 fi
@@ -171,6 +181,7 @@ else
     kubectl -n "$NS" rollout status "deploy/$DEPLOY" --timeout="${TIMEOUT:-300s}"
   fi
 fi
+fi # WRITE_MANIFEST_ONLY
 
 # Keep the manifest in step, or the next `kubectl apply` puts the mutable tag back and a
 # stale cached layer can serve an older image (that happened four times in one day, twice

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Roll the three image pins to the digests `dev` resolves to right now, in one PR.
+# Roll the four image pins to the digests their tags resolve to right now, in one PR.
+# The fourth is the pipeline loader, `ghcr.io/stardelt/airflow:demo` (tag `demo`, not `dev`).
 #   bash scripts/pin-rollup.sh            # local: rewrite the files, no git
 #   OPEN_PR=1 bash scripts/pin-rollup.sh  # CI: commit, force-push branch, open/refresh the PR
 #                                          # (a repository that forbids Actions from opening PRs
@@ -20,6 +21,8 @@ elif kind == 'nova':
     m = re.search(r'^\s+image:\s*ghcr\.io/stardelt/nova:[^\s@]+@(sha256:[0-9a-f]{64})\s*$', text, re.M)
 elif kind == 'spark':
     m = re.search(r'ghcr\.io/stardelt/spark:[^\s@]+@(sha256:[0-9a-f]{64})', text)
+elif kind == 'airflow':
+    m = re.search(r'^\s*digest:\s*(sha256:[0-9a-f]{64})\s*$', text, re.M)
 else:
     sys.exit(f'unknown kind {kind}')
 if not m:
@@ -70,31 +73,44 @@ short() { printf '%s' "${1#sha256:}" | cut -c1-8; }
 OP_FILE="helm-values/operator.yaml"
 NOVA_FILE="manifests/nova-deployment.yaml"
 SPARK_FILE="manifests/spark.yaml"
+AIRFLOW_FILE="helm-values/airflow.yaml"
+AIRFLOW_GROUP_FILE="manifests/airflow-group-roles.yaml"
 
 old_operator="$(extract_digest "$OP_FILE" operator)"
 old_nova="$(extract_digest "$NOVA_FILE" nova)"
 old_spark="$(extract_digest "$SPARK_FILE" spark)"
+old_airflow="$(extract_digest "$AIRFLOW_FILE" airflow)"
 
 operator_digest="$(pin stardelt-operator)"
 nova_digest="$(pin nova)"
 spark_digest="$(pin spark)"
+airflow_digest="$(pin airflow)"
 
 # Normalize: pin-image.sh may print whitespace
 operator_digest="$(printf '%s' "$operator_digest" | tr -d '[:space:]')"
 nova_digest="$(printf '%s' "$nova_digest" | tr -d '[:space:]')"
 spark_digest="$(printf '%s' "$spark_digest" | tr -d '[:space:]')"
+airflow_digest="$(printf '%s' "$airflow_digest" | tr -d '[:space:]')"
 
 changes=()
 [ "$old_operator" != "$operator_digest" ] && changes+=("operator $(short "$old_operator") → $(short "$operator_digest")")
 [ "$old_nova" != "$nova_digest" ] && changes+=("nova $(short "$old_nova") → $(short "$nova_digest")")
 [ "$old_spark" != "$spark_digest" ] && changes+=("spark $(short "$old_spark") → $(short "$spark_digest")")
+[ "$old_airflow" != "$airflow_digest" ] && changes+=("airflow $(short "$old_airflow") → $(short "$airflow_digest")")
 
 if [ "${#changes[@]}" -eq 0 ]; then
-  echo "pins current (operator $(short "$operator_digest"), nova $(short "$nova_digest"), spark $(short "$spark_digest"))"
+  echo "pins current (operator $(short "$operator_digest"), nova $(short "$nova_digest"), spark $(short "$spark_digest"), airflow $(short "$airflow_digest"))"
   exit 0
 fi
 
 rewrite_files "$OP_FILE" "$NOVA_FILE" "$SPARK_FILE" "$operator_digest" "$nova_digest" "$spark_digest"
+
+# The loader is pinned three times in the two files below; its writer stays in
+# pin-image.sh so the two callers cannot drift. WRITE_MANIFEST_ONLY skips every
+# cluster call — this script runs on a GitHub runner with no kubeconfig.
+if [ "$old_airflow" != "$airflow_digest" ]; then
+  APP=airflow WRITE_MANIFEST_ONLY=1 ./scripts/pin-image.sh >/dev/null
+fi
 
 for c in "${changes[@]}"; do echo "$c"; done
 
@@ -137,7 +153,7 @@ git config user.email "41898282+github-actions[bot]@users.noreply.github.com" 2>
 
 branch="chore/pin-rollup"
 git switch -C "$branch"
-git add "$OP_FILE" "$NOVA_FILE" "$SPARK_FILE"
+git add "$OP_FILE" "$NOVA_FILE" "$SPARK_FILE" "$AIRFLOW_FILE" "$AIRFLOW_GROUP_FILE"
 git commit -m "chore(pins): rollup image digests
 
 $(for c in "${changes[@]}"; do echo "- $c"; done)"
