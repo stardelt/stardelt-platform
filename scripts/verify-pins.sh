@@ -4,6 +4,8 @@
 # Why: the recurring failure is a correct pin plus a Deployment that was never rolled to it
 # (stardelt-platform#697, #704, #503, #501, #509, #510). verify-images proves a pin is readable,
 # check-pins proves the registry tag has not moved; neither asks the cluster what it runs.
+# The two notebook pins are not Deployments: the JupyterHub spawn image lives in Secret hub and
+# the pipeline notebook image in Airflow's PIPELINE_NOTEBOOK_IMAGE, both pinned by hand.
 #
 #   scripts/verify-pins.sh
 #
@@ -24,6 +26,8 @@ rows=(
   "spark|spark-connect|manifests/spark.yaml|image"
   "superset|superset|helm-values/superset.yaml|tag"
   "airflow|airflow-api-server|helm-values/airflow.yaml|value"
+  "notebook|hub|helm-values/jupyterhub.yaml|hub"
+  "notebook-task|airflow-dag-processor|helm-values/airflow.yaml|env"
 )
 
 pins="$(python3 - "${rows[@]}" <<'PY'
@@ -32,40 +36,55 @@ import re, sys
 for row in sys.argv[1:]:
     app, deploy, path, kind = row.split("|")
     text = open(path, encoding="utf-8").read()
-    if kind in ("tag", "value"):
+    if kind == "hub":
+        m = re.search(r"^\s*tag:\s*[\"']?\S+@(sha256:[0-9a-f]{64})", text, re.M)
+    elif kind == "env":
+        m = re.search(r"name:\s*PIPELINE_NOTEBOOK_IMAGE\s*\n\s*value:\s*\S+@(sha256:[0-9a-f]{64})", text, re.M)
+    elif kind in ("tag", "value"):
         m = re.search(r"^\s*(?:tag|value):\s*[\"']?\S+@(sha256:[0-9a-f]{64})", text, re.M)
     else:
         m = re.search(r"^\s*image:\s*(ghcr\.io/stardelt/[^\s\"']+@sha256:[0-9a-f]{64})", text, re.M)
     if not m:
         print(f"{app}\t{deploy}\t{path}\tERROR: no digest pin")
         continue
-    digest = m.group(1) if kind in ("tag", "value") else m.group(1).rsplit("@", 1)[1]
-    print(f"{app}\t{deploy}\t{path}\t{digest}")
+    digest = m.group(1).rsplit("@", 1)[-1] if kind == "image" else m.group(1)
+    print(f"{app}\t{deploy}\t{path}\t{digest}\t{kind}")
 PY
 )"
 
 status=0
-while IFS=$'\t' read -r app deploy path digest; do
+while IFS=$'\t' read -r app deploy path digest kind; do
   if [[ "$digest" == ERROR:* ]]; then
     echo "? $app $digest"; status=3; continue
   fi
-  live="$(kubectl -n "$NAMESPACE" get deploy "$deploy" -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)"
+  case "$kind" in
+    hub) live="$(kubectl -n "$NAMESPACE" get secret hub \
+             -o jsonpath='{.data.values\.yaml}' 2>/dev/null | base64 -d \
+             | grep -m1 'tag: dev@sha256:' || true)" ;;
+    env) live="$(kubectl -n "$NAMESPACE" get deploy "$deploy" -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="PIPELINE_NOTEBOOK_IMAGE")].value}' 2>/dev/null || true)" ;;
+    *) live="$(kubectl -n "$NAMESPACE" get deploy "$deploy" -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)" ;;
+  esac
   if [[ -z "$live" ]]; then
-    echo "? $app no Deployment $deploy in namespace $NAMESPACE"; status=3; continue
+    echo "? $app no pin in the live configuration"; status=3; continue
   fi
   if [[ "$live" == *"@$digest" ]]; then
     printf '✓ %-18s %s\n' "$app" "${digest:0:19}… matches $path"
   else
+    case "$kind" in
+      hub) hint="run make install-notebooks" ;;
+      env) hint="run make step-airflow" ;;
+      *) hint="run ./scripts/pin-image.sh $app" ;;
+    esac
     live_digest="${live##*@}"
-    printf '✗ %-18s live %s… != pin %s… (%s) — run ./scripts/pin-image.sh %s\n' \
-      "$app" "${live_digest:0:19}" "${digest:0:19}" "$path" "$app"
+    printf '✗ %-18s live %s… != pin %s… (%s) — %s\n' \
+      "$app" "${live_digest:0:19}" "${digest:0:19}" "$path" "$hint"
     status=1
   fi
 done <<< "$pins"
 
 case "$status" in
-  0) echo "verify-pins: PASS (live Deployments carry the checked-in pins)" ;;
-  1) echo "verify-pins: FAIL (a Deployment does not run its pin)" >&2 ;;
+  0) echo "verify-pins: PASS (live Deployments and spawned-notebook pins carry the checked-in pins)" ;;
+  1) echo "verify-pins: FAIL (a pin does not match the live configuration)" >&2 ;;
   *) echo "verify-pins: UNVERIFIED (a pin or Deployment could not be read)" >&2 ;;
 esac
 exit "$status"
