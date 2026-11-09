@@ -60,6 +60,13 @@ rules:
   - apiGroups: ["stardelt.io"]
     resources: ["streamapps"]
     verbs: ["get", "list", "patch"]
+  # Spark compute tiers (internal#161 slice 5a): the Compute page lists `SparkCluster`
+  # resources and Start/Stop patch `spec.state`; create and delete are the
+  # administrator's cluster form (slice 5, later ticket). Without this rule the route
+  # answers 502 "the cluster did not answer" (measured on the dev cluster 2026-11-09).
+  - apiGroups: ["stardelt.io"]
+    resources: ["sparkclusters"]
+    verbs: ["get", "list", "patch", "create", "delete"]
   - apiGroups: ["stardelt.io"]
     resources: ["catalogs"]
     # create: the administrator's "New team space" in Nova (internal#106 decision 3).
