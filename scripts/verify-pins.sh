@@ -37,10 +37,12 @@ rows=(
   "stardelt-operator|stardelt-operator|helm-values/operator.yaml|tag"
   "spark|spark-connect|manifests/spark.yaml|image"
   "superset|superset|helm-values/superset.yaml|tag"
+  "superset-worker|superset-worker|helm-values/superset.yaml|tag"
   "airflow|airflow-api-server|helm-values/airflow.yaml|value"
   "notebook|hub|helm-values/jupyterhub.yaml|hub"
   "notebook-task|airflow-dag-processor|helm-values/airflow.yaml|env"
   "group-roles|airflow-group-roles|manifests/airflow-group-roles.yaml|cronjob"
+  "superset-group-roles|superset-group-roles|manifests/superset-group-roles.yaml|cronjob"
 )
 
 pins="$(python3 - "${rows[@]}" <<'PY'
@@ -55,7 +57,7 @@ for row in sys.argv[1:]:
         m = re.search(r"name:\s*PIPELINE_NOTEBOOK_IMAGE\s*\n\s*value:\s*\S+@(sha256:[0-9a-f]{64})", text, re.M)
     elif kind == "cronjob":
         m = re.search(
-            r"^\s*image:\s*>-\s*ghcr\.io/stardelt/[^\s\"']+@(sha256:[0-9a-f]{64})",
+            r"^\s*image:\s*(?:>-\s*)?ghcr\.io/stardelt/[^\s\"']+@(sha256:[0-9a-f]{64})",
             text,
             re.M,
         )
@@ -91,12 +93,16 @@ while IFS=$'\t' read -r app deploy path digest kind; do
   if [[ "$live" == *"@$digest" ]]; then
     printf '✓ %-18s %s\n' "$app" "${digest:0:19}… matches $path"
   else
-    case "$kind" in
-      hub) hint="run make install-notebooks" ;;
-      env) hint="run make step-airflow" ;;
-      cronjob) hint="run make step-airflow" ;;
-      *) hint="run ./scripts/pin-image.sh $app" ;;
-    esac
+    if [[ "$app" == superset* ]]; then
+      hint="run make step-superset"
+    else
+      case "$kind" in
+        hub) hint="run make install-notebooks" ;;
+        env) hint="run make step-airflow" ;;
+        cronjob) hint="run make step-airflow" ;;
+        *) hint="run ./scripts/pin-image.sh $app" ;;
+      esac
+    fi
     live_digest="${live##*@}"
     printf '✗ %-18s live %s… != pin %s… (%s) — %s\n' \
       "$app" "${live_digest:0:19}" "${digest:0:19}" "$path" "$hint"
@@ -105,7 +111,7 @@ while IFS=$'\t' read -r app deploy path digest kind; do
 done <<< "$pins"
 
 case "$status" in
-  0) echo "verify-pins: PASS (live Deployments, the group-roles CronJob and spawned-notebook pins carry the checked-in pins)" ;;
+  0) echo "verify-pins: PASS (live Deployments, both group-roles CronJobs and spawned-notebook pins carry the checked-in pins)" ;;
   1) echo "verify-pins: FAIL (a pin does not match the live configuration)" >&2 ;;
   *) echo "verify-pins: UNVERIFIED (a pin or Deployment could not be read)" >&2 ;;
 esac
