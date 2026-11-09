@@ -129,6 +129,19 @@ fi
 
 for c in "${changes[@]}"; do echo "$c"; done
 
+# The PR's own checks are suppressed for a bot push; the two pin guards are the only
+# evidence for the loader and Superset halves. Run them even locally, and refuse to open
+# a PR whose pins they reject.
+airflow_check="$(bash scripts/check-airflow-pin.sh 2>&1)" || airflow_rc=$?
+airflow_rc=${airflow_rc:-0}
+superset_check="$(bash scripts/check-superset-roles.sh 2>&1)" || superset_rc=$?
+superset_rc=${superset_rc:-0}
+printf '%s\n%s\n' "$airflow_check" "$superset_check"
+if [ "$airflow_rc" -ne 0 ] || [ "$superset_rc" -ne 0 ]; then
+  echo "pin-rollup: a pin guard failed (airflow $airflow_rc, superset $superset_rc)" >&2
+  exit 1
+fi
+
 if [ "${OPEN_PR:-0}" != "1" ]; then
   exit 0
 fi
@@ -148,7 +161,7 @@ trap 'rm -f "$body_file"' EXIT
   echo ""
   echo "## Verification (bot push suppresses pull-request checks)"
   echo ""
-  echo "Pull-request checks do not run for pushes made with \`GITHUB_TOKEN\`, so the rollup ran these two checks itself. A reviewer can trust these results instead."
+  echo "Pull-request checks do not run for pushes made with \`GITHUB_TOKEN\`, so the rollup ran these four checks itself. A reviewer can trust these results instead."
   echo ""
   echo "\`helm lint chart\` renders the umbrella chart's templates with its sub-charts not fetched (a GitHub release download 504 blocks the roll; they are unrelated to a digest pin). The merge to \`main\` runs the full CI \`Helm lint\` job with every dependency."
   echo ""
@@ -160,6 +173,16 @@ trap 'rm -f "$body_file"' EXIT
   echo "### scripts/check-version-parity.sh (exit ${parity_rc})"
   echo '```'
   echo "$parity_out"
+  echo '```'
+  echo ""
+  echo "### scripts/check-airflow-pin.sh (exit ${airflow_rc})"
+  echo '```'
+  echo "$airflow_check"
+  echo '```'
+  echo ""
+  echo "### scripts/check-superset-roles.sh (exit ${superset_rc})"
+  echo '```'
+  echo "$superset_check"
   echo '```'
 } > "$body_file"
 
