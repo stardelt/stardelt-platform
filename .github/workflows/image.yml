@@ -10,8 +10,8 @@ name: Image
 # On main this pushes `dev` plus an immutable `sha-<short>` tag. Pin the digest
 # (printed in the job summary) when rolling the cluster.
 #
-# Any change under images/ runs every job in this workflow; each job's BuildKit
-# cache is scoped, so rebuilding an untouched image is quick.
+# Only the job whose directory changed runs (`scripts/changed-images.sh`); a change to this
+# workflow itself, a tag push or a workflow dispatch builds all three.
 #
 # Pull requests build without pushing.
 
@@ -34,7 +34,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Which image directories changed
+    runs-on: ubuntu-latest
+    outputs:
+      superset: ${{ steps.diff.outputs.superset }}
+      jupyter: ${{ steps.diff.outputs.jupyter }}
+      spark: ${{ steps.diff.outputs.spark }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - id: diff
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          names="$(bash scripts/changed-images.sh "$BEFORE" "$AFTER")"
+          for name in superset jupyter spark; do
+            if printf '%s\n' "$names" | grep -qx "$name"; then
+              echo "$name=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "$name=false" >> "$GITHUB_OUTPUT"
+            fi
+          done
+
   superset:
+    needs: changes
+    if: needs.changes.outputs.superset == 'true'
     name: Build and push ghcr.io/stardelt/superset
     runs-on: ubuntu-latest
     steps:
@@ -91,6 +120,8 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   jupyter:
+    needs: changes
+    if: needs.changes.outputs.jupyter == 'true'
     name: Build and push ghcr.io/stardelt/jupyter-singleuser
     runs-on: ubuntu-latest
     steps:
@@ -153,6 +184,8 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   spark:
+    needs: changes
+    if: needs.changes.outputs.spark == 'true'
     name: Build and push ghcr.io/stardelt/spark
     runs-on: ubuntu-latest
     steps:
