@@ -53,7 +53,8 @@ rules:
     verbs: ["get", "list", "watch", "create", "update", "delete"]
   - apiGroups: ["stardelt.io"]
     resources: ["serviceprincipals"]
-    verbs: ["get", "list"]
+    # create: the administrator's "New team space" in Nova (internal#106 decision 3).
+    verbs: ["get", "list", "create"]
   # Nova lists StreamApps for the Streams page; `patch` is the stop/start control
   # (`spec.stopped`) and nothing else.
   - apiGroups: ["stardelt.io"]
@@ -61,7 +62,8 @@ rules:
     verbs: ["get", "list", "patch"]
   - apiGroups: ["stardelt.io"]
     resources: ["catalogs"]
-    verbs: ["get", "list", "patch"]
+    # create: the administrator's "New team space" in Nova (internal#106 decision 3).
+    verbs: ["get", "list", "patch", "create"]
   - apiGroups: ["stardelt.io"]
     resources: ["sqlwarehouses"]
     verbs: ["get", "list"]
