@@ -1320,8 +1320,9 @@ dev-watch: _context ## Follow one image's `dev` tag and roll it when CI publishe
 dev-status: _context ## Show what the cluster runs against what the manifests pin
 	@NS=$(NAMESPACE) TAG=$(TAG) bash scripts/dev-status.sh
 
-check-pins: ## Fail when the registry's `dev` digest moved ahead of a checked-in pin (no cluster needed)
+check-pins: ## Fail when the registry's `dev` digest moved ahead of a checked-in pin, or the operator's loader pin differs
 	@python3 scripts/check_pin_freshness.py
+	@OPERATOR_DIR=$(OPERATOR_DIR) bash scripts/check-operator-pins.sh
 
 build-superset-image: ## Build the Superset image (ghcr.io/stardelt/superset:dev)
 	@echo "› building $(SUPERSET_IMAGE)"
