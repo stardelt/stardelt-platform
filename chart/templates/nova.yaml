@@ -314,6 +314,21 @@ spec:
                   name: {{ .Values.nova.airflow.passwordSecret.name }}
                   key: {{ .Values.nova.airflow.passwordSecret.key }}
             {{- end }}
+            {{- if .Values.jupyterhub.enabled }}
+            # Notebook servers (stardelt-nova#652 W3): Nova is the JupyterHub service
+            # `nova` — read the person's server state, start it, stop it. Never
+            # `access:servers`, so Nova cannot open a server or run code in it. The
+            # token is the one the hub chart generated into Secret `hub`
+            # (`jupyterhub.hub.services.nova` above); optional, so Nova still starts
+            # when the hub is being installed later.
+            - name: NOVA_JUPYTERHUB_API_URL
+              value: "http://hub:8081/hub/api"
+            - name: NOVA_JUPYTERHUB_API_TOKEN
+              valueFrom:
+                secretKeyRef: { name: hub, key: hub.services.nova.apiToken, optional: true }
+            - name: NOVA_WORKSPACE_IDLE_SECONDS
+              value: {{ .Values.nova.workspace.idleSeconds | default 3600 | quote }}
+            {{- end }}
             # Query-log collector (stardelt-nova#116): a second listener that no Ingress
             # routes, reachable inside the cluster only (Service port `internal`). The bearer
             # token is Secret `nova-events` (scripts/nova-events-token.sh), shared with Trino's
