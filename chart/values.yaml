@@ -1069,7 +1069,7 @@ jupyterhub:
   # A notebook is not a dashboard: whoever controls the embedding origin can
   # clickjack the hub and the server, which is why this is an explicit value
   # rather than a default — and why it is exactly one origin, never `*`.
-  # Multi-user notebooks (chart: jupyterhub 4.4.3, appVersion 5.5.3).
+  # Multi-user notebooks (chart: jupyterhub 4.4.5, appVersion 5.5.5).
   #
   # Sign-in is OIDC against the platform IdP — the realm's `jupyterhub` client
   # (chart/files/keycloak-realm.json), redirect `/hub/oauth_callback`. No password is

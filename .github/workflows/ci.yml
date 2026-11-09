@@ -268,7 +268,7 @@ jobs:
       - name: helm template — jupyterhub
         run: |
           bash scripts/retry.sh helm template jupyterhub jupyterhub/jupyterhub \
-            --version 4.4.3 \
+            --version 4.4.5 \
             --namespace stardelt \
             -f helm-values/jupyterhub.yaml > /dev/null
 
