@@ -763,6 +763,17 @@ and `gold` exist (it never creates a Catalog), makes sure the realm group exists
 then runs one access sync. Without `YES=1` it prints the plan and exits 1; a second run changes nothing and says so per step; it
 deletes nothing. `bash scripts/demo-access.sh --manifest` prints the `ServicePrincipal` it would apply.
 
+*The public demo (lab only).* `make public-demo YES=1` converges, in one idempotent command, the account a public demo
+signs in with: the realm group `visitors`; the person `demo` with the password `demo` (public on purpose — it protects
+nothing), enabled, in `visitors` and in no other group, and without the realm role `default-roles-stardelt`, so it does
+not even get the account console; browse and select for `visitors` on the Catalogs `bronze`, `silver` and `gold`; the
+Catalog `playground` and the SqlWarehouse `demo` (`xs`) it may write to; the ConfigMap `stardelt-public-demo` that tells
+Nova the account is shared (Nova restarts once, the first time); and one access sync plus `make catalogs`. **Everything in
+`bronze`, `silver` and `gold` becomes readable by anyone on the internet**, which is why it prints that warning and why it
+needs `YES=1`; it refuses to run before the Catalogs and the principal `pipeline-demo` (`make demo-access YES=1`) exist.
+The kill switch is `make public-demo-off YES=1`: it disables `demo` and signs it out, and deletes nothing. A second run
+changes nothing and says so per step, except the password reset.
+
 *Catalog service clients (platform#282, step 1 of the catalog's authentication).* Every component
 that calls the Iceberg REST catalog has its own confidential service client instead of sharing one:
 
