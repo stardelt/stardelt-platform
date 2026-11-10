@@ -144,6 +144,30 @@ OPABridge:
       	age < 360 * 1000000000
       	age > -60 * 1000000000
       }
+
+      # A person may cancel their own query and an administrator may cancel anyone's
+      # (platform#398). Trino asks `KillQueryOwnedBy` with the target query's owner in
+      # `resource.user.user`; neither the chart's rules nor this file answered it, so SQL
+      # cancellation was denied to everyone. `system` is not a managed catalog, so the
+      # administrator list is read from any entry of the access table (every entry carries
+      # the same `all` list) and a missing or stale table denies rather than guesses. Nobody
+      # else may kill another person's query; Nova's Cancel button does not use this path.
+      allow if {
+      	input.action.operation == "KillQueryOwnedBy"
+      	input.action.resource.user.user == input.context.identity.user
+      }
+
+      allow if {
+      	input.action.operation == "KillQueryOwnedBy"
+      	user := input.context.identity.user
+      	some catalog
+      	user in data.stardelt.access.catalogs[catalog].all
+      	generated_at := data.stardelt.access.generatedAt
+      	is_number(generated_at)
+      	age := time.now_ns() - (generated_at * 1000000000)
+      	age < 360 * 1000000000
+      	age > -60 * 1000000000
+      }
     stardelt.front.rego: |
       package stardelt
 

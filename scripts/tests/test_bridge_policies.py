@@ -293,6 +293,18 @@ def procedure_body(user, operation, catalog, namespace, table):
     return body
 
 
+def kill_query_body(user, target):
+    """The body Trino sends for `CALL system.runtime.kill_query`: the target's owner in `resource`."""
+    return {
+        "context": {"identity": {"user": user, "groups": []},
+                    "softwareStack": {"trinoVersion": "480"}, "properties": {}},
+        "action": {
+            "operation": "KillQueryOwnedBy",
+            "resource": {"user": {"user": target, "groups": []}},
+        },
+    }
+
+
 def schema_body(user, catalog, name="replay_probe"):
     return {
         "context": {"identity": {"user": user, "groups": []},
@@ -536,6 +548,34 @@ class BridgePolicyTest(unittest.TestCase):
                 )
                 self.assertIs(front, expected)
                 self.assertIs(upstream, expected, "the front and the chart must agree")
+
+    def test_a_person_may_kill_their_own_query(self):
+        """`CALL system.runtime.kill_query` on one's own query is self-service (platform#398)."""
+        for label, table in (("fresh", access_table()), ("stale", access_table(now=0)),
+                             ("missing", None)):
+            with self.subTest(table=label):
+                front, upstream = self.both(kill_query_body("sub-ana", "sub-ana"), table)
+                self.assertIs(front, True, "the owner may always cancel their own query")
+                self.assertIs(upstream, True)
+
+    def test_an_admin_may_kill_another_persons_query_but_nobody_else_may(self):
+        """The admin branch reads the access table's `all` list; the owner branch is the owner."""
+        table = access_table()
+        for user, target, expected in (
+            ("sub-admin", "sub-ana", True),    # project admin: `all`
+            ("sub-build", "sub-ana", False),   # not an admin, not the owner
+            ("sub-ana", "sub-build", False),   # an owner may kill only their own
+        ):
+            with self.subTest(user=user):
+                front, upstream = self.both(kill_query_body(user, target), table)
+                self.assertIs(front, expected)
+                self.assertIs(upstream, expected, "the front and the chart must agree")
+
+    def test_a_stale_table_denies_the_admin_kill(self):
+        """A stale access table must not keep granting administrators the kill."""
+        front, upstream = self.both(kill_query_body("sub-admin", "sub-ana"), access_table(now=0))
+        self.assertIs(front, False)
+        self.assertIs(upstream, False)
 
     def test_a_question_without_a_resource_falls_through(self):
         """`ExecuteQuery` and `ReadSystemInformation` carry no `resource` at all.
