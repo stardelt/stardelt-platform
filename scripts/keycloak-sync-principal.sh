@@ -32,6 +32,11 @@
 # because the public `/admin` API is closed. Secrets travel only through files under a
 # mode-0700 temp dir and `--data @file` bodies, never argv, stdout or a log line; the
 # token claims printed at the end are not secret.
+#
+# A principal's Secret also carries `subject`, the service-account user id (the `sub` of every
+# token the client issues); a service client's does not. The operator publishes it as
+# `ServicePrincipal.status.subject`, which is how Nova maps a pipeline's queries to its owner
+# group (stardelt-operator#494, stardelt-nova#679).
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -564,7 +569,20 @@ PY
   done
 fi
 
-# 11. The service account must hold no admin-API role. A ServicePrincipal reads and
+# 11. Record the service-account user id in the Secret. It is the `sub` of every token this
+#     client issues, and the operator publishes it as `status.subject` — also on a chart
+#     install, where no PlatformInstance exists and nothing else could know it
+#     (stardelt-operator#494, issue #498).
+if [ "$KIND" != service ]; then
+  if [ "$(kubectl -n "$NAMESPACE" get secret "$SECRET_NAME" -o jsonpath='{.data.subject}' 2>/dev/null | base64 -d 2>/dev/null || true)" != "$sa_uid" ]; then
+    kubectl -n "$NAMESPACE" patch secret "$SECRET_NAME" --type=merge \
+      -p "$(printf '{"data":{"subject":"%s"}}' "$(printf '%s' "$sa_uid" | base64 -w0)")" >/dev/null \
+      || fail "Secret $NAMESPACE/$SECRET_NAME cannot be given its subject"
+    echo "› secret $NAMESPACE/$SECRET_NAME: subject recorded"
+  fi
+fi
+
+# 12. The service account must hold no admin-API role. A ServicePrincipal reads and
 #     writes data through the engine; it never manages the identity provider.
 mgmt_uuid="$("${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" "$API/clients?clientId=$MANAGEMENT_CLIENT" \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)[0]["id"])')" \
@@ -577,7 +595,7 @@ if roles:
 print("› service account holds no admin-API role")
 ' || fail "client $CLIENT_ID's service account is too powerful — remove its $MANAGEMENT_CLIENT roles"
 
-# 12. Prove it with the client's own token: a client-credentials grant, then the claims
+# 13. Prove it with the client's own token: a client-credentials grant, then the claims
 #     the catalog and engines rely on. Only non-secret claims are printed.
 cc_token="$("${CURL_SOFT[@]}" "${HEAD[@]}" -X POST "$KC/realms/$REALM/protocol/openid-connect/token" \
   --data-urlencode "grant_type=client_credentials" \
