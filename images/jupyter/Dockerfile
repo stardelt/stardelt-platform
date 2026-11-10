@@ -11,6 +11,9 @@
 #                      own repository (never in the image)
 #   - nbgitpuller      One-click clone of a repository into the user's home,
 #                      for training sessions (hub link generator)
+#   - stardelt-jupyterlab  The stardelt Graphite/Silver themes (Graphite the
+#                      default) and the top bar with the link back to Nova, the
+#                      user and the runtime (stardelt-python#64)
 #
 # Deliberately absent: `jupyterlab-sql`. Its last release (0.3.3, 2020) predates
 # JupyterLab 4, and it has no way to carry the per-user token — it would ship a
@@ -66,6 +69,28 @@ RUN python3 -m pip uninstall -y jupyterlab-git \
     && git --version \
     && { jupyter labextension list 2>&1 | tee /tmp/labext.txt | grep -i '@jupyterlab/git' || { echo '--- full labextension list ---'; cat /tmp/labext.txt; exit 1; }; } \
     && jupyter server extension list 2>&1 | grep -i 'nbgitpuller'
+
+# `stardelt-jupyterlab` (stardelt-python#64): the `stardelt Graphite` (default)
+# and `stardelt Silver` themes, plus the top bar with the link back to Nova, the
+# user name and the runtime label. Installed from the `jupyterlab-v0.1.0`
+# release wheel; the labextension check fails the build here, not in a user's
+# first cell. The overrides file is what makes Graphite the theme a server opens
+# with: JupyterLab reads the selected theme from the settings directory, not
+# from the wheel.
+#
+# `STARDELT_RUNTIME` is the platform release the image belongs to, shown in the
+# top bar; `make build-jupyter-image` passes the current year.month and the
+# default keeps a bare `docker build` working. `STARDELT_NOVA_URL`, the link
+# target, comes from the hub's spawn environment (singleuser.extraEnv), not from
+# the image.
+ARG STARDELT_JUPYTERLAB_WHEEL=https://github.com/stardelt/stardelt-python/releases/download/jupyterlab-v0.1.0/stardelt_jupyterlab-0.1.0-py3-none-any.whl
+ARG STARDELT_RUNTIME=dev
+ENV STARDELT_RUNTIME=${STARDELT_RUNTIME}
+RUN python3 -m pip install --no-cache-dir "${STARDELT_JUPYTERLAB_WHEEL}" \
+    && jupyter labextension list 2>&1 | grep -q '@stardelt/jupyterlab' \
+    && mkdir -p "${CONDA_DIR}/share/jupyter/lab/settings" \
+    && printf '%s\n' '{ "@jupyterlab/apputils-extension:themes": { "theme": "stardelt Graphite" } }' \
+         > "${CONDA_DIR}/share/jupyter/lab/settings/overrides.json"
 
 # Pristine copy of the quickstart. The spawner's postStart hook copies missing
 # notebooks into the user's home (`cp -n`), so edits survive a restart and a

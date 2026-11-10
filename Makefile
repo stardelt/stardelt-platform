@@ -1360,6 +1360,7 @@ build-jupyter-image: ## Build the Jupyter single-user image (ghcr.io/stardelt/ju
 	@echo "› building $(JUPYTER_IMAGE) (stardelt library $(STARDELT_LIB_TAG), $(STARDELT_LIB_REF))"
 	@docker build -t $(JUPYTER_IMAGE) \
 	  --build-arg STARDELT_LIB_REF=$(STARDELT_LIB_REF) \
+	  --build-arg STARDELT_RUNTIME=$(shell date +%Y.%m) \
 	  -f images/jupyter/Dockerfile images/jupyter
 
 push-jupyter-image: ## Push the Jupyter single-user image to ghcr.io
