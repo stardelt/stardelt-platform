@@ -150,7 +150,7 @@ for catalog in "${PUBLIC_CATALOGS[@]}"; do
   kubectl -n "$NAMESPACE" get catalogs.stardelt.io "$catalog" >/dev/null 2>&1 || missing+=("$catalog")
 done
 [ "${#missing[@]}" -eq 0 ] \
-  || fail "the Catalogs ${missing[*]} do not exist in namespace $NAMESPACE; apply the baseline layout (dev/seed/catalogs.yaml) or ask whoever runs the cluster; nothing was changed"
+  || fail "the Catalogs ${missing[*]} do not exist in namespace $NAMESPACE; run make public-demo-catalogs YES=1 first (nothing was changed)"
 echo "› catalogs ${PUBLIC_CATALOGS[*]}: present"
 
 # 0b. The pipeline principal the demo's catalogs come from.
