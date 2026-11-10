@@ -1275,6 +1275,20 @@ jupyterhub:
         description: Nova reads workspace state and starts or stops servers for the signed-in person
         services: [nova]
         scopes: ["read:servers", "servers", "read:users:activity", "read:users:name"]
+      # W2b (platform#831): a running server reads its OWN fresh token from
+      # /hub/api/users/<hub user>, so an expired TRINO_TOKEN no longer needs a
+      # restart. The spawner intersects the server's requested scopes with the
+      # owner's, so `user` must grant admin:auth_state!user as well, or the
+      # server scope is dropped at spawn. Never `inherit` on `server`: that is the
+      # `token` role and hands the server the owner's whole `self` set.
+      user:
+        scopes: [self, "admin:auth_state!user"]
+      server:
+        scopes:
+          - "users:activity!user"
+          - "access:servers!server"
+          - "admin:auth_state!user"
+          - "read:users!user"
     # The chart's own hub NetworkPolicy (on by default) admits only pods labelled
     # `hub.jupyter.org/network-access-hub: "true"` and the allowedIngressPorts on
     # the hub's port. Nova is a service, not a spawner-connected pod, so it gets
