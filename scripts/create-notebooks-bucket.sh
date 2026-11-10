@@ -3,6 +3,7 @@
 # design/scheduling-and-notebooks.md §3). Called by `make install` through the
 # `notebooks-bucket` target; safe to re-run, and its output is the same on every
 # run — the bucket and the versioning state, never a credential.
+# Executed run copies under _runs/ expire after RUN_COPY_DAYS (default 30).
 #
 #   NAMESPACE=stardelt bash scripts/create-notebooks-bucket.sh
 #
@@ -23,6 +24,8 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 NAMESPACE="${NAMESPACE:-stardelt}"
 BUCKET="notebooks"
+# days an executed notebook copy (_runs/) is kept; published notebooks never expire
+RUN_COPY_DAYS="${RUN_COPY_DAYS:-30}"
 S3_CHECK_IMAGE="${S3_CHECK_IMAGE:-amazon/aws-cli:2.17.0}"
 
 command -v kubectl >/dev/null 2>&1 || { echo "create-notebooks-bucket: kubectl not found" >&2; exit 1; }
@@ -72,6 +75,10 @@ spec:
           state="\$(s3 s3api get-bucket-versioning --bucket "$BUCKET" --query Status --output text)"
           [ "\$state" = Enabled ] || { echo "versioning on $BUCKET is \$state" >&2; exit 1; }
           echo "› bucket $BUCKET: versioning \$state"
+          s3 s3api put-bucket-lifecycle-configuration --bucket "$BUCKET" --lifecycle-configuration '{"Rules":[{"ID":"run-copies","Status":"Enabled","Filter":{"Prefix":"_runs/"},"Expiration":{"Days":$RUN_COPY_DAYS},"NoncurrentVersionExpiration":{"NoncurrentDays":1}}]}'
+          rule="\$(s3 s3api get-bucket-lifecycle-configuration --bucket "$BUCKET" --query 'Rules[0].Filter.Prefix' --output text)"
+          [ "\$rule" = _runs/ ] || { echo "lifecycle on $BUCKET is missing" >&2; exit 1; }
+          echo "› bucket $BUCKET: run copies kept $RUN_COPY_DAYS days"
       env:
         - name: AWS_ACCESS_KEY_ID
           valueFrom: { secretKeyRef: { name: stardelt-s3-creds, key: access-key } }
