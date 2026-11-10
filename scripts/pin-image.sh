@@ -5,7 +5,7 @@
 #   ./scripts/pin-image.sh stardelt-operator stardelt main
 #   APP=trino NS=lab TAG=v480 ./scripts/pin-image.sh
 #   ./scripts/pin-image.sh airflow           # the loader (`:demo`, airflow-api-server, three files)
-#   WRITE_MANIFEST_ONLY=1 ./scripts/pin-image.sh jupyter   # the notebook image, two files, no cluster
+#   WRITE_MANIFEST_ONLY=1 ./scripts/pin-image.sh jupyter   # the notebook image, three files, no cluster
 #   ./scripts/pin-image.sh superset          # the BI image, two files (values + group-roles CronJob)
 #
 # Why this exists: a moving tag is not an upgrade path. CI publishes `dev` on
@@ -296,8 +296,9 @@ PYEOF
 fi
 
 if [ "${WRITE_MANIFEST:-1}" = "1" ] && [ "$APP" = "jupyter" ]; then
-  # The notebook image is pinned twice and neither spelling matches the generic writer:
-  # a quoted `tag:` under `singleuser.image`, and a full reference under
+  # The notebook image is pinned three times and neither spelling matches the generic writer:
+  # a quoted `tag:` under `singleuser.image` (helm-values/jupyterhub.yaml and the product
+  # chart's jupyterhub.singleuser.image.tag in chart/values.yaml), and a full reference under
   # PIPELINE_NOTEBOOK_IMAGE. Find each block by its marker line, then the first key line
   # after it — the same rule scripts/check-notebook-image-pin.sh applies. Each must match
   # exactly once, or the pin drifts from one place.
@@ -323,6 +324,7 @@ def rewrite(path, marker, key):
 
 rewrite("helm-values/jupyterhub.yaml", r"name: ghcr\.io/stardelt/jupyter-singleuser$", r"^\s*tag:")
 rewrite("helm-values/airflow.yaml", r"name: PIPELINE_NOTEBOOK_IMAGE$", r"^\s*value:")
+rewrite("chart/values.yaml", r"name: ghcr\.io/stardelt/jupyter-singleuser$", r"^\s*tag:")
 PYEOF
 fi
 

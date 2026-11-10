@@ -97,7 +97,7 @@ credentials for `sql` tasks do:
 `PIPELINE_NOTEBOOK_IMAGE` and `singleuser.image.tag` must name the same digest: a task pod on the
 single-user image of an older merge has no papermill and fails inside the pod, so
 `scripts/check-notebook-image-pin.sh` (run by `make lint`, and therefore by CI) fails the build
-and prints both digests when they drift. Bump both together, as described under
+and prints the three digests when they drift. Bump all three together, as described under
 [Jupyter single-user image](#jupyter-single-user-image).
 
 Objects in that bucket:
@@ -2792,12 +2792,13 @@ pull secret; `make build-jupyter-image` + `make push-jupyter-image` are for loca
 iteration. It never carries credentials — the user's token is copied into the pod at
 spawn (see [Notebooks](#notebooks-the-users-own-identity-inside-the-pod)).
 
-The same digest is pinned a second time, as `PIPELINE_NOTEBOOK_IMAGE` in
+The same digest is pinned two more times — as `PIPELINE_NOTEBOOK_IMAGE` in
 `helm-values/airflow.yaml`, because a notebook task runs in a pod of its own on this
-image (see [Notebook tasks](#notebook-tasks)): `WRITE_MANIFEST_ONLY=1
-./scripts/pin-image.sh jupyter` moves both pins and needs no cluster, and
-`scripts/check-notebook-image-pin.sh` — run by `make lint` and therefore by CI — fails
-with both digests when they differ.
+image (see [Notebook tasks](#notebook-tasks)), and as `jupyterhub.singleuser.image.tag`
+in `chart/values.yaml`, because the umbrella chart spawns single-user pods too:
+`WRITE_MANIFEST_ONLY=1 ./scripts/pin-image.sh jupyter` moves all three pins and needs no
+cluster, and `scripts/check-notebook-image-pin.sh` — run by `make lint` and therefore by
+CI — fails with the three digests when they differ.
 
 ---
 

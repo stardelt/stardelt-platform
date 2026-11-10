@@ -61,6 +61,12 @@ class ParsePinsTest(unittest.TestCase):
             [],
         )
 
+    def test_parse_chart_notebook_tag(self):
+        text = (REPO / "chart/values.yaml").read_text()
+        pins = parse_pins(text, "tag")
+        self.assertEqual(len(pins), 1)
+        self.assertEqual(len(pins[0]), len("sha256:") + 64)
+
 
 class CompareTest(unittest.TestCase):
     def test_compare_reports_a_stale_pin(self):
