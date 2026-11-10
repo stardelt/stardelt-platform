@@ -1,0 +1,59 @@
+# The public demo's three catalogs (epic stardelt/stardelt-platform#895, decisions 3-4).
+#
+# The shop pipeline runs as `pipeline-demo` (group `demo`) and writes the demo's data
+# here, and `make public-demo` makes every schema in these three catalogs readable by
+# anyone on the internet (visitors). That is deliberate and accepted for the lab; see
+# the epic. This file only creates the catalogs — the grants for `visitors` are added
+# by `scripts/public-demo.sh` step 5, and a plain `make install` does not apply it.
+#
+#   make public-demo-catalogs YES=1   # apply the three Catalogs
+apiVersion: stardelt.io/v1alpha1
+kind: Catalog
+metadata:
+  name: bronze
+  namespace: stardelt
+  labels: { stardelt.io/managed-by: public-demo }
+spec:
+  lakehouseRef: { name: main }
+  displayName: "Bronze"
+  description: "The public demo's raw layer (shop). Written by the shop pipeline as pipeline-demo; readable by visitors."
+  owner: demo
+  grants:
+    - { group: demo, verb: browse }
+    - { group: demo, verb: select }
+    - { group: demo, verb: write }
+    - { group: demo, verb: create }
+---
+apiVersion: stardelt.io/v1alpha1
+kind: Catalog
+metadata:
+  name: silver
+  namespace: stardelt
+  labels: { stardelt.io/managed-by: public-demo }
+spec:
+  lakehouseRef: { name: main }
+  displayName: "Silver"
+  description: "The public demo's cleaned layer (shop). Written by the shop pipeline as pipeline-demo; readable by visitors."
+  owner: demo
+  grants:
+    - { group: demo, verb: browse }
+    - { group: demo, verb: select }
+    - { group: demo, verb: write }
+    - { group: demo, verb: create }
+---
+apiVersion: stardelt.io/v1alpha1
+kind: Catalog
+metadata:
+  name: gold
+  namespace: stardelt
+  labels: { stardelt.io/managed-by: public-demo }
+spec:
+  lakehouseRef: { name: main }
+  displayName: "Gold"
+  description: "The public demo's mart (shop). Written by the shop pipeline as pipeline-demo; readable by visitors."
+  owner: demo
+  grants:
+    - { group: demo, verb: browse }
+    - { group: demo, verb: select }
+    - { group: demo, verb: write }
+    - { group: demo, verb: create }

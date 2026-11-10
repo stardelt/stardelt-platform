@@ -746,6 +746,14 @@ public-demo: _context ## The public demo person demo/demo, its grants, playgroun
 public-demo-off: _context ## Kill switch: disable the public demo person and sign it out (needs YES=1)
 	@NAMESPACE=$(NAMESPACE) YES='$(YES)' bash scripts/public-demo.sh --off
 
+.PHONY: public-demo-catalogs
+public-demo-catalogs: _context ## The public demo's bronze/silver/gold Catalogs, before the shop deploy (lab only; needs YES=1)
+	@if [ '$(YES)' != 1 ]; then \
+	  echo "would: apply the Catalogs bronze, silver and gold (owner group demo, label stardelt.io/managed-by=public-demo)"; \
+	  echo "nothing was changed — re-run with YES=1"; exit 1; \
+	fi
+	@kubectl apply -f manifests/public-demo-catalogs.yaml
+
 .PHONY: demo-reset-install demo-reset-now
 demo-reset-install: _context ## Install CronJob demo-reset (empties the public demo's playground at 03:00 UTC) and run it once
 	@kubectl -n $(NAMESPACE) create configmap demo-reset-script --from-file=job.py=scripts/demo-reset-job.py \
