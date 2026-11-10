@@ -224,9 +224,8 @@ server:
 # Nova's catalog switcher, Superset or a notebook, and gets an engine refusal
 # instead of a query. Administrators keep all three (rule 1, `allow: all`),
 # which is where the documented smoke test `SELECT * FROM system.runtime.nodes`
-# now lives (`CALL system.runtime.kill_query` is refused for administrators too:
-# the bridge has no `ExecuteProcedure` rule at all — a pre-existing gap, not
-# something this rule changes). This layer and not the bridge
+# now lives (`CALL system.runtime.kill_query` needs the bridge's
+# `KillQueryOwnedBy` rule, platform#398.). This layer and not the bridge
 # is the one that can do it: the bridge lets every catalog it does not manage
 # through (`allowUnmanagedCatalogs`, helm-values/lakekeeper.yaml), and both
 # authorizers must allow a statement, so a `none` here is the deny.

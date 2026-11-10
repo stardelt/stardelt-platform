@@ -1856,9 +1856,9 @@ Built-in functions are **not** catalog access: `SELECT abs(-1)`, `now()`,
 `SHOW FUNCTIONS`, `SHOW SESSION LIKE 'query_max%'` and `EXPLAIN SELECT 1` are the
 acceptance battery and stay available to everyone. The documented smoke test
 `SELECT * FROM system.runtime.nodes` is administrator-only from here on; use
-`SELECT 1` as an ordinary person. `CALL system.runtime.kill_query` stays refused — for
-administrators too — because the bridge has no `ExecuteProcedure` rule at all (a
-pre-existing gap, not introduced by this reservation). Superset's catalog list comes from
+`SELECT 1` as an ordinary person. `CALL system.runtime.kill_query` follows the bridge's
+`KillQueryOwnedBy` rule (`helm-values/lakekeeper.yaml`, platform#398): a person may cancel
+their own query and an administrator anyone's. Superset's catalog list comes from
 `SHOW CATALOGS`, so it follows the person; adding a dataset and previewing it read
 `information_schema`, and only the *table comment* lookup uses
 `system.metadata.table_comments` — that one is denied now, Superset catches it and the
