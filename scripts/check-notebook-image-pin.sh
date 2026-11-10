@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Fail when the notebook image the JupyterHub single-user pods run (singleuser.image.tag in
-# helm-values/jupyterhub.yaml) differs from the image a notebook task pod is told to run
-# (PIPELINE_NOTEBOOK_IMAGE in helm-values/airflow.yaml).
+# helm-values/jupyterhub.yaml), the product chart's single-user pods
+# (jupyterhub.singleuser.image.tag in chart/values.yaml) and the image a notebook task pod is
+# told to run (PIPELINE_NOTEBOOK_IMAGE in helm-values/airflow.yaml) differ.
 #
 # A task pod on a stale digest is an image without papermill (platform#286) and without the run
 # wrapper (platform#315): the notebook task starts and then fails inside the pod, which is
 # exactly what platform#316 exists to prevent. `make pin-images` cannot cover this — spawned
-# single-user pods and KubernetesPodOperator pods are not Deployments, so both pins are by hand.
+# single-user pods and KubernetesPodOperator pods are not Deployments, so all three pins are by hand.
 #
 #   bash scripts/check-notebook-image-pin.sh
 set -euo pipefail
@@ -27,20 +28,23 @@ digest_after() { # digest_after <file> <marker> <key>
 
 hub="$(digest_after helm-values/jupyterhub.yaml 'name: ghcr.io/stardelt/jupyter-singleuser$' '^[[:space:]]*tag:')"
 task="$(digest_after helm-values/airflow.yaml 'name: PIPELINE_NOTEBOOK_IMAGE$' '^[[:space:]]*value:')"
+chart="$(digest_after chart/values.yaml 'name: ghcr.io/stardelt/jupyter-singleuser$' '^[[:space:]]*tag:')"
 
-# Both must be a full digest: a tag-only pin let a cached image serve stale code (platform#203).
-for pin in "$hub" "$task"; do
+# Each must be a full digest: a tag-only pin let a cached image serve stale code (platform#203).
+for pin in "$hub" "$task" "$chart"; do
   if [[ ! "$pin" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-    echo "check-notebook-image-pin: no full sha256 digest (jupyterhub='${hub}' airflow='${task}')" >&2
+    echo "check-notebook-image-pin: no full sha256 digest (jupyterhub='${hub}' airflow='${task}' chart='${chart}')" >&2
     exit 1
   fi
 done
 
-if [ "$hub" != "$task" ]; then
+if [ "$hub" != "$task" ] || [ "$hub" != "$chart" ]; then
   echo "check-notebook-image-pin: the single-user pods run $hub" >&2
   echo "check-notebook-image-pin: but notebook task pods are pinned to $task" >&2
-  echo "Set the same digest in helm-values/jupyterhub.yaml (singleuser.image.tag) and" >&2
-  echo "helm-values/airflow.yaml (PIPELINE_NOTEBOOK_IMAGE) — bump both." >&2
+  echo "check-notebook-image-pin: and the product chart's single-user pods to $chart" >&2
+  echo "Set the same digest in helm-values/jupyterhub.yaml (singleuser.image.tag)," >&2
+  echo "helm-values/airflow.yaml (PIPELINE_NOTEBOOK_IMAGE) and chart/values.yaml" >&2
+  echo "(jupyterhub.singleuser.image.tag) — bump all three." >&2
   exit 1
 fi
 

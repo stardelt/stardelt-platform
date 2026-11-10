@@ -3,8 +3,8 @@
 
 No cluster, no kubectl: it resolves each pin's tag with `PRINT_DIGEST=1` mode of
 `scripts/pin-image.sh` and compares that digest with the one the manifests pin.
-The notebook image is checked in both helm-values/jupyterhub.yaml and
-helm-values/airflow.yaml because it is pinned twice. See stardelt-platform#556.
+The notebook image is checked in helm-values/jupyterhub.yaml, helm-values/airflow.yaml and
+chart/values.yaml because it is pinned three times. See stardelt-platform#556.
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ APPS = [
     ("airflow", "helm-values/airflow.yaml", "digest", "demo"),
     ("jupyter", "helm-values/jupyterhub.yaml", "tag", "dev"),
     ("jupyter", "helm-values/airflow.yaml", "notebook", "dev"),
+    ("jupyter", "chart/values.yaml", "tag", "dev"),
 ]
 
 DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
