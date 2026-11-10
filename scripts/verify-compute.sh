@@ -240,9 +240,11 @@ for item in (json.load(sys.stdin).get("items") or []):
         spec.get("state") or "",
         status.get("phase") or "",
         str(age),
+        str(((spec.get("owner") or {}).get("group")) or ""),
+        str(((spec.get("owner") or {}).get("user")) or ""),
     ]))
 ')"
-  while IFS=$'\x1f' read -r name size state phase age; do
+  while IFS=$'\x1f' read -r name size state phase age owner_group owner_user; do
     [ -n "$name" ] || continue
     echo "$name  $size  $state  phase=${phase:-none}"
     [ "$operator_present" -eq 1 ] || continue
@@ -259,6 +261,20 @@ for item in (json.load(sys.stdin).get("items") or []):
       if ! kubectl -n "$NS" get sparkconnects.sparkoperator.k8s.io "spc-$name" >/dev/null 2>&1 && [ "$old" -eq 1 ]; then
         echo "✗ $name   Running but SparkConnect spc-$name does not exist after ${age}s"
         problems=$((problems + 1))
+      fi
+      if ! policy="$(kubectl -n "$NS" get networkpolicy "spc-$name-ingress" -o json 2>&1)"; then
+        if [ "$old" -eq 1 ]; then
+          echo "✗ $name   Running but no NetworkPolicy spc-$name-ingress — Spark Connect is open to every pod"
+          echo "            hint: the operator applies it (operator#471); check the operator log"
+          problems=$((problems + 1))
+        fi
+      elif ! policy_problems="$(printf '%s' "$policy" | python3 scripts/check_spark_policy.py --name "$name" \
+             ${owner_group:+--group "$owner_group"} ${owner_user:+--user "$owner_user"} 2>&1)"; then
+        echo "✗ $name   NetworkPolicy spc-$name-ingress does not admit exactly the owner, Nova and Airflow:"
+        printf '%s\n' "$policy_problems" | sed 's/^/            /'
+        problems=$((problems + 1))
+      else
+        echo "✓ $name   NetworkPolicy spc-$name-ingress admits $([ -n "$owner_group" ] && echo "group $owner_group" || echo "user $owner_user"), Nova and Airflow"
       fi
     elif [ "$state" = "Stopped" ]; then
       if kubectl -n "$NS" get sparkconnects.sparkoperator.k8s.io "spc-$name" >/dev/null 2>&1 && [ "$old" -eq 1 ]; then
