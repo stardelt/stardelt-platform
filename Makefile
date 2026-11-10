@@ -83,7 +83,7 @@ BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 
 .PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator openfga trino catalogs upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-refresh dev-watch dev-status check-pins verify-pins dev-up dev-down dev-dns dev-dns-down platform-config
 .PHONY: chart-deps chart-template chart-install
-.PHONY: verify-backups verify-backups-identity verify-backups-nova verify-backups-openfga verify-backups-all verify-images verify-streaming verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
+.PHONY: verify-backups verify-backups-identity verify-backups-nova verify-backups-openfga verify-backups-all verify-images verify-streaming verify-compute verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
 .PHONY: backups verify-pgdump offsite-backup export-recovery-secrets import-recovery-secrets
 .PHONY: sync-oidc-clients verify-oidc-clients verify-trino-tls verify-trino-auth sync-trino-group-sync-client sync-pipeline-runner-client sync-dev-client sync-catalog-audience openbao test-openbao-policies seaweedfs-admin
 .PHONY: external-secrets verify-external-secrets eso-stores
@@ -204,6 +204,9 @@ verify-images: _context ## Every pinned stardelt image is readable with the clus
 
 verify-streaming: _context ## The broker, the Spark Operator's watch and every StreamApp are wired (manual)
 	@NS=$(NAMESPACE) bash scripts/verify-streaming.sh
+
+verify-compute: _context ## The SparkCluster CRD, runtime catalogue, Nova RBAC and every cluster's reconcile state (manual)
+	@NS=$(NAMESPACE) bash scripts/verify-compute.sh
 
 verify-airflow-actions: _context ## Prove Nova's Airflow service user can run, pause and resume a pipeline
 	@bash scripts/verify-airflow-actions.sh
@@ -582,6 +585,7 @@ install-spark: deps _context ## Install the Spark Connect endpoint (Iceberg on t
 	@kubectl -n $(NAMESPACE) rollout status deploy/spark-connect --timeout=5m
 	@kubectl -n $(NAMESPACE) get configmap stardelt-spark-runtimes -o name
 	@echo "Spark Connect ready: sc://spark-connect.$(NAMESPACE).svc.cluster.local:15002 (in-cluster only)"
+	@NS=$(NAMESPACE) bash scripts/verify-compute.sh
 
 # ---------------------------------------------------------------------------
 # The Kubeflow Spark Operator (D42): the controller that runs a `StreamApp` as a
