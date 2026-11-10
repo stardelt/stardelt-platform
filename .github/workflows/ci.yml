@@ -46,6 +46,9 @@ jobs:
       - name: Airflow image pin (Deployments and task pods run the same digest)
         run: bash scripts/check-airflow-pin.sh
 
+      - name: Notebook config agrees with itself (values, culler, Nova's env)
+        run: make check-hub-config
+
       - name: Lint shell scripts (bash -n + shellcheck)
         run: make lint
 
