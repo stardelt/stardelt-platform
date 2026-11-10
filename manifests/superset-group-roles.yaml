@@ -70,7 +70,7 @@ spec:
             - name: ghcr-creds
           containers:
             - name: sync
-              image: ghcr.io/stardelt/superset:dev@sha256:a211452c22434ebed850738a51614d03367de9074d84c01e058f31dc4a42c6fa
+              image: ghcr.io/stardelt/superset:dev@sha256:9a7b5f965afe581655646ba4c5537cb9dca67464e2e3726da5526cf155d1c53f
               command: ["python", "/app/configs/superset-group-roles.py"]
               # The same environment the Superset pods get: SUPERSET_SECRET_KEY and
               # the metadata DB connection (DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASS),
