@@ -1589,6 +1589,12 @@ bash scripts/render-catalogs.sh trino-args  # the --set-file arguments make trin
 bash scripts/render-catalogs.sh bridge-arg  # the --set-json argument make catalogs passes
 ```
 
+A `Catalog` created by something other than this page — Nova's catalog browser, or a `kubectl
+apply` — is still a `Catalog`: it has a Lakekeeper warehouse and a maintenance CronJob, and no
+Trino catalog until `make catalogs` runs. Until then its maintenance run fails with
+`CATALOG_NOT_FOUND`. `make verify-maintenance` catches it: `✗ trino <name> is Ready but
+ConfigMap trino-catalog has no <name>.properties — hint: make catalogs` (platform#914).
+
 A Catalog that is not `Ready` gets nothing on either side, and a name the operator would
 reject is skipped with a warning. On a cluster without the Catalog CRD (no operator,
 `make install-core`) all three print nothing, so `make trino` keeps the single `warehouse`

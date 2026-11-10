@@ -76,7 +76,20 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 3-6. One read of everything the checks need: the Catalogs, their CronJobs, the
+# 3. The Trino catalogs the platform rendered. A `Catalog` created after the
+#    last `make catalogs` has a warehouse and a maintenance CronJob but no
+#    `<name>.properties` in ConfigMap `trino-catalog`, so its maintenance run
+#    fails with CATALOG_NOT_FOUND (platform#914). Read-only; the ConfigMap name
+#    is overridable so the failure path can be proven without a broken cluster.
+# ---------------------------------------------------------------------------
+TRINO_CONFIGMAP="${TRINO_CONFIGMAP:-trino-catalog}"
+trino_cm=""
+if out="$(kubectl -n "$NS" get configmap "$TRINO_CONFIGMAP" -o json 2>&1)"; then
+  trino_cm="$out"
+fi
+
+# ---------------------------------------------------------------------------
+# 4-7. One read of everything the checks need: the Catalogs, their CronJobs, the
 #    ServicePrincipals that run them and the Jobs those CronJobs produced.
 # ---------------------------------------------------------------------------
 if ! json="$(kubectl -n "$NS" get catalogs,cronjobs,serviceprincipals,jobs -o json 2>&1)"; then
@@ -87,6 +100,8 @@ fi
 if ! report="$(printf '%s' "$json" | python3 -c '
 import json, sys
 
+trino_raw = sys.argv[2] if len(sys.argv) > 2 else ""
+trino_cm_name = sys.argv[3] if len(sys.argv) > 3 else "trino-catalog"
 doc = json.load(sys.stdin)
 catalogs, cronjobs, principals, jobs = {}, {}, {}, []
 for item in (doc.get("items") or []):
@@ -277,10 +292,25 @@ for minute in sorted(by_minute):
         for j in range(i + 1, len(names)):
             warn_lines.append("! %s and %s share minute %d — allowed (the stagger hashes into 49 minutes)" % (names[i], names[j], minute))
 
-for line in catalog_lines + warn_lines + principal_lines + job_lines:
+trino_lines = []
+if trino_raw:
+    data = (json.loads(trino_raw).get("data") or {})
+    have = {key[:-len(".properties")] for key in data if key.endswith(".properties")}
+    ready = sorted(n for n in catalogs if ((catalogs[n].get("status") or {}).get("phase") or "") == "Ready")
+    missing = [n for n in ready if n not in have]
+    if missing:
+        for name in missing:
+            trino_lines.append("✗ trino     %s is Ready but ConfigMap %s has no %s.properties — hint: make catalogs" % (name, trino_cm_name, name))
+            problems += 1
+    else:
+        trino_lines.append("✓ trino     every Ready Catalog has a Trino catalog (%d checked)" % len(ready))
+else:
+    trino_lines.append("– trino     no ConfigMap %s (Trino is not installed in this namespace)" % trino_cm_name)
+
+for line in trino_lines + catalog_lines + warn_lines + principal_lines + job_lines:
     print(line)
 print("__meta__ %d|%d|%d|%s" % (problems, ok, len(catalogs), ",".join(str(m) for m in sorted(minutes))))
-' "$NS")"; then
+' "$NS" "$trino_cm" "$TRINO_CONFIGMAP")"; then
   echo "✗ maintenance cannot evaluate the cluster state:"
   printf '%s\n' "$report" | sed 's/^/            /'
   exit 1
