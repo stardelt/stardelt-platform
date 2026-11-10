@@ -154,6 +154,13 @@ jobs:
         # that release of the library (platform#417).
         run: echo "ref=$(make -s print-stardelt-lib-ref)" >> "$GITHUB_OUTPUT"
 
+      - name: Platform release the image belongs to
+        id: runtime
+        # The top bar of `stardelt-jupyterlab` shows this (`STARDELT_RUNTIME`),
+        # and `make build-jupyter-image` passes the same year.month, so the CI
+        # build of `dev` and a local build say the same thing.
+        run: echo "label=$(date +%Y.%m)" >> "$GITHUB_OUTPUT"
+
       - name: Build and push
         id: build
         uses: docker/build-push-action@v7
@@ -162,6 +169,7 @@ jobs:
           file: images/jupyter/Dockerfile
           build-args: |
             STARDELT_LIB_REF=${{ steps.lib.outputs.ref }}
+            STARDELT_RUNTIME=${{ steps.runtime.outputs.label }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
