@@ -87,11 +87,11 @@ rules:
     resources: ["serviceprincipals"]
     # create: the administrator's "New team space" in Nova (internal#106 decision 3).
     verbs: ["get", "list", "create"]
-  # Nova lists StreamApps for the Streams page; `patch` is the stop/start control
-  # (`spec.stopped`) and nothing else.
+  # Streams (nova#617 slice a): `patch` is the stop/start control (`spec.stopped`);
+  # `create` and `delete` are the team's own stream, written through Nova's streams API.
   - apiGroups: ["stardelt.io"]
     resources: ["streamapps"]
-    verbs: ["get", "list", "patch"]
+    verbs: ["get", "list", "patch", "create", "delete"]
   # Spark compute tiers (internal#161 slice 5a): the Compute page lists `SparkCluster`
   # resources and Start/Stop patch `spec.state`; create and delete are the
   # administrator's cluster form (slice 5, later ticket). Without this rule the route
