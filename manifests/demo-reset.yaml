@@ -1,0 +1,115 @@
+# Demo reset — empty the public demo's playground every night at 03:00 UTC (epic
+# platform#895 decision 4, platform#897).
+#
+# The playground Catalog (scripts/public-demo.sh) is written to by anyone on the
+# internet. This CronJob empties it and recreates its one schema `scratch`, so the next
+# visitor starts clean.
+#
+# Why `pipeline-demo`: it is the existing principal of realm group `demo`, which owns
+# the playground Catalog (make demo-access YES=1), so the reset needs no IdP
+# administrator and no new credential — its client id and secret come from Secret
+# `sp-pipeline-demo`. The job talks only to the query engine.
+#
+# Two trust stores, as every in-cluster Trino client has:
+#   * OIDC discovery and the token request go to the public issuer (`issuerUrl` in
+#     ConfigMap `stardelt-identity`), so they use the image's public WebPKI roots
+#     (`ca-certificates` in `python:3.13.16-slim-bookworm`);
+#   * `trinoUrl` is the in-cluster TLS endpoint and its certificate is signed by Secret
+#     `trino-ca`, so exactly that one anchor is mounted at /etc/stardelt/trino-ca and
+#     named in TRINO_CA. Only `tls.crt`, never `tls.key`; verification is never disabled.
+#
+# Every table and schema name the job drops was chosen by a visitor, so the script
+# quotes it (`ident()`) and never logs it — the log carries counts and status codes.
+#
+#   make demo-reset-install   # create the script ConfigMap, apply this file and run once
+#   make demo-reset-now       # run one Job now, wait for it, print its log
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: demo-reset
+  namespace: stardelt
+  labels:
+    app.kubernetes.io/part-of: stardelt
+    app.kubernetes.io/name: demo-reset
+spec:
+  schedule: "0 3 * * *"
+  timeZone: "Etc/UTC"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 900
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/part-of: stardelt
+            app.kubernetes.io/name: demo-reset
+        spec:
+          restartPolicy: Never
+          # The job needs no Kubernetes API: it reads two objects through the kubelet
+          # (env from a ConfigMap and a Secret, a script and the CA from volumes).
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile: { type: RuntimeDefault }
+          containers:
+            - name: reset
+              image: python:3.13.16-slim-bookworm
+              command: ["python3", "/opt/job/job.py"]
+              env:
+                # The public issuer (public roots) and the in-cluster TLS endpoint
+                # (Secret trino-ca) — neither is optional.
+                - name: OIDC_ISSUER
+                  valueFrom:
+                    configMapKeyRef:
+                      name: stardelt-identity
+                      key: issuerUrl
+                - name: TRINO_URL
+                  valueFrom:
+                    configMapKeyRef:
+                      name: stardelt-identity
+                      key: trinoUrl
+                - name: TRINO_CA
+                  value: /etc/stardelt/trino-ca/ca.crt
+                # The principal `make demo-access YES=1` converges; the Secret is its
+                # source of truth for the client secret.
+                - name: CLIENT_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: sp-pipeline-demo
+                      key: client-id
+                - name: CLIENT_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: sp-pipeline-demo
+                      key: client-secret
+              volumeMounts:
+                - { name: job-script, mountPath: /opt/job, readOnly: true }
+                - { name: trino-ca, mountPath: /etc/stardelt/trino-ca, readOnly: true }
+              resources:
+                requests: { cpu: "50m", memory: "64Mi" }
+                limits: { cpu: "500m", memory: "256Mi" }
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: { drop: ["ALL"] }
+          volumes:
+            # One source of truth: the Makefile refreshes this ConfigMap from
+            # scripts/demo-reset-job.py on every apply.
+            - name: job-script
+              configMap:
+                name: demo-reset-script
+                defaultMode: 0444
+                items:
+                  - { key: job.py, path: job.py }
+            # The one extra anchor Trino's certificate needs. Same mount the notebook
+            # pods use (helm-values/jupyterhub.yaml).
+            - name: trino-ca
+              secret:
+                secretName: trino-ca
+                items:
+                  - { key: tls.crt, path: ca.crt }
