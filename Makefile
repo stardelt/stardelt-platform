@@ -746,6 +746,20 @@ public-demo: _context ## The public demo person demo/demo, its grants, playgroun
 public-demo-off: _context ## Kill switch: disable the public demo person and sign it out (needs YES=1)
 	@NAMESPACE=$(NAMESPACE) YES='$(YES)' bash scripts/public-demo.sh --off
 
+.PHONY: demo-reset-install demo-reset-now
+demo-reset-install: _context ## Install CronJob demo-reset (empties the public demo's playground at 03:00 UTC) and run it once
+	@kubectl -n $(NAMESPACE) create configmap demo-reset-script --from-file=job.py=scripts/demo-reset-job.py \
+	  --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+	@kubectl apply -f manifests/demo-reset.yaml
+	@$(MAKE) --no-print-directory demo-reset-now
+demo-reset-now: _context ## Run one demo-reset Job now, wait for it and print its log
+	@name=demo-reset-now-$$(date +%s); \
+	  kubectl -n $(NAMESPACE) create job --from=cronjob/demo-reset "$$name" >/dev/null; \
+	  kubectl -n $(NAMESPACE) wait --for=condition=complete "job/$$name" --timeout=900s >/dev/null \
+	    || { kubectl -n $(NAMESPACE) logs "job/$$name" 2>/dev/null || true; \
+	         echo "job $$name did not complete — see the log above" >&2; exit 1; }; \
+	  kubectl -n $(NAMESPACE) logs "job/$$name"
+
 .PHONY: delete-principal
 delete-principal: _context ## Delete a ServicePrincipal client and its Secret (stardelt-managed only; needs YES=1)
 	@NAMESPACE=$(NAMESPACE) NAME=$(NAME) YES=$(YES) bash scripts/keycloak-sync-principal.sh --delete
