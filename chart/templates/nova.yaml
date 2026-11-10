@@ -173,6 +173,10 @@ spec:
               value: {{ .Values.nova.warehouseName | quote }}
             - name: NOVA_DEV_USER
               value: {{ .Values.nova.devUser | quote }}
+{{- with .Values.nova.sharedAccounts }}
+            - name: NOVA_SHARED_ACCOUNTS
+              value: {{ . | quote }}
+{{- end }}
             # Send the signed-in user's own token to Trino (master spec §7). Only
             # meaningful with an IdP configured; Trino must trust audience
             # `trino` for that token (realm mapper `aud-trino` on client `nova`).
