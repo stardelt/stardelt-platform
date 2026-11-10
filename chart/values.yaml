@@ -1326,6 +1326,11 @@ jupyterhub:
     # domain override this.
     extraEnv:
       TRINO_URL: https://trino.alpha.dev.stardelt.io:443
+      # Nova's public origin, which the stardelt-jupyterlab top bar links back
+      # to (`◂ stardelt`). Public HTTPS like TRINO_URL: the single-user pod
+      # reaches Nova through the host, and values files are not templated, so
+      # deployments on another domain override this.
+      STARDELT_NOVA_URL: https://alpha.dev.stardelt.io
       # Spark Connect's ClusterIP endpoint for `stardelt.spark()`. Same value
       # as the standalone helm-values/jupyterhub.yaml above: keep them in sync.
       SPARK_REMOTE: sc://spark-connect.stardelt.svc.cluster.local:15002
