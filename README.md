@@ -64,7 +64,11 @@ prints only the bucket and its versioning state:
 ```sh
 $ make notebooks-bucket
 › bucket notebooks: versioning Enabled
+› bucket notebooks: run copies kept 30 days
 ```
+
+An executed copy under `_runs/` expires after 30 days (`RUN_COPY_DAYS`); published notebooks are
+never expired.
 
 Nova writes to that bucket with `NOVA_S3_URL`, `NOVA_S3_ACCESS_KEY` and `NOVA_S3_SECRET_KEY`
 (the key pair in Secret `stardelt-s3-creds`, the same identity the object store and every other
@@ -107,7 +111,8 @@ Objects in that bucket:
   the run executes.
 - `_runs/<ownerGroup>/<pipeline>/<run_id>/<task>.ipynb` — the executed copy, so the output a run
   produced is readable next to the input it started from. Group names start with a letter or a
-  digit, which is why `_runs` cannot collide with one.
+  digit, which is why `_runs` cannot collide with one. It is kept for 30 days, then the bucket's
+  lifecycle rule removes it.
 
 **The pod holds no storage credential.** An S3 key scoped to `notebooks` can still read every
 other bucket through `CopyObject` (spike #272), and a notebook is user code: it could send the
