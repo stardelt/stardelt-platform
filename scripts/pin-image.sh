@@ -6,7 +6,7 @@
 #   APP=trino NS=lab TAG=v480 ./scripts/pin-image.sh
 #   ./scripts/pin-image.sh airflow           # the loader (`:demo`, airflow-api-server, three files)
 #   WRITE_MANIFEST_ONLY=1 ./scripts/pin-image.sh jupyter   # the notebook image, three files, no cluster
-#   ./scripts/pin-image.sh superset          # the BI image, two files (values + group-roles CronJob)
+#   ./scripts/pin-image.sh superset          # the BI image: two files, three live objects (web, worker, group-roles CronJob)
 #
 # Why this exists: a moving tag is not an upgrade path. CI publishes `dev` on
 # every merge to main, but a node that already has layers for that tag can keep
@@ -191,6 +191,31 @@ else
     echo "  › not waiting for the rollout (NOWAIT=1)"
   else
     kubectl -n "$NS" rollout status "deploy/$DEPLOY" --timeout="${TIMEOUT:-300s}"
+  fi
+fi
+
+# Superset serves one image from three objects: the web Deployment above, the Celery
+# worker Deployment and the group-roles CronJob. `deployment_for` names one, so a pin
+# used to move the web pod alone while the worker and the job kept the old build
+# (platform#902). Do it here, outside the "already pinned" branch: that branch must
+# never skip them, and this runs on every pin, not only on the first one.
+if [ "$APP" = "superset" ]; then
+  moved=""
+  # Container names are surface names, not guesses: the chart runs the worker's
+  # container as `superset`, the CronJob calls its container `sync`.
+  if kubectl -n "$NS" get deploy superset-worker >/dev/null 2>&1; then
+    kubectl -n "$NS" set image deploy/superset-worker "superset=$pinned" >/dev/null
+    moved="$moved $NS/superset-worker"
+  fi
+  if kubectl -n "$NS" get cronjob superset-group-roles >/dev/null 2>&1; then
+    kubectl -n "$NS" set image cronjob/superset-group-roles "sync=$pinned" >/dev/null
+    moved="$moved $NS/superset-group-roles"
+  fi
+  if [ -n "$moved" ]; then
+    echo "›$moved: image set to …@${digest:0:19}…"
+    if [ "${NOWAIT:-0}" != "1" ] && kubectl -n "$NS" get deploy superset-worker >/dev/null 2>&1; then
+      kubectl -n "$NS" rollout status deploy/superset-worker --timeout="${TIMEOUT:-300s}"
+    fi
   fi
 fi
 fi # WRITE_MANIFEST_ONLY

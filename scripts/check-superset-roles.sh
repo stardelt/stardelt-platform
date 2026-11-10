@@ -55,4 +55,12 @@ if grep -q 'superset-group-roles' "$manifest"; then
   grep -q "$hv_digest" "$manifest" || fail "manifest image digest must match helm-values/superset.yaml"
 fi
 
+# The pin script owns all three live objects (platform#902): the web Deployment, the
+# worker Deployment and this CronJob. Deleting either half of the block above must fail
+# here, not on the cluster after the next pin.
+grep -qF -e 'deploy/superset-worker' scripts/pin-image.sh \
+  || fail "pin-image.sh must move superset-worker, not only superset"
+grep -qF -e 'cronjob/superset-group-roles' scripts/pin-image.sh \
+  || fail "pin-image.sh must move the superset-group-roles CronJob"
+
 echo "check-superset-roles: OK"
