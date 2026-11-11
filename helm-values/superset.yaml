@@ -359,9 +359,6 @@ extraConfigs:
       impersonate_user: true
       extra: >-
         {"allow_multi_catalog": true, "metadata_params": {}, "engine_params": {},
-         "metadata_cache_timeout": {}, "schemas_allowed_for_csv_upload": []}
-      extra: >-
-        {"allow_multi_catalog": true, "metadata_params": {}, "engine_params": {},
         "metadata_cache_timeout": {}, "schemas_allowed_for_file_upload": []}
       tables: []
 

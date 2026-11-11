@@ -12,6 +12,7 @@ import json
 import ssl
 import urllib.error
 import urllib.request
+import uuid
 
 API_HOST = "https://kubernetes.default.svc"
 API_BASE = f"{API_HOST}/apis/stardelt.io/v1alpha1"
@@ -68,6 +69,12 @@ def is_trino(uri):
 def database_name_for_catalog(catalog):
     """`mobility` -> `Trino Mobility`; the platform's existing row names."""
     return "Trino " + str(catalog).replace("-", " ").replace("_", " ").title()
+
+
+def database_uuid_for_catalog(catalog):
+    """A fixed UUID per catalog, the same on every install (platform#966), so a committed
+    Superset export bundle can name the database it reads."""
+    return uuid.uuid5(uuid.NAMESPACE_URL, f"stardelt.io/superset/database/{catalog}")
 
 
 def database_uri_for_catalog(base_uri, catalog):
@@ -170,11 +177,17 @@ def main():
                     sqlalchemy_uri=database_uri_for_catalog(base.sqlalchemy_uri, cat_name),
                     impersonate_user=bool(base.impersonate_user),
                     extra=base.extra,
+                    uuid=database_uuid_for_catalog(cat_name),
                 )
                 db.session.add(db_obj)
                 db.session.commit()
                 db_by_catalog[cat_name] = db_obj
                 print(f"created {db_obj.database_name} for catalog {cat_name}")
+            want_uuid = database_uuid_for_catalog(cat_name)
+            if db_obj.uuid != want_uuid:
+                db_obj.uuid = want_uuid
+                db.session.commit()
+                print(f"{db_obj.database_name}: uuid set to {want_uuid}")
             grants_list = spec.get("grants") or []
             groups = set()
             for g in grants_list:
