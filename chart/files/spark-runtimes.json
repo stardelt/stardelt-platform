@@ -1,7 +1,7 @@
 {
   "spark-4.1-py3.11": {
     "image": "ghcr.io/stardelt/spark:dev@sha256:e80bf4765d52c28ac09a08960d72c50d5a01c194599b605bf13480b88fd282ee",
-    "sparkVersion": "4.1.3",
+    "sparkVersion": "4.1.4",
     "serviceAccount": "spark-connect",
     "sparkConf": {
       "spark.kubernetes.container.image.pullPolicy": "IfNotPresent",

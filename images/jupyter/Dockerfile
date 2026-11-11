@@ -47,7 +47,7 @@ USER ${NB_UID}
 # (images/spark/Dockerfile installs them into its own Python 3.11): a pandas UDF
 # pickles pandas objects on this side and rebuilds them there (platform#369).
 # The Spark Connect client is on the SAME Spark line as the server image
-# (apache/spark:4.1.3): a newer client reads the server's settings in the old
+# (apache/spark:4.1.4): a newer client reads the server's settings in the old
 # spelling -- `spark.sql.session.localRelationSizeLimit` comes back as `3221225472b`
 # -- and every createDataFrame dies with `invalid literal for int()` (platform#399).
 # scripts/check-spark-parity.sh fails the build when the two drift apart.
@@ -55,7 +55,7 @@ RUN python3 -m pip uninstall -y jupyterlab-git \
     && python3 -m pip install --no-cache-dir --upgrade-strategy only-if-needed \
         pandas==2.2.3 \
         pyarrow==18.1.0 \
-        'pyspark[connect]==4.1.3' \
+        'pyspark[connect]==4.1.4' \
         jupyterlab-git==0.55.0 \
         nbgitpuller==1.3.0 \
         papermill==2.7.0 \

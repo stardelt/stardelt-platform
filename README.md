@@ -2086,7 +2086,7 @@ spark.sql("SELECT country, confirmed_cases FROM warehouse.covid.covid_summary").
 spark.sql("SHOW CATALOGS").show()
 ```
 
-A scheduled job (PySpark Connect client, `pip install pyspark-client==4.1.3`) has no
+A scheduled job (PySpark Connect client, `pip install pyspark-client==4.1.4`) has no
 hub token, so it builds the same session itself and passes its own token:
 
 ```python
@@ -2122,7 +2122,7 @@ Trino, Lakekeeper, S3 and the Kubernetes API to every user pod for the same feat
 rule is the point (stardelt-platform#90). Spark pods are not part of the umbrella chart; when
 they are absent the rule matches nothing.
 
-The image is `ghcr.io/stardelt/spark` (`images/spark/Dockerfile`): Apache Spark 4.1.3
+The image is `ghcr.io/stardelt/spark` (`images/spark/Dockerfile`): Apache Spark 4.1.4
 plus the Iceberg 1.12 runtime and AWS bundle. The jars are baked in at image build
 time (checksum-verified from Maven Central), so a pod never downloads dependencies —
 the install stays air-gap-friendly when the registry is mirrored.
@@ -2317,7 +2317,7 @@ services with a token that carries `aud=lakekeeper` and `aud=trino`:
 
 ```sh
 kubectl -n stardelt run spark-verify --image=python:3.11-slim --restart=Never --command -- sleep infinity
-kubectl -n stardelt exec spark-verify -- pip install pyspark-client==4.1.3
+kubectl -n stardelt exec spark-verify -- pip install pyspark-client==4.1.4
 kubectl -n stardelt cp scripts/verify-spark-iceberg.py spark-verify:/tmp/verify.py
 # Put the person's token in the pod without printing it, then:
 kubectl -n stardelt exec spark-verify -- sh -c \
@@ -2665,7 +2665,7 @@ manifests/            Plain Kubernetes manifests (kubectl apply)
   s3-credentials.example.yaml  Template for the stardelt-s3-creds Secret
 
 images/
-  spark/Dockerfile      Spark 4.1.3 + Iceberg 1.12 runtime + AWS bundle
+  spark/Dockerfile      Spark 4.1.4 + Iceberg 1.12 runtime + AWS bundle
   superset/Dockerfile   Superset 5.0.0 + psycopg2 + trino driver
   jupyter/Dockerfile    scipy-notebook + trino, pyspark, pandas, pyarrow
   jupyter/notebooks/    warehouse-quickstart.ipynb (seeded into each user's home)
@@ -2733,7 +2733,7 @@ Collaboration/release branches are planned later (issue #38).
 | Trino | 1.45.0 | 484 |
 | Apache Airflow | 1.21.0 | 3.2.0 |
 | Apache Superset | 0.15.5 | 5.0.0 |
-| Apache Spark (image, no chart) | — | 4.1.3 (Iceberg 1.12.0) |
+| Apache Spark (image, no chart) | — | 4.1.4 (Iceberg 1.12.0) |
 | Keycloak (image, no chart) | — | 26.8.2 |
 
 ---

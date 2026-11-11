@@ -18,7 +18,7 @@
 # and every executor pod carries its own resource envelope.
 #
 # No Ingress, by design: Spark Connect has no built-in authentication
-# (https://spark.apache.org/docs/4.1.3/spark-connect-overview.html#client-application-authentication),
+# (https://spark.apache.org/docs/4.1.4/spark-connect-overview.html#client-application-authentication),
 # so it stays ClusterIP-only. Notebooks, Nova and scheduled jobs reach
 #   sc://spark-connect.stardelt.svc.cluster.local:15002
 # There is deliberately no static catalog here: the catalog is per person, and
@@ -91,7 +91,7 @@ data:
     # --- Kubernetes as the cluster manager ---------------------------------
     spark.master                                            k8s://https://kubernetes.default.svc
     spark.kubernetes.namespace                              stardelt
-    # Executors are built from the same image as the driver: Spark 4.1.3 plus the
+    # Executors are built from the same image as the driver: Spark 4.1.4 plus the
     # Iceberg runtime, the AWS bundle and the Kafka connector that a StreamApp reads with
     # (images/spark/Dockerfile, platform#601).
     # Single space before the digest: the pinned reference is 136 characters,
