@@ -549,14 +549,20 @@ class BridgePolicyTest(unittest.TestCase):
                 self.assertIs(front, expected)
                 self.assertIs(upstream, expected, "the front and the chart must agree")
 
-    def test_a_person_may_kill_their_own_query(self):
-        """`CALL system.runtime.kill_query` on one's own query is self-service (platform#398)."""
+    def test_a_person_may_not_kill_their_own_query_through_sql(self):
+        """`CALL system.runtime.kill_query` is administrator-only (platform#862).
+
+        The file authorizer (`helm-values/trino-identity.yaml`, `rules.json`) denies the
+        `system` catalog to non-administrators before the bridge is asked, so an owner
+        clause could never fire. The supported self-cancel path is Nova's Cancel button
+        (`DELETE /v1/statement`), which does not use `KillQueryOwnedBy`.
+        """
         for label, table in (("fresh", access_table()), ("stale", access_table(now=0)),
                              ("missing", None)):
             with self.subTest(table=label):
                 front, upstream = self.both(kill_query_body("sub-ana", "sub-ana"), table)
-                self.assertIs(front, True, "the owner may always cancel their own query")
-                self.assertIs(upstream, True)
+                self.assertIs(front, False, "the file rules deny catalog system to non-admins")
+                self.assertIs(upstream, False)
 
     def test_an_admin_may_kill_another_persons_query_but_nobody_else_may(self):
         """The admin branch reads the access table's `all` list; the owner branch is the owner."""
