@@ -2734,7 +2734,7 @@ Collaboration/release branches are planned later (issue #38).
 | Apache Airflow | 1.21.0 | 3.2.0 |
 | Apache Superset | 0.15.5 | 5.0.0 |
 | Apache Spark (image, no chart) | — | 4.1.3 (Iceberg 1.12.0) |
-| Keycloak (image, no chart) | — | 26.8.1 |
+| Keycloak (image, no chart) | — | 26.8.2 |
 
 ---
 
