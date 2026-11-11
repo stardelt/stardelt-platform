@@ -74,4 +74,10 @@ grep -qF -e 'jwt-secret' "$manifest" || fail "manifest must wire AIRFLOW__API_AU
 grep -qF -e 'airflow-fernet-key' "$manifest" || fail "manifest must wire AIRFLOW__CORE__FERNET_KEY"
 grep -qF -e 'fernet-key' "$manifest" || fail "manifest must wire AIRFLOW__CORE__FERNET_KEY"
 
+# demos#76: the API checks Task Instances and Task Logs globally, not per DAG.
+grep -qF -e '("can_read", "Task Instances")' scripts/airflow-group-roles.py \
+  || fail "the group roles must hold the global read on Task Instances (demos#76)"
+grep -qF -e '("can_read", "Task Logs")' scripts/airflow-group-roles.py \
+  || fail "the group roles must hold the global read on Task Logs (demos#76)"
+
 echo "check-airflow-users: OK"
