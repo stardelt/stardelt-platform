@@ -5,7 +5,7 @@ Run from a pod that can reach both services, with the Spark Connect client
 installed (it does not need a Spark installation) and the person's token in
 `TRINO_TOKEN` (or `SPARK_CATALOG_TOKEN` for the catalog only):
 
-    pip install pyspark-client==4.1.3
+    pip install pyspark-client==4.1.4
     SPARK_REMOTE=sc://spark-connect.stardelt.svc.cluster.local:15002 \
     TRINO_URL=https://trino.stardelt.svc.cluster.local:8443 \
     REQUESTS_CA_BUNDLE=/etc/stardelt/trino-ca/ca.crt \

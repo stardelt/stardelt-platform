@@ -13,10 +13,10 @@
 # `sha-<short>`. Resolve the tag to a digest when rolling the dev cluster
 # (`make pin-images`, which also updates manifests/spark.yaml).
 #
-# 4.1.3 is the current Spark 4.1 release and 1.12.0 the Iceberg release that
+# 4.1.4 is the current Spark 4.1 release and 1.12.0 the Iceberg release that
 # publishes `iceberg-spark-runtime-4.1_2.13`. Renovate updates the base image;
 # bump ICEBERG_VERSION by hand and keep both on the same Spark minor.
-FROM apache/spark:4.1.3-scala2.13-java17-python3-ubuntu@sha256:9b0a6c2c860f5e7d18dd5270286fef32a09c7f5a7e2b0dbe5642de8a3a02ab3e
+FROM apache/spark:4.1.4-scala2.13-java17-python3-ubuntu@sha256:c67c7b23fc68fad1d7fd175fa22680722635feccea68dec97afb9f3ff9deeda5
 
 ARG ICEBERG_VERSION=1.12.0
 
@@ -62,17 +62,17 @@ ADD --checksum=sha256:62638f33045690c6bc5e496b54b0b2e89a9ad38cbedacdf6e017fea6bc
     /opt/spark/jars/bundle-2.29.52.jar
 
 # The Kafka source for a StreamApp (D42): `readStream.format("kafka")` needs this
-# connector, which upstream Spark does not ship. Spark 4.1.3 is Scala 2.13, so the
+# connector, which upstream Spark does not ship. Spark 4.1.4 is Scala 2.13, so the
 # artifact is the `_2.13` one at the same version as the base image; a 2.12 jar
 # links against a different Spark ABI. The remaining three are its runtime deps:
 # spark-token-provider (same version), kafka-clients 3.9.1 and commons-pool2
 # 2.12.1 — the image's commons-pool-1.5.4 is the v1 API and is not it. lz4,
 # snappy, zstd, jsr305 and slf4j come from the base image already.
-ADD --checksum=sha256:cb31ffd9c8f5527dba061db8af671d295562092e4f3f5ff42fc249fab8a8fde6 \
-    https://repo1.maven.org/maven2/org/apache/spark/spark-sql-kafka-0-10_2.13/4.1.3/spark-sql-kafka-0-10_2.13-4.1.3.jar \
+ADD --checksum=sha256:94f9514f64b319aa31c3b2061bf2fb75700f82e14845fda71337a13696855710 \
+    https://repo1.maven.org/maven2/org/apache/spark/spark-sql-kafka-0-10_2.13/4.1.4/spark-sql-kafka-0-10_2.13-4.1.4.jar \
     /opt/spark/jars/spark-sql-kafka-0-10_2.13.jar
-ADD --checksum=sha256:0535a111d7d11b2859c0a0548d5c8d172c6925f9b8d041d0f0dd38ddc5a3497c \
-    https://repo1.maven.org/maven2/org/apache/spark/spark-token-provider-kafka-0-10_2.13/4.1.3/spark-token-provider-kafka-0-10_2.13-4.1.3.jar \
+ADD --checksum=sha256:b641257bf720279865206a9cd8d69691c8004bc18e653829c6e1aa1d748c6716 \
+    https://repo1.maven.org/maven2/org/apache/spark/spark-token-provider-kafka-0-10_2.13/4.1.4/spark-token-provider-kafka-0-10_2.13-4.1.4.jar \
     /opt/spark/jars/spark-token-provider-kafka-0-10_2.13.jar
 ADD --checksum=sha256:7568b998572d256f0b7bc0afdc1b7a2588b8b08415c62ce314c864a6851ae9d9 \
     https://repo1.maven.org/maven2/org/apache/kafka/kafka-clients/3.9.1/kafka-clients-3.9.1.jar \
