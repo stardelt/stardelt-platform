@@ -48,7 +48,7 @@ class Reset(unittest.TestCase):
             if ".information_schema.tables" in sql:
                 return [['s"1', "t", "BASE TABLE"], ['s"1', "v", "VIEW"]]
             if ".information_schema.schemata" in sql:
-                return [['s"1']]
+                return [["system"], ['s"1']]
             return []
 
         with mock.patch.object(JOB, "CATALOG", "playground"), mock.patch.object(JOB, "run", fake_run):
@@ -65,15 +65,19 @@ class Reset(unittest.TestCase):
             statements,
             [
                 "select table_schema, table_name, table_type from playground.information_schema.tables"
-                " where table_schema <> 'information_schema'",
+                " where table_schema not in ('information_schema', 'system')",
                 'drop table playground."s""1"."t"',
                 'drop view playground."s""1"."v"',
                 "select schema_name from playground.information_schema.schemata"
-                " where schema_name <> 'information_schema'",
+                " where schema_name not in ('information_schema', 'system')",
                 'drop schema playground."s""1"',
                 "create schema if not exists playground.scratch",
             ],
         )
+        # The connector's own schemas are never dropped, even if a query returns them
+        # (platform#943: the nightly Job failed on `drop schema playground.system`).
+        self.assertNotIn('drop schema playground."system"', statements)
+        self.assertNotIn('drop schema playground."information_schema"', statements)
 
 
 class Environment(unittest.TestCase):
