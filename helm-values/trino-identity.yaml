@@ -145,13 +145,7 @@ server:
     # closes the hole visible to a reader of this file.
     http-server.authentication.allow-insecure-over-http=false
     web-ui.authentication.type=oauth2
-    # Trino 483 made the redesigned UI the default at /ui and moved the previous
-    # UI, off by default, to /ui/legacy. We keep the previous UI: it is the one our
-    # access rules and README describe, and the redesigned one has not been
-    # exercised against our OAuth2 + file access control (platform#181).
-    # Coordinator-only, like every web-ui key: a worker would refuse it as
-    # "not used".
-    web-ui.legacy.enabled=true
+    # The web UI is Trino's redesigned UI at /ui; the previous UI stays off (default since 483).
     http-server.authentication.oauth2.issuer=${ENV:TRINO_OIDC_ISSUER}
     http-server.authentication.oauth2.client-id=trino
     http-server.authentication.oauth2.client-secret=${ENV:TRINO_CLIENT_SECRET}
