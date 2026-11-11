@@ -856,7 +856,7 @@ airflow:
   # installing with `--wait` (what `make install` and a GitOps toolkit do) deadlocks
   # against these two Jobs as hooks. Upstream requires them off for waiters, and
   # Job specs are immutable anyway, which makes the release un-reinstallable.
-  #   https://airflow.apache.org/docs/helm-chart/1.21.0/index.html
+  #   https://airflow.apache.org/docs/helm-chart/1.22.0/index.html
   migrateDatabaseJob:
     useHelmHooks: false
     applyCustomEnv: false
@@ -889,7 +889,7 @@ airflow:
           --lastname Admin \
           --password "$AIRFLOW_ADMIN_PASSWORD"
 
-  # DAG-based orchestrator (chart: airflow 1.21.0, appVersion 3.2.0).
+  # DAG-based orchestrator (chart: airflow 1.22.0, appVersion 3.2.2).
   #
   # kind tuning:
   #   - executor: KubernetesExecutor — no celery, no redis, no workers
