@@ -19,10 +19,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # yamllint comes from PyPI, not the Ubuntu mirror: on 2026-11-11 every run in
+      # flight failed here with `Temporary failure resolving 'azure.archive.ubuntu.com'`
+      # before a single check ran. shellcheck ships in the runner image; apt is only the
+      # fallback for the day it does not.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
       - name: Install yamllint + shellcheck
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends yamllint shellcheck
+          pip install yamllint
+          command -v shellcheck >/dev/null || sudo apt-get install -y --no-install-recommends shellcheck
 
       - name: Lint helm-values + umbrella chart values YAML
         run: |
