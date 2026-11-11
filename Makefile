@@ -740,9 +740,11 @@ sync-principal: _context ## Create or converge a ServicePrincipal client and its
 demo-access: _context ## The group, pipeline principal and ServicePrincipal a first pipeline (and the demo) needs: GROUP=demo MEMBERS=ada,bo (needs YES=1)
 	@NAMESPACE=$(NAMESPACE) GROUP='$(GROUP)' MEMBERS='$(MEMBERS)' YES='$(YES)' bash scripts/demo-access.sh
 
-.PHONY: public-demo public-demo-off
+.PHONY: public-demo public-demo-check public-demo-off
 public-demo: _context ## The public demo person demo/demo, its grants, playground and warehouse (lab only; needs YES=1)
 	@NAMESPACE=$(NAMESPACE) YES='$(YES)' bash scripts/public-demo.sh
+public-demo-check: _context ## Read-only: every public-demo rollout prerequisite, and the command that fixes a missing one
+	@NAMESPACE=$(NAMESPACE) bash scripts/public-demo.sh --check
 public-demo-off: _context ## Kill switch: disable the public demo person and sign it out (needs YES=1)
 	@NAMESPACE=$(NAMESPACE) YES='$(YES)' bash scripts/public-demo.sh --off
 
