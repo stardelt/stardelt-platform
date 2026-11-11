@@ -29,7 +29,11 @@
 #   5.  the group `visitors` may browse and select bronze, silver and gold;
 #   6.  the Catalog `playground` (write for `visitors`) and the SqlWarehouse `demo` (xs);
 #   7.  the ConfigMap stardelt-public-demo, which tells Nova that `demo` is shared;
-#   8.  one access sync and one catalog convergence (`make catalogs`).
+#   8.  one access sync and one catalog convergence (`make catalogs`);
+#   9.  the shop pipelines name the group $GROUP as a viewer (read-only).
+#
+# Step 9 has a footgun: `stardelt bundle deploy` rewrites the whole spec, so a redeploy of the
+# shop drops `viewers`. Run `make public-demo YES=1` (or `make public-demo-check`) after one.
 #
 # A second run changes nothing and says so per step, except the password reset of step 2.
 # The kill switch is `make public-demo-off YES=1`: the person is disabled and signed out,
@@ -159,6 +163,7 @@ if [ "$mode" = check ]; then
       6) check_6 || rc=1 ;;
       7) check_7 || rc=1 ;;
       8) check_8 || rc=1 ;;
+      9) check_9 || rc=1 ;;
       *) check_msg="unknown row $id"; check_fix="this is a bug in scripts/public-demo.sh"; rc=1 ;;
     esac
     check_rows=$((check_rows + 1))
@@ -426,6 +431,25 @@ if [ "$mode" = check ]; then
     check_msg="CronJob demo-reset, last success ${last%%.*}"
   }
 
+  # 9. The shop pipelines are readable by the visitors (epic#895 decision 12).
+  check_9() {
+    local total unshared
+    total="$(kubectl -n "$NAMESPACE" get pipelines.stardelt.io -l stardelt.io/bundle=shop -o json 2>/dev/null | jq '.items | length' 2>/dev/null || echo 0)"
+    if [ "${total:-0}" -eq 0 ]; then
+      check_msg="no shop pipelines in the cluster (the shop bundle is not deployed)"
+      check_fix="deploy the shop (epic#895 rollout step 2), then make public-demo YES=1"
+      return 1
+    fi
+    unshared="$(kubectl -n "$NAMESPACE" get pipelines.stardelt.io -l stardelt.io/bundle=shop -o json \
+      | jq --arg g "$GROUP" '[.items[] | select(((.spec.viewers // []) | index($g)) == null)] | length')"
+    if [ "${unshared:-0}" -ne 0 ]; then
+      check_msg="$unshared of $total shop pipelines do not name $GROUP as a viewer"
+      check_fix="make public-demo YES=1"
+      return 1
+    fi
+    check_msg="all $total shop pipelines name $GROUP as a viewer"
+  }
+
   render 0a
   render 0b
   render 0
@@ -439,6 +463,7 @@ if [ "$mode" = check ]; then
   render 6
   render 7
   render 8
+  render 9
 
   echo ""
   if [ "$check_ok" -eq "$check_rows" ]; then
@@ -491,6 +516,7 @@ would: grant $GROUP browse and select on ${PUBLIC_CATALOGS[*]}
 would: apply the Catalog playground and the SqlWarehouse demo (xs)
 would: create the ConfigMap stardelt-public-demo (sharedAccounts=$PERSON) and restart Nova if it is new
 would: run one access sync and converge the catalogs (make catalogs)
+would: let $GROUP read the shop pipelines (viewers, never run)
 EOF
   echo "WARNING: EVERY SCHEMA IN bronze, silver AND gold BECOMES READABLE BY ANYONE ON THE INTERNET"
   echo "public-demo: nothing was changed — re-run with YES=1"
@@ -648,6 +674,25 @@ fi
 # 8. The memberships and the new Catalog reach Lakekeeper and Trino now, not on the next tick.
 NAMESPACE="$NAMESPACE" make --no-print-directory access-sync-now
 NAMESPACE="$NAMESPACE" make --no-print-directory catalogs
+
+# 9. The shop pipelines are readable by the visitors (epic#895 decision 12). Run, pause and
+# delete stay with the owning group (`demo`); `viewers` only removes the wall in front of the
+# list, the detail page and the runs. The shop is deployed by the rollout, not by this script,
+# so a cluster without it says so and changes nothing.
+read -r -a names <<<"$(kubectl -n "$NAMESPACE" get pipelines.stardelt.io \
+  -l stardelt.io/bundle=shop -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)"
+if [ "${#names[@]}" -gt 0 ]; then
+  # `kubectl patch` takes one object name; there is no `-l` on it. Patch each pipeline by
+  # name, the way step 6 patches its Catalog.
+  for name in "${names[@]}"; do
+    kubectl -n "$NAMESPACE" patch pipelines.stardelt.io "$name" --type merge \
+      -p "{\"spec\":{\"viewers\":[\"$GROUP\"]}}" >/dev/null \
+      || fail "cannot add viewers=[$GROUP] to pipeline $name"
+  done
+  echo "› shop pipelines: viewers=[$GROUP] on ${#names[@]}"
+else
+  echo "› shop pipelines: none yet — deploy the shop bundle, then run make public-demo again"
+fi
 
 echo ""
 echo "public-demo: OK — sign in as demo / demo"
