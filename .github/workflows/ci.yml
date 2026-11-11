@@ -48,6 +48,9 @@ jobs:
       - name: Chart pins agree (Makefile vs chart/Chart.yaml)
         run: bash scripts/check-version-parity.sh
 
+      - name: CloudNativePG stays below 1.30 until the backup-plugin migration (platform#192)
+        run: python3 scripts/check_cnpg_pin.py
+
       - name: No committed default credentials
         run: bash scripts/check-no-default-secrets.sh
 
