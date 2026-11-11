@@ -26,3 +26,6 @@ __pycache__/
 
 # Trino baseline results (perf/baseline.py); tables for a release live in stardelt-internal.
 perf/results/
+
+# Throwaway fresh-node configs (dev/hetzner-k3s/fresh-node.sh); never committed.
+dev/hetzner-k3s/.fresh-*.yaml
