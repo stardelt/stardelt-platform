@@ -16,7 +16,7 @@ set -euo pipefail
 
 K3S_VERSION="${K3S_VERSION:-v1.37.1+k3s1}"   # same pin as dev/hetzner-k3s
 KUBECTL_VERSION="${KUBECTL_VERSION:-v1.37.1}"
-HELM_VERSION="${HELM_VERSION:-v3.18.4}"
+HELM_VERSION="${HELM_VERSION:-v3.19.0}"
 GH_VERSION="${GH_VERSION:-2.102.0}"
 
 # The login user that gets the kubeconfig and the cluster-admin rights.

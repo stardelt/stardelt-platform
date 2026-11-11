@@ -39,7 +39,7 @@ dependencies:
     condition: superset.enabled
   - name: airflow
     repository: https://airflow.apache.org
-    version: 1.21.0
+    version: 1.22.0
     condition: airflow.enabled
   - name: jupyterhub
     repository: https://jupyterhub.github.io/helm-chart/

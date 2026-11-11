@@ -18,7 +18,7 @@ jobs:
         with:
           # Exact version, for the reason in ci.yml: a partial pin resolves through
           # the get.helm.sh metadata and fails the job.
-          version: "3.18.5"
+          version: "3.19.0"
       - name: Lint the script
         run: bash -n scripts/pin-rollup.sh && shellcheck scripts/pin-rollup.sh
       # `helm lint chart` renders the umbrella chart's templates. Its sub-charts are
