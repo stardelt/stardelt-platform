@@ -398,6 +398,9 @@ trino:
   # for an unreachable dev stack.
   additionalConfigProperties:
     - http-server.process-forwarded=true
+    # Trino 483+ (platform#1002): node-level file-system cache manager; the
+    # chart renders this into the coordinator AND worker config.properties.
+    - cache-manager.config-files=etc/cache-manager-alluxio.properties
 
   coordinator:
     jvm:
@@ -431,6 +434,14 @@ trino:
     additionalVolumeMounts:
       - { name: trino-fscache, mountPath: /var/trino/cache }
       - { name: trino-dumps, mountPath: /dumps }
+    # Alluxio cache manager (Trino 483+, platform#1002): the chart writes this
+    # into the config directory; cache-manager.config-files above names it.
+    additionalConfigFiles:
+      cache-manager-alluxio.properties: |
+        cache-manager.name=alluxio
+        fs.cache.directories=/var/trino/cache
+        fs.cache.max-sizes=10GB
+        fs.cache.ttl=7d
 
   worker:
     jvm:
@@ -458,6 +469,13 @@ trino:
     additionalVolumeMounts:
       - { name: trino-fscache, mountPath: /var/trino/cache }
       - { name: trino-dumps, mountPath: /dumps }
+    # Same cache-manager file as the coordinator (platform#1002).
+    additionalConfigFiles:
+      cache-manager-alluxio.properties: |
+        cache-manager.name=alluxio
+        fs.cache.directories=/var/trino/cache
+        fs.cache.max-sizes=10GB
+        fs.cache.ttl=7d
 
   # Pull S3 creds from the stardelt-s3-creds Secret so catalog properties can
   # substitute ${ENV:S3_ACCESS_KEY} / ${ENV:S3_SECRET_KEY}, plus the three
@@ -484,7 +502,7 @@ trino:
       iceberg.rest-catalog.uri=http://lakekeeper:8181/catalog
       iceberg.rest-catalog.warehouse=warehouse
       iceberg.rest-catalog.vended-credentials-enabled=false
-      fs.native-s3.enabled=true
+      fs.s3.enabled=true
       s3.endpoint=http://seaweedfs-s3:8333
       s3.region=us-east-1
       s3.path-style-access=true
@@ -496,9 +514,11 @@ trino:
       s3.max-connections=16
       iceberg.split-manager-threads=4
       iceberg.metadata.parallelism=2
-      # Worker-local file-system cache for object-store reads (platform#134,
-      # Trino 480: `fs.cache.*` per catalog; there is no cache-manager setting
-      # in 480). Measured on the dev cluster 2026-10-19 against a 38M-row /
+      # Worker-local file-system cache for object-store reads (platform#134).
+      # Trino 483+ (platform#1002): the directories, size and TTL live in the
+      # node-level cache manager (cache-manager-alluxio.properties, via
+      # cache-manager.config-files in config.properties); a catalog only turns
+      # caching on. Measured on the dev cluster 2026-10-19 against a 38M-row /
       # 0.66 GB full scan of nyc_taxi.yellow_trips: repeat scans drop from
       # 154 S3 GETs + 660 MB to 1 GET + 0 MB, wall time 1.5-1.9s -> 1.2-1.7s.
       # The win is S3 offload (the single-replica SeaweedFS volume server is
@@ -507,9 +527,6 @@ trino:
       # restart or scale-to-zero (M-02) discards it with the emptyDir, and the
       # next scan repopulates (cold scan is slower: 5.1s vs 3.2s uncached).
       fs.cache.enabled=true
-      fs.cache.directories=/var/trino/cache
-      fs.cache.max-sizes=10GB
-      fs.cache.ttl=7d
 
 nova:
   # stardelt Nova — UI + backend in one pod. Equivalent to
