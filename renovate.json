@@ -65,7 +65,7 @@
       "registryUrlTemplate": "https://trinodb.github.io/charts"
     },
     {
-      "description": "Makefile pin `AIRFLOW_VERSION` -> Helm chart `airflow` from the Apache chart repo (https://airflow.apache.org). datasource=helm because chart 1.21.0 and Airflow 3.2.0 are versioned separately.",
+      "description": "Makefile pin `AIRFLOW_VERSION` -> Helm chart `airflow` from the Apache chart repo (https://airflow.apache.org). datasource=helm because chart 1.22.0 and Airflow 3.2.2 are versioned separately.",
       "customType": "regex",
       "fileMatch": ["/(^|/)Makefile$/"],
       "matchStrings": ["AIRFLOW_VERSION\\s*:=\\s*(?<currentValue>[^\\s#]+)"],
