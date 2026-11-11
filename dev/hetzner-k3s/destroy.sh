@@ -19,11 +19,17 @@ HETZNER_ENV="${HETZNER_ENV:-$HOME/.config/stardelt/hetzner.env}"
 # shellcheck source=/dev/null
 [ -f "$HETZNER_ENV" ] && { set -a; . "$HETZNER_ENV"; set +a; }
 INGRESS_HOST="${INGRESS_HOST:-alpha.dev.stardelt.io}"
+# Which config to delete from. The dev cluster's cluster.yaml is the default; the
+# throwaway fresh-node wrapper points this at its own .fresh-*.yaml (platform#1018).
+CLUSTER_CONFIG="${CLUSTER_CONFIG:-$HERE/cluster.yaml}"
+DRY_RUN="${DRY_RUN:-0}"
 
-CFG="$HERE/cluster.yaml"
+CFG="$CLUSTER_CONFIG"
 cluster=""
 if [ -f "$CFG" ]; then
-  command -v hetzner-k3s >/dev/null || { echo "hetzner-k3s not found" >&2; exit 1; }
+  if [ "$DRY_RUN" != 1 ]; then
+    command -v hetzner-k3s >/dev/null || { echo "hetzner-k3s not found" >&2; exit 1; }
+  fi
   cluster="$(awk -F': *' '/^cluster_name:/ { print $2; exit }' "$CFG")"
   if [ -z "$cluster" ]; then
     echo "cannot read cluster_name from $CFG" >&2
@@ -51,6 +57,11 @@ if [ "$do_dns" = 1 ] && [ "$remove_dns" = 1 ]; then
   echo "  - DNS A records ${INGRESS_HOST} and *.${INGRESS_HOST}"
 elif [ "$do_dns" = 1 ]; then
   echo "  - DNS records for ${INGRESS_HOST}: KEPT (REMOVE_DNS=1 to delete them)"
+fi
+
+if [ "$DRY_RUN" = 1 ]; then
+  echo "would run: hetzner-k3s delete --config ${CFG} --force --quiet"
+  exit 0
 fi
 
 if [ "${FORCE:-0}" != 1 ] && [ -t 0 ]; then

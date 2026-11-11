@@ -5,6 +5,9 @@
 # an SSH keypair, and optionally ~/.config/stardelt/cloudflare.env for DNS.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# DRY_RUN=1 prints what would be written and run, and touches nothing (no config file, no
+# server, no DNS). It is read here because the credential checks below step aside for it.
+DRY_RUN="${DRY_RUN:-0}"
 
 # Credentials live outside the repo (mode 600).
 CF_ENV="${CF_ENV:-$HOME/.config/stardelt/cloudflare.env}"
@@ -15,11 +18,13 @@ HETZNER_ENV="${HETZNER_ENV:-$HOME/.config/stardelt/hetzner.env}"
 # shellcheck source=/dev/null
 [ -f "$HETZNER_ENV" ] && { set -a; . "$HETZNER_ENV"; set +a; }
 
-: "${HCLOUD_TOKEN:?set HCLOUD_TOKEN (or put it in $HETZNER_ENV)}"
-command -v hetzner-k3s >/dev/null || {
-  echo "hetzner-k3s not found: https://github.com/vitobotta/hetzner-k3s" >&2
-  exit 1
-}
+if [ "$DRY_RUN" != 1 ]; then
+  : "${HCLOUD_TOKEN:?set HCLOUD_TOKEN (or put it in $HETZNER_ENV)}"
+  command -v hetzner-k3s >/dev/null || {
+    echo "hetzner-k3s not found: https://github.com/vitobotta/hetzner-k3s" >&2
+    exit 1
+  }
+fi
 
 CLUSTER_NAME="${CLUSTER_NAME:-stardelt-dev}"
 K3S_VERSION="${K3S_VERSION:-v1.37.1+k3s1}"
@@ -29,6 +34,11 @@ SSH_PUBLIC_KEY="${SSH_PUBLIC_KEY:-$HOME/.ssh/id_ed25519.pub}"
 SSH_PRIVATE_KEY="${SSH_PRIVATE_KEY:-$HOME/.ssh/id_ed25519}"
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-$HOME/.kube/stardelt-dev.yaml}"
 INGRESS_HOST="${INGRESS_HOST:-alpha.dev.stardelt.io}"
+# Which config this render writes. The dev cluster's cluster.yaml is the default; the
+# throwaway fresh-node wrapper points this at its own .fresh-*.yaml (platform#1018).
+CLUSTER_CONFIG="${CLUSTER_CONFIG:-$HERE/cluster.yaml}"
+# DNS_UPDATE=0 renders and creates the cluster without touching the dev hostname.
+DNS_UPDATE="${DNS_UPDATE:-1}"
 
 # SSH (22) and the Kubernetes API (6443) are firewalled to these networks. Plain addresses
 # get a /32 (/128); a CIDR is taken as given. Anything that does not look like an address
@@ -53,7 +63,7 @@ if [ -n "$ALLOW_IPV6" ]; then
       - ${ALLOW_IPV6}"
 fi
 
-CFG="$HERE/cluster.yaml"
+CFG="$CLUSTER_CONFIG"
 
 # cluster.yaml is the only record destroy.sh has of what to delete. Re-rendering it for a
 # different CLUSTER_NAME would orphan the running cluster (and keep billing for it).
@@ -65,6 +75,12 @@ if [ -f "$CFG" ]; then
     echo "  the file if that cluster is already gone." >&2
     exit 1
   fi
+fi
+
+if [ "$DRY_RUN" = 1 ]; then
+  echo "would write ${CFG} for cluster ${CLUSTER_NAME}"
+  echo "would run: hetzner-k3s create --config ${CFG} --quiet"
+  exit 0
 fi
 
 umask 077
@@ -164,10 +180,14 @@ if [ -z "$IP" ]; then
   IP="$(grep -oE 'https://[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' "$KUBECONFIG_PATH" | head -1 | sed 's|https://||' || true)"
 fi
 
-if [ -n "$IP" ] && [ -f "$CF_ENV" ] && [ -x "$HERE/../cloudflare-dns.sh" ]; then
-  echo "› DNS: ${INGRESS_HOST} and *.${INGRESS_HOST} → ${IP}"
-  NAME="$INGRESS_HOST" IP="$IP" bash "$HERE/../cloudflare-dns.sh" upsert \
-    || echo "  DNS update failed (continuing)" >&2
+if [ "$DNS_UPDATE" = 1 ]; then
+  if [ -n "$IP" ] && [ -f "$CF_ENV" ] && [ -x "$HERE/../cloudflare-dns.sh" ]; then
+    echo "› DNS: ${INGRESS_HOST} and *.${INGRESS_HOST} → ${IP}"
+    NAME="$INGRESS_HOST" IP="$IP" bash "$HERE/../cloudflare-dns.sh" upsert \
+      || echo "  DNS update failed (continuing)" >&2
+  fi
+else
+  echo "› DNS update skipped (DNS_UPDATE=0)"
 fi
 
 echo
