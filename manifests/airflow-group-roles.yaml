@@ -75,6 +75,13 @@ spec:
                     secretKeyRef:
                       name: airflow-fernet-key
                       key: fernet-key
+                # The chart sets the FAB auth manager for the Airflow deployments; this pod mounts no
+                # airflow.cfg, so without it `get_application_builder()` hands back
+                # AirflowSecurityManagerV2, which has no find_role/create_permission/
+                # add_permission_to_role — the sync then dies and converges no role (platform#994,
+                # design/airflow-access.md S1b).
+                - name: AIRFLOW__CORE__AUTH_MANAGER
+                  value: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
               volumeMounts:
                 - name: scripts
                   mountPath: /opt/scripts

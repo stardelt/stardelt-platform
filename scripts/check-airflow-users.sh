@@ -79,5 +79,11 @@ grep -qF -e '("can_read", "Task Instances")' scripts/airflow-group-roles.py \
   || fail "the group roles must hold the global read on Task Instances (demos#76)"
 grep -qF -e '("can_read", "Task Logs")' scripts/airflow-group-roles.py \
   || fail "the group roles must hold the global read on Task Logs (demos#76)"
+# ...and the pod must hand the script the FAB security manager, not AirflowSecurityManagerV2,
+# which has no create_permission/add_permission_to_role at all (platform#994).
+grep -qF -e 'name: AIRFLOW__CORE__AUTH_MANAGER' "$manifest" \
+  || fail "the CronJob must set AIRFLOW__CORE__AUTH_MANAGER (the FAB security manager, platform#994)"
+grep -qF -e 'value: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager' "$manifest" \
+  || fail "AIRFLOW__CORE__AUTH_MANAGER must name the FAB auth manager (platform#994)"
 
 echo "check-airflow-users: OK"
