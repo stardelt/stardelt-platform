@@ -50,6 +50,12 @@ TRINO_SSL = None
 
 REQUIRED = ("OIDC_ISSUER", "TRINO_URL", "CLIENT_ID", "CLIENT_SECRET")
 
+# Schemas the reset never reads or drops (platform#943). `information_schema` and
+# Iceberg's `system` are the connector's own metadata; the two queries below exclude
+# them server-side, and the loops skip them again so a row that still arrives is not
+# dropped either.
+RESERVED_SCHEMAS = ("information_schema", "system")
+
 
 def trino_context(path):
     """The public roots plus the one namespace anchor Trino's certificate needs."""
@@ -125,10 +131,12 @@ def reset():
     """
     tables = run(
         f"select table_schema, table_name, table_type from {CATALOG}.information_schema.tables"
-        " where table_schema <> 'information_schema'"
+        " where table_schema not in ('information_schema', 'system')"
     )
     failed = dropped_tables = dropped_views = dropped_schemas = 0
     for schema, table, table_type in tables:
+        if schema in RESERVED_SCHEMAS:
+            continue
         is_view = table_type == "VIEW"
         statement = (
             f"drop {'view' if is_view else 'table'} {CATALOG}.{ident(schema)}.{ident(table)}"
@@ -149,9 +157,11 @@ def reset():
 
     schemas = run(
         f"select schema_name from {CATALOG}.information_schema.schemata"
-        " where schema_name <> 'information_schema'"
+        " where schema_name not in ('information_schema', 'system')"
     )
     for (schema,) in schemas:
+        if schema in RESERVED_SCHEMAS:
+            continue
         try:
             run(f"drop schema {CATALOG}.{ident(schema)}")
         except urllib.error.HTTPError as error:
