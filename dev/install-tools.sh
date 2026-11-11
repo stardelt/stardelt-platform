@@ -34,7 +34,7 @@ case "$(uname -m)" in
 esac
 
 KUBECTL_VERSION="${KUBECTL_VERSION:-$(curl -fsSL https://dl.k8s.io/release/stable.txt)}"
-HELM_VERSION="${HELM_VERSION:-v3.18.4}"
+HELM_VERSION="${HELM_VERSION:-v3.19.0}"
 HCLOUD_VERSION="${HCLOUD_VERSION:-v1.70.1}"   # "latest" is accepted but is not reproducible
 
 if have kubectl; then echo "kubectl: $(command -v kubectl)"; else

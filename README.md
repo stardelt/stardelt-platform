@@ -12,7 +12,7 @@ Production-shape deployment artifacts. Helm values, manifests, and scripts to in
 | Tool | Minimum version | Notes |
 |------|----------------|-------|
 | `kubectl` | 1.28+ | Must be configured with a valid kubeconfig pointing at your cluster |
-| `helm` | 3.18+ | The `stardelt-dedupe` post-renderer plugin is installed automatically |
+| `helm` | 3.19+ | The `stardelt-dedupe` post-renderer plugin is installed automatically |
 | `docker` | any recent | Required only for the local image targets (`make build-superset-image`, `make build-jupyter-image`) |
 | `cert-manager` | 1.15+ | Required by the platform IdP (`make platform` with `IDENTITY=1`): the query engine's in-cluster TLS certificate is issued by a namespace-local CA (`manifests/trino-tls.yaml`). The playground installs it with the ingress (see `dev/playground/README.md`). `make install-core` without identity does not need it. |
 
@@ -150,7 +150,7 @@ export EXPECT_CONTEXT=stardelt-dev
 |---|---|
 | A Kubernetes cluster | 1.28+, any conformant distribution (EKS, GKE, AKS, RKE2, k3s, kind, …) — stardelt does not ship a distribution |
 | `kubectl` | 1.28+ |
-| `helm` | 3.18+ |
+| `helm` | 3.19+ |
 | A domain | the IdP's issuer is `https://id.<your-domain>/realms/stardelt`; without one the platform runs in the development shape (no sign-in) |
 | `cert-manager` | only with the IdP: the query engine's in-cluster TLS certificate is issued by a namespace-local CA (`manifests/trino-tls.yaml`) |
 | Memory on the node | ~8 GB for the core profile, 16 GB for the full one (Airflow, Superset, notebooks and Spark) |
@@ -2731,7 +2731,7 @@ Collaboration/release branches are planned later (issue #38).
 | Lakekeeper | 0.11.0 | 0.12.2 |
 | OpenFGA | 0.2.62 | v1.14.0 |
 | Trino | 1.45.0 | 484 |
-| Apache Airflow | 1.21.0 | 3.2.0 |
+| Apache Airflow | 1.22.0 | 3.2.2 |
 | Apache Superset | 0.15.5 | 5.0.0 |
 | Apache Spark (image, no chart) | — | 4.1.4 (Iceberg 1.12.0) |
 | Keycloak (image, no chart) | — | 26.8.2 |

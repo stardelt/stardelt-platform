@@ -78,10 +78,10 @@ jobs:
       - name: Install Helm
         uses: azure/setup-helm@v5
         with:
-          # Exact version: a partial pin like "3.18.x" makes setup-helm resolve a
+          # Exact version: a partial pin like "3.19.x" makes setup-helm resolve a
           # version through get.helm.sh metadata, which has been returning a
-          # literal `helm-v3.18.x-…` URL and failing the whole job.
-          version: "3.18.5"
+          # literal `helm-v3.19.x-…` URL and failing the whole job.
+          version: "3.19.0"
 
       # Helm's repository cache holds the downloaded tarballs, so a warm cache
       # makes the template steps independent of github.com releases.
@@ -268,7 +268,7 @@ jobs:
       - name: helm template — airflow
         run: |
           bash scripts/retry.sh helm template airflow apache-airflow/airflow \
-            --version 1.21.0 \
+            --version 1.22.0 \
             --namespace stardelt \
             -f helm-values/airflow.yaml > /dev/null
 
