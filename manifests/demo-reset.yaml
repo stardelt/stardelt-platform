@@ -8,7 +8,14 @@
 # Why `pipeline-demo`: it is the existing principal of realm group `demo`, which owns
 # the playground Catalog (make demo-access YES=1), so the reset needs no IdP
 # administrator and no new credential — its client id and secret come from Secret
-# `sp-pipeline-demo`. The job talks only to the query engine.
+# `sp-pipeline-demo`.
+#
+# Two places are written to, and the order matters (epic platform#895 decision 11): the
+# visitors' Pipelines first, through the Kubernetes API with the ServiceAccount below
+# (`list`, `delete` on `pipelines` — nothing else), then the playground Catalog through
+# the query engine. A visitor may schedule a pipeline and the schedule floor is five
+# minutes, so a pipeline that outlived the drop would re-create the table the reset just
+# removed; deleting it first is what makes "gone by morning" true.
 #
 # Two trust stores, as every in-cluster Trino client has:
 #   * OIDC discovery and the token request go to the public issuer (`issuerUrl` in
@@ -23,6 +30,41 @@
 #
 #   make demo-reset-install   # create the script ConfigMap, apply this file and run once
 #   make demo-reset-now       # run one Job now, wait for it, print its log
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: demo-reset
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: demo-reset
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+rules:
+  # One resource, two verbs: the visitors' pipelines, and nothing else in the namespace.
+  - apiGroups: ["stardelt.io"]
+    resources: ["pipelines"]
+    verbs: ["list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: demo-reset
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+subjects:
+  - kind: ServiceAccount
+    name: demo-reset
+    namespace: stardelt
+roleRef:
+  kind: Role
+  name: demo-reset
+  apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: batch/v1
 kind: CronJob
@@ -49,9 +91,11 @@ spec:
             app.kubernetes.io/name: demo-reset
         spec:
           restartPolicy: Never
-          # The job needs no Kubernetes API: it reads two objects through the kubelet
-          # (env from a ConfigMap and a Secret, a script and the CA from volumes).
-          automountServiceAccountToken: false
+          # The job reads two objects through the kubelet (env from a ConfigMap and a
+          # Secret, a script and the CA from volumes) and, with this ServiceAccount,
+          # deletes the visitors' Pipelines through the API (decision 11). The token is
+          # mounted by default; `automountServiceAccountToken` stays unset.
+          serviceAccountName: demo-reset
           securityContext:
             runAsNonRoot: true
             runAsUser: 65534
@@ -62,6 +106,12 @@ spec:
               image: python:3.13.16-slim-bookworm
               command: ["python3", "/opt/job/job.py"]
               env:
+                # The namespace whose visitors' Pipelines the job deletes, from the API
+                # rather than a literal, so a renamed namespace needs no edit here.
+                - name: NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
                 # The public issuer (public roots) and the in-cluster TLS endpoint
                 # (Secret trino-ca) — neither is optional.
                 - name: OIDC_ISSUER
