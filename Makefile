@@ -757,7 +757,7 @@ public-demo-catalogs: _context ## The public demo's bronze/silver/gold Catalogs,
 	@kubectl apply -f manifests/public-demo-catalogs.yaml
 
 .PHONY: demo-reset-install demo-reset-now
-demo-reset-install: _context ## Install CronJob demo-reset (empties the public demo's playground at 03:00 UTC) and run it once
+demo-reset-install: _context ## Install CronJob demo-reset (removes the visitors' pipelines and empties the public demo's playground at 03:00 UTC) and run it once
 	@kubectl -n $(NAMESPACE) create configmap demo-reset-script --from-file=job.py=scripts/demo-reset-job.py \
 	  --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 	@kubectl apply -f manifests/demo-reset.yaml

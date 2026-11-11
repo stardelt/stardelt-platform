@@ -14,6 +14,7 @@ import os
 import ssl
 import tempfile
 import unittest
+import urllib.parse
 from pathlib import Path
 from unittest import mock
 
@@ -59,7 +60,8 @@ class Reset(unittest.TestCase):
         self.assertEqual(failed, 0)
         self.assertEqual(
             output.getvalue().strip(),
-            "demo-reset: dropped 1 tables, 1 views, 1 schemas; scratch ready",
+            "demo-reset: removed 0 visitor pipeline(s); "
+            "dropped 1 tables, 1 views, 1 schemas; scratch ready",
         )
         self.assertEqual(
             statements,
@@ -78,6 +80,104 @@ class Reset(unittest.TestCase):
         # (platform#943: the nightly Job failed on `drop schema playground.system`).
         self.assertNotIn('drop schema playground."system"', statements)
         self.assertNotIn('drop schema playground."information_schema"', statements)
+
+
+class VisitorPipelines(unittest.TestCase):
+    """Decision 11: the visitors' pipelines are deleted, and only theirs.
+
+    `k8s_request` is replaced the way `run` is: nothing here reaches an API server.
+    """
+
+    def test_the_selector_is_quoted_and_one_delete_goes_per_returned_name(self):
+        calls = []
+        names = ["plain", 'pipe"with"quotes', "with space/and slash"]
+
+        def fake_request(method, path):
+            calls.append((method, path))
+            if method == "GET":
+                return {"items": [{"metadata": {"name": name}} for name in names]}
+            return None
+
+        with mock.patch.object(JOB, "k8s_request", fake_request):
+            count = JOB.delete_visitor_pipelines("stardelt")
+
+        self.assertEqual(count, 3)
+        self.assertEqual(
+            calls[0],
+            (
+                "GET",
+                "/apis/stardelt.io/v1alpha1/namespaces/stardelt/pipelines"
+                "?labelSelector=stardelt.io/owner-group%3Dvisitors",
+            ),
+        )
+        self.assertEqual(
+            calls[1:],
+            [
+                (
+                    "DELETE",
+                    "/apis/stardelt.io/v1alpha1/namespaces/stardelt/pipelines/"
+                    + urllib.parse.quote(name),
+                )
+                for name in names
+            ],
+        )
+
+    def test_an_empty_listing_deletes_nothing(self):
+        calls = []
+
+        def fake_request(method, path):
+            calls.append((method, path))
+            return {"items": []}
+
+        with mock.patch.object(JOB, "k8s_request", fake_request):
+            self.assertEqual(JOB.delete_visitor_pipelines("stardelt"), 0)
+        self.assertEqual([method for method, _ in calls], ["GET"])
+
+    def test_the_count_reaches_the_summary(self):
+        with mock.patch.object(JOB, "CATALOG", "playground"), mock.patch.object(JOB, "run", lambda sql: []):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                JOB.reset(2)
+
+        self.assertEqual(
+            output.getvalue().strip(),
+            "demo-reset: removed 2 visitor pipeline(s); "
+            "dropped 0 tables, 0 views, 0 schemas; scratch ready",
+        )
+
+    def test_main_deletes_the_pipelines_before_the_drop(self):
+        order = []
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        ca = Path(directory.name) / "ca.crt"
+        ca.write_text("a path that exists; the job only checks for it here")
+        env = {
+            "OIDC_ISSUER": "https://id.example.invalid/realms/stardelt",
+            "TRINO_URL": "https://trino.stardelt.svc.cluster.local:8443",
+            "TRINO_CA": str(ca),
+            "CLIENT_ID": "sp-pipeline-demo",
+            "CLIENT_SECRET": "never-read",
+            "NAMESPACE": "stardelt",
+        }
+
+        def fake_delete(namespace):
+            order.append(("pipelines", namespace))
+            return 3
+
+        def fake_reset(pipelines=0):
+            order.append(("drop", pipelines))
+            return 0
+
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(
+            JOB, "token", lambda: "never-read"
+        ), mock.patch.object(JOB, "trino_context", lambda path: None), mock.patch.object(
+            JOB, "delete_visitor_pipelines", fake_delete
+        ), mock.patch.object(
+            JOB, "reset", fake_reset
+        ):
+            self.assertEqual(JOB.main(), 0)
+
+        self.assertEqual(order, [("pipelines", "stardelt"), ("drop", 3)])
 
 
 class Environment(unittest.TestCase):

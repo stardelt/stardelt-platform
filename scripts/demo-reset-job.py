@@ -6,9 +6,17 @@ platform#895 decision 4). The playground Catalog is written to by anyone on the
 internet, so every night it is emptied and gets its one schema `scratch` back.
 
 The job signs in as the existing principal `pipeline-demo` (realm group `demo`, which
-owns `playground`) with `grant_type=client_credentials`, and talks only to the query
-engine: no IdP administrator and no new credential is needed. Its Secret
+owns `playground`) with `grant_type=client_credentials`, and talks to the query engine
+about the catalog: no IdP administrator and no new credential is needed. Its Secret
 `sp-pipeline-demo` is the one `make demo-access YES=1` writes.
+
+The visitors' Pipelines go first, and they go through the Kubernetes API, not the query
+engine (epic platform#895 decision 11): ServiceAccount `demo-reset` may `list` and
+`delete` `pipelines`, nothing else. A visitor may schedule a pipeline and Nova's floor
+is five minutes, so a pipeline that outlived the drop would re-create the table the
+reset just removed — deleting the pipeline first is what makes "gone by morning" true.
+Only pipelines labelled `stardelt.io/owner-group=visitors` are deleted; the demo's own
+(`demo`) stay.
 
 Two trust stores, and that is why this job is not a single `SSL_CERT_FILE`:
 
@@ -41,7 +49,14 @@ import urllib.parse
 import urllib.request
 
 CATALOG = os.environ.get("CATALOG") or "playground"
+NAMESPACE = os.environ.get("NAMESPACE") or "stardelt"
 TIMEOUT = 60
+
+K8S_API = "https://kubernetes.default.svc"
+SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
+# The label Nova writes on every pipeline it creates (seen on shop-01-bronze:
+# stardelt.io/owner-group=demo). A visitor's pipelines carry `visitors`.
+VISITOR_GROUP = "visitors"
 
 # Set in main(): the bearer every Trino request carries and the TLS context they all
 # use (public roots plus Secret trino-ca). Tests replace `run` instead.
@@ -124,10 +139,41 @@ def ident(name):
     return '"' + name.replace('"', '""') + '"'
 
 
-def reset():
+def k8s_request(method, path):
+    """One request to the API server as this pod's ServiceAccount."""
+    token = open(f"{SA_DIR}/token", encoding="utf-8").read().strip()
+    context = ssl.create_default_context(cafile=f"{SA_DIR}/ca.crt")
+    request = urllib.request.Request(
+        K8S_API + path,
+        method=method,
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=TIMEOUT, context=context) as answer:
+        return json.load(answer) if method == "GET" else None
+
+
+def delete_visitor_pipelines(namespace):
+    """Delete every pipeline the visitors published; returns how many. Names come back from
+    the API, so they are quoted on the way into the path, never formatted in raw."""
+    listing = k8s_request(
+        "GET",
+        f"/apis/stardelt.io/v1alpha1/namespaces/{namespace}/pipelines"
+        f"?labelSelector={urllib.parse.quote('stardelt.io/owner-group=' + VISITOR_GROUP)}",
+    )
+    names = [item["metadata"]["name"] for item in listing.get("items", [])]
+    for name in names:
+        k8s_request(
+            "DELETE",
+            f"/apis/stardelt.io/v1alpha1/namespaces/{namespace}/pipelines/{urllib.parse.quote(name)}",
+        )
+    return len(names)
+
+
+def reset(pipelines=0):
     """Drop every table, view and schema of the catalog and recreate `scratch`.
 
     Returns the number of drops that failed; the caller exits 1 so the Job shows red.
+    `pipelines` is how many visitor pipelines main() already deleted, for the summary.
     """
     tables = run(
         f"select table_schema, table_name, table_type from {CATALOG}.information_schema.tables"
@@ -175,7 +221,8 @@ def reset():
 
     run(f"create schema if not exists {CATALOG}.scratch")
     print(
-        f"demo-reset: dropped {dropped_tables} tables, {dropped_views} views, "
+        f"demo-reset: removed {pipelines} visitor pipeline(s); "
+        f"dropped {dropped_tables} tables, {dropped_views} views, "
         f"{dropped_schemas} schemas; scratch ready"
     )
     return failed
@@ -190,7 +237,11 @@ def main():
         return 2
     TRINO_SSL = trino_context(os.environ["TRINO_CA"])
     TOKEN = token()
-    return 1 if reset() else 0
+    # Pipelines first: a scheduled one would re-create the table we are about to drop.
+    # A refused or failed API call raises, so the job exits 1 and the CronJob shows red:
+    # a reset that silently keeps the pipelines is the bug this step exists to prevent.
+    pipelines = delete_visitor_pipelines(NAMESPACE)
+    return 1 if reset(pipelines) else 0
 
 
 if __name__ == "__main__":
