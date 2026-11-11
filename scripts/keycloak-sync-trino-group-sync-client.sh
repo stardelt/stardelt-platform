@@ -196,7 +196,30 @@ print("› client %s: secret updated" % sys.argv[3])
 PY
 fi
 
-# 6. Grant the service account exactly the read-only role. The account appears
+# 6. Keycloak 26.8.2 enforces an Admin API audience check (RFC 9700, upgrading
+#    guide "Admin REST API now enforces an audience check"): a service-account
+#    token is accepted by /admin only when it carries the built-in
+#    `kc-admin-api` client scope. Only `admin-cli` and `security-admin-console`
+#    get it on upgrade. Without this the client's token is valid everywhere
+#    else but every admin read answers 401 — access-sync failed every two
+#    minutes on the lab after platform#977 until this step existed.
+scope_uuid="$("${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" "$API/client-scopes" \
+  | python3 -c 'import sys,json
+scopes=[s for s in json.load(sys.stdin) if s.get("name")=="kc-admin-api"]
+print(scopes[0]["id"] if scopes else "")')"
+[ -n "$scope_uuid" ] \
+  || fail "realm $REALM has no built-in kc-admin-api client scope — Keycloak 26.8.2 creates it; check the server version"
+default_scopes="$("${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" "$API/clients/$client_uuid/default-client-scopes")"
+has_scope="$(printf '%s' "$default_scopes" | python3 -c 'import sys,json;print("yes" if any(s.get("name")=="kc-admin-api" for s in json.load(sys.stdin)) else "no")')"
+if [ "$has_scope" = "yes" ]; then
+  echo "› client $SYNC_CLIENT: kc-admin-api scope already assigned"
+else
+  "${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" -X PUT "$API/clients/$client_uuid/default-client-scopes/$scope_uuid" >/dev/null \
+    || fail "Keycloak refused to assign the kc-admin-api scope to client $SYNC_CLIENT"
+  echo "› client $SYNC_CLIENT: kc-admin-api scope assigned"
+fi
+
+# 7. Grant the service account exactly the read-only role. The account appears
 #    as user `service-account-<clientId>` once serviceAccountsEnabled is on.
 sa_uid="$("${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" "$API/clients/$client_uuid/service-account-user" \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')" \
@@ -245,7 +268,7 @@ print("› service-account role mapping verified: " + ", ".join(sorted(roles)))
 ' "${GRANT_ROLES[@]}" "${FORBIDDEN_ROLES[@]}" \
   || fail "the service account's role mappings did not read back as granted"
 
-# 7. Prove it with the client's own token: a client-credentials grant, then the
+# 8. Prove it with the client's own token: a client-credentials grant, then the
 #    exact two admin-API reads the CronJob performs. Only the count is printed.
 cc_token="$("${CURL_SOFT[@]}" "${HEAD[@]}" -X POST "$KC/realms/$REALM/protocol/openid-connect/token" \
   --data-urlencode "grant_type=client_credentials" \
