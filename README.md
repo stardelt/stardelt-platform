@@ -772,7 +772,10 @@ Nova the account is shared (Nova restarts once, the first time); and one access 
 `bronze`, `silver` and `gold` becomes readable by anyone on the internet**, which is why it prints that warning and why it
 needs `YES=1`; it refuses to run before the Catalogs and the principal `pipeline-demo` (`make demo-access YES=1`) exist.
 The kill switch is `make public-demo-off YES=1`: it disables `demo` and signs it out, and deletes nothing. A second run
-changes nothing and says so per step, except the password reset.
+changes nothing and says so per step, except the password reset. `make public-demo-check` reports every prerequisite of
+that rollout in one read-only pass — the checkout, the CLI, the Catalogs, the principal, the realm group and person,
+their memberships and roles, the grants, the playground, the warehouse, the ConfigMap and the nightly reset — one
+`PASS`/`MISSING` line each, with the command that fixes a missing one, and exits 1 while anything is missing.
 
 *Catalog service clients (platform#282, step 1 of the catalog's authentication).* Every component
 that calls the Iceberg REST catalog has its own confidential service client instead of sharing one:

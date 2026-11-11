@@ -4,6 +4,7 @@
 #   make public-demo                       # prints the plan and exits 1
 #   make public-demo YES=1                 # converge the person `demo`, its grants and its warehouse
 #   make public-demo-off YES=1             # kill switch: disable `demo` and sign it out
+#   make public-demo-check                 # read-only: what the rollout still misses, and the fix
 #   bash scripts/public-demo.sh --manifest # print the Catalog and SqlWarehouse it applies
 #
 # A public demo needs somebody to sign in as, and that sign-in is shared: the person
@@ -90,8 +91,9 @@ mode=on
 case "${1:-}" in
   --manifest) manifest; exit 0 ;;
   --off) mode=off ;;
+  --check) mode=check ;;
   "") ;;
-  *) fail "unexpected argument '$1' (accepted: --manifest, --off)" ;;
+  *) fail "unexpected argument '$1' (accepted: --manifest, --off, --check)" ;;
 esac
 
 for tool in kubectl curl jq python3 base64 make; do
@@ -126,6 +128,305 @@ group_id() { jq -r --arg name "$1" 'map(select(.name == $name))[0].id // ""' "$g
 user_id() { # user_id <username> -> the Keycloak id, empty when absent
   kc --get --data-urlencode "username=$1" --data-urlencode 'exact=true' "$API/users" | jq -r '.[0].id // ""'
 }
+
+# --check (platform#940): the read-only report of what the rollout still misses.
+#
+# One line per row, in rollout order, each row a check_<id> function that only reads
+# (kubectl get, the Keycloak admin API, git, command -v). render prints PASS, or MISSING
+# with the command that fixes it, and the script exits 1 while anything is missing. It
+# changes nothing; the Keycloak port-forward is opened once and only when a realm row is
+# read; a Secret is read for its key names only, never for a value.
+if [ "$mode" = check ]; then
+  check_rows=0
+  check_ok=0
+
+  render() { # render <id> — run the row's check and print PASS or MISSING
+    local id="$1" rc=0
+    check_msg=""
+    check_fix=""
+    case "$id" in
+      0a) check_0a || rc=1 ;;
+      0b) check_0b || rc=1 ;;
+      0) check_0 || rc=1 ;;
+      0c) check_0c || rc=1 ;;
+      1) check_1 || rc=1 ;;
+      2) check_2 || rc=1 ;;
+      3) check_3 || rc=1 ;;
+      4) check_4 || rc=1 ;;
+      5) check_5 || rc=1 ;;
+      6) check_6 || rc=1 ;;
+      7) check_7 || rc=1 ;;
+      8) check_8 || rc=1 ;;
+      *) check_msg="unknown row $id"; check_fix="this is a bug in scripts/public-demo.sh"; rc=1 ;;
+    esac
+    check_rows=$((check_rows + 1))
+    if [ "$rc" -eq 0 ]; then
+      check_ok=$((check_ok + 1))
+      printf 'PASS     %-2s  %s\n' "$id" "$check_msg"
+    else
+      printf 'MISSING  %-2s  %s — %s\n' "$id" "$check_msg" "$check_fix"
+    fi
+  }
+
+  # The realm rows share one Keycloak admin session, opened on the first of them.
+  check_kc=""
+  kc_prepare() {
+    case "$check_kc" in
+      up) return 0 ;;
+      down) return 1 ;;
+    esac
+    if ! kubectl -n "$NAMESPACE" get configmap keycloak-env >/dev/null 2>&1 \
+      || ! kubectl -n "$NAMESPACE" get secret keycloak-admin >/dev/null 2>&1; then
+      check_kc=down
+      return 1
+    fi
+    start_keycloak
+    check_kc=up
+    read_groups
+  }
+  kc_down() {
+    check_msg="the Keycloak realm cannot be read (ConfigMap keycloak-env or Secret keycloak-admin is missing)"
+    check_fix="make install-identity"
+  }
+
+  has_grant() { # has_grant <catalog> <group> <verb>
+    kubectl -n "$NAMESPACE" get catalogs.stardelt.io "$1" -o json 2>/dev/null \
+      | jq -e --arg g "$2" --arg v "$3" 'any(.spec.grants[]?; .group == $g and .verb == $v)' >/dev/null 2>&1
+  }
+
+  # 0a. The checkout the rollout runs from is not behind origin/main.
+  check_0a() {
+    local behind
+    behind="$(git rev-list --count HEAD..origin/main 2>/dev/null || true)"
+    if [ -z "$behind" ]; then
+      check_msg="cannot read origin/main in this checkout"
+      check_fix="git fetch origin main"
+      return 1
+    fi
+    if [ "$behind" -gt 0 ]; then
+      check_msg="the checkout is $behind commit(s) behind origin/main"
+      check_fix="git pull --ff-only"
+      return 1
+    fi
+    check_msg="checkout at origin/main"
+  }
+
+  # 0b. The CLI the rollout steps call.
+  check_0b() {
+    if command -v stardelt >/dev/null 2>&1 && stardelt --version >/dev/null 2>&1; then
+      check_msg="the stardelt CLI is on PATH"
+      return 0
+    fi
+    check_msg="the stardelt CLI is not on PATH"
+    check_fix="python3 -m venv ~/.local/venvs/stardelt-cli && ~/.local/venvs/stardelt-cli/bin/pip install 'stardelt==0.2.1'"
+    return 1
+  }
+
+  # 0. The Catalogs the demo reads (never created here).
+  check_0() {
+    local missing=() catalog owner
+    for catalog in "${PUBLIC_CATALOGS[@]}"; do
+      owner="$(kubectl -n "$NAMESPACE" get catalogs.stardelt.io "$catalog" -o jsonpath='{.spec.owner}' 2>/dev/null || true)"
+      [ "$owner" = "$OWNER" ] || missing+=("$catalog")
+    done
+    if [ "${#missing[@]}" -gt 0 ]; then
+      check_msg="the Catalogs ${missing[*]} (owner $OWNER) are missing"
+      check_fix="make public-demo-catalogs YES=1"
+      return 1
+    fi
+    check_msg="catalogs ${PUBLIC_CATALOGS[*]}"
+  }
+
+  # 0c. The pipeline principal and the Secret its client lives in (key names only).
+  check_0c() {
+    local ready
+    ready="$(kubectl -n "$NAMESPACE" get serviceprincipals.stardelt.io pipeline-demo -o jsonpath='{.status.ready}' 2>/dev/null || true)"
+    if [ "$ready" != true ]; then
+      check_msg="ServicePrincipal pipeline-demo is not ready"
+      check_fix="make demo-access YES=1 GROUP=demo MEMBERS=<you>"
+      return 1
+    fi
+    if ! kubectl -n "$NAMESPACE" get secret sp-pipeline-demo -o json 2>/dev/null \
+      | jq -e '(.data // {}) | has("client-id") and has("client-secret")' >/dev/null 2>&1; then
+      check_msg="Secret sp-pipeline-demo is missing or has no client-id/client-secret"
+      check_fix="make demo-access YES=1 GROUP=demo MEMBERS=<you>"
+      return 1
+    fi
+    check_msg="ServicePrincipal pipeline-demo and Secret sp-pipeline-demo"
+  }
+
+  # 1. The realm group.
+  check_1() {
+    kc_prepare || { kc_down; return 1; }
+    if [ -z "$(group_id "$GROUP")" ]; then
+      check_msg="the realm group $GROUP is missing"
+      check_fix="make public-demo YES=1"
+      return 1
+    fi
+    check_msg="realm group $GROUP"
+  }
+
+  # 2. The person: exists, enabled, no required action left.
+  check_2() {
+    kc_prepare || { kc_down; return 1; }
+    local user_json actions
+    if ! user_json="$(kc --get --data-urlencode "username=$PERSON" --data-urlencode 'exact=true' "$API/users")"; then
+      check_msg="cannot read the person $PERSON from realm $REALM"
+      check_fix="make public-demo YES=1"
+      return 1
+    fi
+    if [ "$(jq -r 'length' <<<"$user_json")" = 0 ]; then
+      check_msg="the person $PERSON does not exist"
+      check_fix="make public-demo YES=1"
+      return 1
+    fi
+    if [ "$(jq -r '.[0].enabled // false' <<<"$user_json")" != true ]; then
+      check_msg="the person $PERSON is disabled"
+      check_fix="make public-demo YES=1"
+      return 1
+    fi
+    actions="$(jq -r '[(.[0].requiredActions // [])[]] | join(", ")' <<<"$user_json")"
+    if [ -n "$actions" ]; then
+      check_msg="the person $PERSON still has required actions: $actions"
+      check_fix="make public-demo YES=1"
+      return 1
+    fi
+    check_msg="person $PERSON, enabled, no required actions"
+  }
+
+  # 3. Group memberships: in $GROUP, in nothing else.
+  check_3() {
+    kc_prepare || { kc_down; return 1; }
+    local uid groups_json others
+    uid="$(user_id "$PERSON")"
+    if [ -z "$uid" ]; then
+      check_msg="the person $PERSON does not exist"
+      check_fix="make public-demo YES=1"
+      return 1
+    fi
+    if ! groups_json="$(kc "$API/users/$uid/groups")"; then
+      check_msg="cannot read the groups of $PERSON"
+      check_fix="make public-demo YES=1"
+      return 1
+    fi
+    if ! jq -e --arg g "$GROUP" 'any(.[]; .name == $g)' <<<"$groups_json" >/dev/null; then
+      check_msg="$PERSON is not a member of $GROUP"
+      check_fix="make public-demo YES=1"
+      return 1
+    fi
+    others="$(jq -r --arg g "$GROUP" '[.[] | select(.name != $g) | .name] | join(", ")' <<<"$groups_json")"
+    if [ -n "$others" ]; then
+      check_msg="$PERSON is in $GROUP and also in $others"
+      check_fix="make public-demo YES=1"
+      return 1
+    fi
+    check_msg="$PERSON is in $GROUP only"
+  }
+
+  # 4. Realm roles: none, $DEFAULT_ROLE included.
+  check_4() {
+    kc_prepare || { kc_down; return 1; }
+    local uid roles_json names
+    uid="$(user_id "$PERSON")"
+    if [ -z "$uid" ]; then
+      check_msg="the person $PERSON does not exist"
+      check_fix="make public-demo YES=1"
+      return 1
+    fi
+    if ! roles_json="$(kc "$API/users/$uid/role-mappings/realm")"; then
+      check_msg="cannot read the realm roles of $PERSON"
+      check_fix="make public-demo YES=1"
+      return 1
+    fi
+    names="$(jq -r '[.[].name] | join(", ")' <<<"$roles_json")"
+    if [ -n "$names" ]; then
+      check_msg="$PERSON holds the realm role(s) $names"
+      check_fix="make public-demo YES=1"
+      return 1
+    fi
+    check_msg="$PERSON holds no realm role"
+  }
+
+  # 5. The group's read access to the three Catalogs.
+  check_5() {
+    local missing=() catalog verb
+    for catalog in "${PUBLIC_CATALOGS[@]}"; do
+      for verb in browse select; do
+        has_grant "$catalog" "$GROUP" "$verb" || missing+=("$catalog/$verb")
+      done
+    done
+    if [ "${#missing[@]}" -gt 0 ]; then
+      check_msg="$GROUP lacks ${missing[*]}"
+      check_fix="make public-demo YES=1"
+      return 1
+    fi
+    check_msg="$GROUP may browse and select ${PUBLIC_CATALOGS[*]}"
+  }
+
+  # 6. The playground and the warehouse.
+  check_6() {
+    local missing=() verb size
+    for verb in write create; do
+      has_grant playground "$GROUP" "$verb" || missing+=("Catalog playground $GROUP/$verb")
+    done
+    size="$(kubectl -n "$NAMESPACE" get sqlwarehouses.stardelt.io demo -o jsonpath='{.spec.size}' 2>/dev/null || true)"
+    [ "$size" = xs ] || missing+=("SqlWarehouse demo (size xs)")
+    if [ "${#missing[@]}" -gt 0 ]; then
+      check_msg="missing ${missing[*]}"
+      check_fix="make public-demo YES=1"
+      return 1
+    fi
+    check_msg="Catalog playground and SqlWarehouse demo (xs)"
+  }
+
+  # 7. What tells Nova that the account is shared.
+  check_7() {
+    if ! kubectl -n "$NAMESPACE" get configmap stardelt-public-demo >/dev/null 2>&1; then
+      check_msg="ConfigMap stardelt-public-demo is missing"
+      check_fix="make public-demo YES=1"
+      return 1
+    fi
+    check_msg="ConfigMap stardelt-public-demo"
+  }
+
+  # 8. The nightly reset, and that it has run at least once.
+  check_8() {
+    local last
+    if ! kubectl -n "$NAMESPACE" get cronjobs.batch demo-reset >/dev/null 2>&1; then
+      check_msg="CronJob demo-reset is missing"
+      check_fix="make demo-reset-install"
+      return 1
+    fi
+    last="$(kubectl -n "$NAMESPACE" get cronjobs.batch demo-reset -o jsonpath='{.status.lastSuccessfulTime}' 2>/dev/null || true)"
+    if [ -z "$last" ]; then
+      check_msg="CronJob demo-reset has not completed a run"
+      check_fix="make demo-reset-now"
+      return 1
+    fi
+    check_msg="CronJob demo-reset, last success ${last%%.*}"
+  }
+
+  render 0a
+  render 0b
+  render 0
+  render 0c
+  render 1
+  render 2
+  render 3
+  render 4
+  render 5
+  render 6
+  render 7
+  render 8
+
+  echo ""
+  if [ "$check_ok" -eq "$check_rows" ]; then
+    echo "$check_ok of $check_rows ready — the public demo rollout is complete"
+    exit 0
+  fi
+  echo "$check_ok of $check_rows ready — run the fixes above, then make public-demo-check again"
+  exit 1
+fi
 
 # The kill switch.
 if [ "$mode" = off ]; then
