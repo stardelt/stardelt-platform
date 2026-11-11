@@ -1,0 +1,35 @@
+# Top customers by lifetime value — the shop dashboard's table (platform#966 slice 2).
+# The ten rows with the lowest value_rank from gold.shop.customer_ltv.
+slice_name: Top customers by lifetime value
+description: "The ten customers with the lowest value_rank (the highest lifetime value)."
+certified_by: null
+certification_details: null
+viz_type: table
+params:
+  viz_type: table
+  query_mode: raw
+  all_columns:
+    - value_rank
+    - customer_name
+    - country
+    - segment
+    - lifetime_value
+  order_by_cols:
+    - '["value_rank", true]'
+  order_desc: false
+  groupby: []
+  metrics: []
+  percent_metrics: []
+  adhoc_filters: []
+  row_limit: 10
+  server_page_length: 10
+  include_search: false
+  table_timestamp_format: smart_date
+  show_cell_bars: true
+  color_pn: true
+  time_range: No filter
+  extra_form_data: {}
+cache_timeout: null
+uuid: ebcaf090-103c-426a-aab0-f5a9a6c01772
+version: 1.0.0
+dataset_uuid: 17b6d839-f227-49d3-b57d-e6771a7ee3dd

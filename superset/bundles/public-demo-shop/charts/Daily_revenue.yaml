@@ -1,0 +1,58 @@
+# Daily revenue — the shop dashboard's line chart (platform#966 slice 2).
+# SUM(revenue) by order_date over gold.shop.daily_revenue.
+slice_name: Daily revenue
+description: "The shop's revenue per order date."
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_line
+params:
+  viz_type: echarts_timeseries_line
+  x_axis: order_date
+  granularity_sqla: order_date
+  time_grain_sqla: P1D
+  time_range: No filter
+  metrics:
+    - expressionType: SIMPLE
+      column:
+        column_name: revenue
+        type: DECIMAL
+        is_dttm: false
+        filterable: true
+        groupby: true
+        verbose_name: null
+        python_date_format: null
+        expression: null
+        description: null
+        advanced_data_type: null
+        certified_by: null
+        certification_details: null
+        id: null
+        is_certified: false
+        is_active: true
+        type_generic: 0
+        warning_markdown: null
+      aggregate: SUM
+      sqlExpression: null
+      hasCustomLabel: true
+      label: SUM(revenue)
+      optionName: metric_public_demo_shop_daily_revenue
+      datasourceWarning: false
+      isNew: false
+  groupby: []
+  adhoc_filters: []
+  row_limit: 10000
+  order_desc: true
+  seriesType: line
+  show_legend: true
+  legendOrientation: top
+  legendType: scroll
+  x_axis_time_format: smart_date
+  y_axis_format: SMART_NUMBER
+  rich_tooltip: true
+  markerSize: 6
+  color_scheme: supersetColors
+  extra_form_data: {}
+cache_timeout: null
+uuid: 42420e6d-ebb7-4421-b0ef-4b41989b3ccb
+version: 1.0.0
+dataset_uuid: 8a97d923-9748-475c-a08a-8a04fe5e1a3e

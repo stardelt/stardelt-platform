@@ -1,0 +1,130 @@
+# gold.shop.customer_ltv — each customer's lifetime value and rank (stardelt-demos
+# examples/shop-bundle/sql/11_customer_ltv.sql). The columns are listed, so the import
+# creates this dataset without asking Trino for metadata (platform#966).
+table_name: customer_ltv
+main_dttm_col: null
+description: "Each customer's lifetime value, rank and share of the shop's revenue."
+default_endpoint: null
+offset: 0
+cache_timeout: null
+catalog: gold
+schema: shop
+sql: null
+params: {}
+template_params: null
+filter_select_enabled: true
+fetch_values_predicate: null
+extra: null
+uuid: 17b6d839-f227-49d3-b57d-e6771a7ee3dd
+metrics:
+  - metric_name: count
+    verbose_name: COUNT(*)
+    metric_type: null
+    expression: COUNT(*)
+    description: null
+    d3format: null
+    extra: null
+    warning_text: null
+columns:
+  - column_name: customer_id
+    verbose_name: null
+    is_dttm: false
+    is_active: true
+    type: BIGINT
+    groupby: true
+    filterable: true
+    expression: null
+    description: null
+    python_date_format: null
+  - column_name: customer_name
+    verbose_name: null
+    is_dttm: false
+    is_active: true
+    type: VARCHAR
+    groupby: true
+    filterable: true
+    expression: null
+    description: null
+    python_date_format: null
+  - column_name: country
+    verbose_name: null
+    is_dttm: false
+    is_active: true
+    type: VARCHAR
+    groupby: true
+    filterable: true
+    expression: null
+    description: null
+    python_date_format: null
+  - column_name: segment
+    verbose_name: null
+    is_dttm: false
+    is_active: true
+    type: VARCHAR
+    groupby: true
+    filterable: true
+    expression: null
+    description: null
+    python_date_format: null
+  - column_name: order_lines
+    verbose_name: null
+    is_dttm: false
+    is_active: true
+    type: BIGINT
+    groupby: true
+    filterable: true
+    expression: null
+    description: null
+    python_date_format: null
+  - column_name: lifetime_value
+    verbose_name: null
+    is_dttm: false
+    is_active: true
+    type: DECIMAL
+    groupby: true
+    filterable: true
+    expression: null
+    description: null
+    python_date_format: null
+  - column_name: first_order
+    verbose_name: null
+    is_dttm: true
+    is_active: true
+    type: DATE
+    groupby: true
+    filterable: true
+    expression: null
+    description: null
+    python_date_format: null
+  - column_name: last_order
+    verbose_name: null
+    is_dttm: true
+    is_active: true
+    type: DATE
+    groupby: true
+    filterable: true
+    expression: null
+    description: null
+    python_date_format: null
+  - column_name: value_rank
+    verbose_name: null
+    is_dttm: false
+    is_active: true
+    type: BIGINT
+    groupby: true
+    filterable: true
+    expression: null
+    description: null
+    python_date_format: null
+  - column_name: cumulative_share
+    verbose_name: null
+    is_dttm: false
+    is_active: true
+    type: DECIMAL
+    groupby: true
+    filterable: true
+    expression: null
+    description: null
+    python_date_format: null
+version: 1.0.0
+database_uuid: bbb03e90-0c81-5c87-838a-0497064b6381

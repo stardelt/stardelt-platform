@@ -1,0 +1,11 @@
+# The public demo's shop dashboard (platform#966 slice 2).
+#
+# Imported by `make public-demo YES=1` — scripts/public-demo.sh step 10 — with
+# `superset import-dashboards`; nobody clicks anything in Superset. The datasets below
+# list their own columns, so the import reads no metadata from Trino and the `superset`
+# service account gets no grant: viewers' queries keep running as the signed-in person
+# (#310). Who may see the dashboard is not set here: the published dashboard is handed
+# to every group role that may read `Trino Gold` by scripts/superset-group-roles.py.
+version: 1.0.0
+type: Dashboard
+timestamp: "2026-11-11T17:00:00+00:00"
