@@ -167,7 +167,7 @@ jobs:
             --namespace stardelt \
             -f helm-values/trino.yaml \
             -f helm-values/trino-identity.yaml > /tmp/trino-identity.yaml
-          test "$(grep -c 'web-ui.legacy.enabled=true' /tmp/trino-identity.yaml)" = 1
+          test "$(grep -c 'web-ui.legacy' /tmp/trino-identity.yaml)" = 0
           # access rules (#181, #363): `catalogs` + `queries` + `tables` +
           # `impersonation`. `system`, `tpch` and `tpcds` are administrator-only
           # (first rule admin, second rule none, third the catch-all — without
