@@ -433,7 +433,7 @@ catalog:
   # `install-core` has no IdP, so the wait is a no-op when the ConfigMap key is absent.
   extraInitContainers:
     - name: wait-for-idp
-      image: trinodb/trino:480          # already pinned; has bash + curl, unlike the distroless catalog
+      image: trinodb/trino:484          # already pinned; has bash + curl, unlike the distroless catalog
       imagePullPolicy: IfNotPresent
       env:
         - name: OIDC_ISSUER

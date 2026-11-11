@@ -356,7 +356,7 @@ lakekeeperBootstrap:
   backoffLimit: 4
 
 trino:
-  # MPP SQL engine (chart: trino 1.42.2, appVersion 480).
+  # MPP SQL engine (chart: trino 1.45.0, appVersion 484).
   #
   # Catalog `warehouse` connects to Lakekeeper (REST Iceberg catalog) and
   # reads/writes Parquet on SeaweedFS via its native S3 filesystem. Credentials
