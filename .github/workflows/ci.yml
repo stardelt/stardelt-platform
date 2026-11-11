@@ -156,18 +156,18 @@ jobs:
       - name: helm template — trino
         run: |
           bash scripts/retry.sh helm template trino trino/trino \
-            --version 1.42.2 \
+            --version 1.45.0 \
             --namespace stardelt \
             -f helm-values/trino.yaml > /dev/null
 
       - name: helm template — trino identity overlay (preview UI off, #181)
         run: |
           bash scripts/retry.sh helm template trino trino/trino \
-            --version 1.42.2 \
+            --version 1.45.0 \
             --namespace stardelt \
             -f helm-values/trino.yaml \
             -f helm-values/trino-identity.yaml > /tmp/trino-identity.yaml
-          test "$(grep -c 'web-ui.preview.enabled=false' /tmp/trino-identity.yaml)" = 1
+          test "$(grep -c 'web-ui.legacy.enabled=true' /tmp/trino-identity.yaml)" = 1
           # access rules (#181, #363): `catalogs` + `queries` + `tables` +
           # `impersonation`. `system`, `tpch` and `tpcds` are administrator-only
           # (first rule admin, second rule none, third the catch-all — without
@@ -239,7 +239,7 @@ jobs:
       - name: helm template — trino rollback overlay (file rules only, #311)
         run: |
           bash scripts/retry.sh helm template trino trino/trino \
-            --version 1.42.2 \
+            --version 1.45.0 \
             --namespace stardelt \
             -f helm-values/trino.yaml \
             -f helm-values/trino-identity.yaml \

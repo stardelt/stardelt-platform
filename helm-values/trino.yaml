@@ -1,5 +1,5 @@
 # Trino — MPP SQL engine.
-# Chart: trino/trino 1.42.2, appVersion 480.
+# Chart: trino/trino 1.45.0, appVersion 484.
 #
 # Catalog `warehouse` connects to Lakekeeper (REST Iceberg catalog) and
 # reads/writes Parquet on SeaweedFS via its native S3 filesystem. Credentials
@@ -124,7 +124,7 @@ worker:
 # Pull S3 creds from the stardelt-s3-creds Secret so catalog properties can
 # substitute ${ENV:S3_ACCESS_KEY} / ${ENV:S3_SECRET_KEY}. Trino substitutes
 # ${ENV:…} in every properties file, including config.properties
-# (https://trino.io/docs/480/security/secrets.html).
+# (https://trino.io/docs/484/security/secrets.html).
 #
 # The three identity variables are only *read* by the OAuth2 overlay
 # (helm-values/trino-identity.yaml): they are optional so a dev cluster without

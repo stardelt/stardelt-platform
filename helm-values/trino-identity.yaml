@@ -154,10 +154,13 @@ server:
     # closes the hole visible to a reader of this file.
     http-server.authentication.allow-insecure-over-http=false
     web-ui.authentication.type=oauth2
-    # The preview UI reads the same /ui/api endpoints as the classic UI and adds
-    # nothing for administrators (platform#181). Coordinator-only, like every
-    # web-ui key: a worker would refuse it as "not used".
-    web-ui.preview.enabled=false
+    # Trino 483 made the redesigned UI the default at /ui and moved the previous
+    # UI, off by default, to /ui/legacy. We keep the previous UI: it is the one our
+    # access rules and README describe, and the redesigned one has not been
+    # exercised against our OAuth2 + file access control (platform#181).
+    # Coordinator-only, like every web-ui key: a worker would refuse it as
+    # "not used".
+    web-ui.legacy.enabled=true
     http-server.authentication.oauth2.issuer=${ENV:TRINO_OIDC_ISSUER}
     http-server.authentication.oauth2.client-id=trino
     http-server.authentication.oauth2.client-secret=${ENV:TRINO_CLIENT_SECRET}
@@ -297,7 +300,7 @@ accessControl:
 initContainers:
   coordinator:
     - name: wait-for-idp
-      image: trinodb/trino:480
+      image: trinodb/trino:484
       imagePullPolicy: IfNotPresent
       env:
         - name: TRINO_OIDC_ISSUER
@@ -347,7 +350,7 @@ coordinator:
     # CronJob access-sync renders from the `SqlWarehouse` objects (platform#312)
     # into ConfigMap `trino-warehouses`, mounted below at /etc/trino/warehouses.
     #
-    # Why the file is ours and not the chart's: trino 1.42.2 renders
+    # Why the file is ours and not the chart's: trino 1.45.0 renders
     # `resource-groups.properties` only for `resourceGroups.type: configmap|properties`,
     # and in both shapes it owns the JSON too (the `configmap` type points at
     # /etc/trino/resource-groups/resource-groups.json, its own ConfigMap). Our file is

@@ -617,7 +617,7 @@ plain development default when it does not.
 |---|---|
 | `http-server.authentication.type=PASSWORD,OAUTH2` | every statement needs credentials; anonymous `POST /v1/statement` answers `401` with no query id |
 | `web-ui.authentication.type=oauth2` | the Trino web UI redirects to Keycloak; `<trino host>/oauth2/callback` is the registered redirect |
-| `web-ui.preview.enabled=false` | the preview UI (`/ui/preview/`) is off; the classic UI at `/ui/` stays, for administrators |
+| `web-ui.legacy.enabled=true` | the previous UI is restored at `/ui/legacy` (the redesigned UI is the default at `/ui`); for administrators |
 | `http-server.authentication.oauth2.issuer` / `client-id=trino` / `client-secret` | validates the caller's **own** Keycloak access token and sets `current_user` to its `sub` (the Keycloak user id — `principal-field`, platform#311) |
 | `…oidc.use-userinfo-endpoint=false` | local JWT validation against the realm JWKS, so the `aud` claim is enforced |
 | `server.config.https` (port 8443, PKCS12 keystore mounted from Secret `trino-coordinator-tls`) | the in-cluster TLS listener; clients carry the user's bearer token to it (`manifests/trino-tls.yaml`) |
@@ -2730,7 +2730,7 @@ Collaboration/release branches are planned later (issue #38).
 | SeaweedFS | 4.25.1 | 4.25 |
 | Lakekeeper | 0.11.0 | 0.12.2 |
 | OpenFGA | 0.2.62 | v1.14.0 |
-| Trino | 1.42.2 | 480 |
+| Trino | 1.45.0 | 484 |
 | Apache Airflow | 1.21.0 | 3.2.0 |
 | Apache Superset | 0.15.5 | 5.0.0 |
 | Apache Spark (image, no chart) | — | 4.1.3 (Iceberg 1.12.0) |
@@ -2784,7 +2784,7 @@ The simplest approach is to add a second values file and pass it at the end (lat
 cp helm-values/trino.yaml my-trino-overrides.yaml
 # Edit as needed, then:
 helm upgrade --install trino trino/trino \
-  --version 1.42.2 \
+  --version 1.45.0 \
   --namespace stardelt \
   -f helm-values/trino.yaml \
   -f my-trino-overrides.yaml

@@ -31,7 +31,7 @@ dependencies:
     condition: lakekeeper.enabled
   - name: trino
     repository: https://trinodb.github.io/charts
-    version: 1.42.2
+    version: 1.45.0
     condition: trino.enabled
   - name: superset
     repository: https://apache.github.io/superset
