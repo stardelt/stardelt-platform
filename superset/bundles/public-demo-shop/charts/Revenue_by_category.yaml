@@ -1,0 +1,59 @@
+# Revenue by category — the shop dashboard's pie chart (platform#966 slice 2).
+# SUM(revenue) by category over gold.shop.product_mix.
+slice_name: Revenue by category
+description: "The shop's revenue per product category."
+certified_by: null
+certification_details: null
+viz_type: pie
+params:
+  viz_type: pie
+  groupby:
+    - category
+  metric:
+    expressionType: SIMPLE
+    column:
+      column_name: revenue
+      type: DECIMAL
+      is_dttm: false
+      filterable: true
+      groupby: true
+      verbose_name: null
+      python_date_format: null
+      expression: null
+      description: null
+      advanced_data_type: null
+      certified_by: null
+      certification_details: null
+      id: null
+      is_certified: false
+      is_active: true
+      type_generic: 0
+      warning_markdown: null
+    aggregate: SUM
+    sqlExpression: null
+    hasCustomLabel: true
+    label: SUM(revenue)
+    optionName: metric_public_demo_shop_revenue_by_category
+    datasourceWarning: false
+    isNew: false
+  adhoc_filters: []
+  row_limit: 100
+  sort_by_metric: true
+  time_range: No filter
+  color_scheme: supersetColors
+  show_labels_threshold: 5
+  show_legend: true
+  legendType: scroll
+  legendOrientation: top
+  label_type: key
+  number_format: SMART_NUMBER
+  date_format: smart_date
+  show_labels: true
+  labels_outside: true
+  outerRadius: 70
+  innerRadius: 30
+  extra_form_data: {}
+cache_timeout: null
+uuid: 5eedee9d-8c52-4b4a-98ac-324d014ee9fb
+version: 1.0.0
+dataset_uuid: f96ad810-9e45-4900-a404-57e0cb8aeea1

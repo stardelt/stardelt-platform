@@ -1,0 +1,106 @@
+# Shop: revenue, customers and products — the public demo's dashboard (platform#966 slice 2).
+#
+# Published: scripts/superset-group-roles.py (every 5 minutes) hands a published dashboard
+# to every group role that may read the database its charts read, so this one goes to
+# stardelt-group-demo and stardelt-group-visitors and to nobody else. Two rows: daily
+# revenue across the full width, then the ten best customers beside revenue by category.
+dashboard_title: "Shop: revenue, customers and products"
+description: "The public demo shop: daily revenue, the ten best customers, and revenue by category."
+css: null
+slug: public-demo-shop
+certified_by: null
+certification_details: null
+published: true
+uuid: 7d8dadaf-457f-4981-96f7-5e19824cae7b
+position:
+  DASHBOARD_VERSION_KEY: v2
+  ROOT_ID:
+    children:
+      - GRID_ID
+    id: ROOT_ID
+    type: ROOT
+  GRID_ID:
+    children:
+      - ROW-dailyRevenue
+      - ROW-customersAndCategories
+    id: GRID_ID
+    meta: {}
+    parents:
+      - ROOT_ID
+    type: GRID
+  HEADER_ID:
+    id: HEADER_ID
+    meta:
+      text: "Shop: revenue, customers and products"
+    type: HEADER
+  ROW-dailyRevenue:
+    children:
+      - CHART-dailyRevenue
+    id: ROW-dailyRevenue
+    meta:
+      background: BACKGROUND_TRANSPARENT
+    parents:
+      - ROOT_ID
+      - GRID_ID
+    type: ROW
+  CHART-dailyRevenue:
+    children: []
+    id: CHART-dailyRevenue
+    meta:
+      chartId: 1
+      height: 50
+      sliceName: Daily revenue
+      uuid: 42420e6d-ebb7-4421-b0ef-4b41989b3ccb
+      width: 12
+    parents:
+      - ROOT_ID
+      - GRID_ID
+      - ROW-dailyRevenue
+    type: CHART
+  ROW-customersAndCategories:
+    children:
+      - CHART-topCustomers
+      - CHART-revenueByCategory
+    id: ROW-customersAndCategories
+    meta:
+      background: BACKGROUND_TRANSPARENT
+    parents:
+      - ROOT_ID
+      - GRID_ID
+    type: ROW
+  CHART-topCustomers:
+    children: []
+    id: CHART-topCustomers
+    meta:
+      chartId: 2
+      height: 50
+      sliceName: Top customers by lifetime value
+      uuid: ebcaf090-103c-426a-aab0-f5a9a6c01772
+      width: 6
+    parents:
+      - ROOT_ID
+      - GRID_ID
+      - ROW-customersAndCategories
+    type: CHART
+  CHART-revenueByCategory:
+    children: []
+    id: CHART-revenueByCategory
+    meta:
+      chartId: 3
+      height: 50
+      sliceName: Revenue by category
+      uuid: 5eedee9d-8c52-4b4a-98ac-324d014ee9fb
+      width: 6
+    parents:
+      - ROOT_ID
+      - GRID_ID
+      - ROW-customersAndCategories
+    type: CHART
+metadata:
+  color_scheme: supersetColors
+  default_filters: "{}"
+  expanded_slices: {}
+  label_colors: {}
+  refresh_frequency: 0
+  timed_refresh_immune_slices: []
+version: 1.0.0

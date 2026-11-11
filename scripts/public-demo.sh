@@ -31,6 +31,7 @@
 #   7.  the ConfigMap stardelt-public-demo, which tells Nova that `demo` is shared;
 #   8.  one access sync and one catalog convergence (`make catalogs`);
 #   9.  the shop pipelines name the group $GROUP as a viewer (read-only).
+#   10. the Superset dashboard on the shop's gold tables (platform#966).
 #
 # Step 9 has a footgun: `stardelt bundle deploy` rewrites the whole spec, so a redeploy of the
 # shop drops `viewers`. Run `make public-demo YES=1` (or `make public-demo-check`) after one.
@@ -164,6 +165,7 @@ if [ "$mode" = check ]; then
       7) check_7 || rc=1 ;;
       8) check_8 || rc=1 ;;
       9) check_9 || rc=1 ;;
+      10) check_10 || rc=1 ;;
       *) check_msg="unknown row $id"; check_fix="this is a bug in scripts/public-demo.sh"; rc=1 ;;
     esac
     check_rows=$((check_rows + 1))
@@ -450,6 +452,50 @@ if [ "$mode" = check ]; then
     check_msg="all $total shop pipelines name $GROUP as a viewer"
   }
 
+  # 10. The shop dashboard exists and is handed to the visitors (platform#966). The sync
+  # gives a published dashboard to every group role that may read the database its charts
+  # read, so "visitors may see it" is the same sentence as "visitors may read gold".
+  check_10() {
+    local out roles
+    out="$(kubectl -n "$NAMESPACE" exec -i deploy/superset -- python - <<'PY' 2>&1
+from superset.app import create_app
+
+app = create_app()
+with app.app_context():
+    from superset import db
+    from superset.models.dashboard import Dashboard
+
+    dashboard = db.session.query(Dashboard).filter_by(slug="public-demo-shop").first()
+    if dashboard is None:
+        print("stardelt-check-10: missing")
+    elif not dashboard.roles:
+        print("stardelt-check-10: nobody")
+    else:
+        print("stardelt-check-10: " + ",".join(sorted(role.name for role in dashboard.roles)))
+PY
+)" || out=""
+    roles="$(printf '%s\n' "$out" | sed -n 's/^stardelt-check-10: //p' | tail -n 1)"
+    if [ -z "$roles" ]; then
+      check_msg="the shop dashboard cannot be read from Superset (the pod answered nothing)"
+      check_fix="make public-demo YES=1"
+      return 1
+    fi
+    if [ "$roles" = missing ]; then
+      check_msg="the dashboard slug public-demo-shop is not imported"
+      check_fix="make public-demo YES=1"
+      return 1
+    fi
+    case ",$roles," in
+      *",stardelt-group-$GROUP,"*) : ;;
+      *)
+        check_msg="the dashboard slug public-demo-shop is visible to '${roles:-nobody}', not stardelt-group-$GROUP"
+        check_fix="make public-demo YES=1"
+        return 1
+        ;;
+    esac
+    check_msg="dashboard slug public-demo-shop, roles $roles"
+  }
+
   render 0a
   render 0b
   render 0
@@ -464,6 +510,7 @@ if [ "$mode" = check ]; then
   render 7
   render 8
   render 9
+  render 10
 
   echo ""
   if [ "$check_ok" -eq "$check_rows" ]; then
@@ -692,6 +739,45 @@ if [ "${#names[@]}" -gt 0 ]; then
   echo "› shop pipelines: viewers=[$GROUP] on ${#names[@]}"
 else
   echo "› shop pipelines: none yet — deploy the shop bundle, then run make public-demo again"
+fi
+
+# 10. The shop dashboard (platform#966): imported from superset/bundles/public-demo-shop.
+# Datasets come from the listed columns, so the import reads nothing from Trino and the
+# service account needs no grant. The sync gives the published dashboard to the roles
+# that may read Trino Gold.
+#
+# The bundle names its database by the UUID the sync gives that row (platform#967): the
+# importer looks it up by UUID and leaves an existing row untouched, so the guard below is
+# what stops a not-yet-converged cluster from creating a second `Trino Gold`.
+dashboard_db="$(kubectl -n "$NAMESPACE" exec -i deploy/superset -- python - <<'PY' 2>&1
+from superset.app import create_app
+
+app = create_app()
+with app.app_context():
+    from superset import db
+    from superset.models.core import Database
+
+    row = db.session.query(Database).filter_by(uuid="bbb03e90-0c81-5c87-838a-0497064b6381").first()
+    print("stardelt-step-10:", "present" if row else "missing")
+PY
+)" || true
+if printf '%s\n' "$dashboard_db" | grep -q '^stardelt-step-10: present$'; then
+  python3 -m zipfile -c "$tmp/shop.zip" superset/bundles/public-demo-shop \
+    || fail "cannot build the shop dashboard bundle"
+  kubectl -n "$NAMESPACE" exec -i deploy/superset -- sh -c 'cat > /tmp/public-demo-shop.zip' <"$tmp/shop.zip" \
+    || fail "cannot copy the shop dashboard bundle into the Superset pod"
+  kubectl -n "$NAMESPACE" exec deploy/superset -- superset import-dashboards -p /tmp/public-demo-shop.zip -u admin \
+    || fail "cannot import the shop dashboard"
+  # The sync runs every 5 minutes; run it now so the dashboard is handed to the group roles
+  # that may read gold before this script returns.
+  sync_job="superset-group-roles-demo-$(date +%s)"
+  kubectl -n "$NAMESPACE" create job --from=cronjob/superset-group-roles "$sync_job" >/dev/null \
+    || fail "cannot start the Superset role sync"
+  kubectl -n "$NAMESPACE" wait --for=condition=complete --timeout=300s "job/$sync_job" >/dev/null \
+    || fail "the Superset role sync did not complete within 300 seconds"
+  echo "› shop dashboard: imported (slug public-demo-shop)"
+else
+  echo "› shop dashboard: Trino Gold not converged yet — wait 5 minutes (superset-group-roles), then run make public-demo YES=1 again"
 fi
 
 echo ""

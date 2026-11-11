@@ -1,0 +1,100 @@
+# gold.shop.product_mix — units and revenue per product and category (stardelt-demos
+# examples/shop-bundle/sql/12_product_mix.sql). The columns are listed, so the import
+# creates this dataset without asking Trino for metadata (platform#966).
+table_name: product_mix
+main_dttm_col: null
+description: "Units and revenue per product, with its category and rank in that category."
+default_endpoint: null
+offset: 0
+cache_timeout: null
+catalog: gold
+schema: shop
+sql: null
+params: {}
+template_params: null
+filter_select_enabled: true
+fetch_values_predicate: null
+extra: null
+uuid: f96ad810-9e45-4900-a404-57e0cb8aeea1
+metrics:
+  - metric_name: count
+    verbose_name: COUNT(*)
+    metric_type: null
+    expression: COUNT(*)
+    description: null
+    d3format: null
+    extra: null
+    warning_text: null
+columns:
+  - column_name: product_id
+    verbose_name: null
+    is_dttm: false
+    is_active: true
+    type: INTEGER
+    groupby: true
+    filterable: true
+    expression: null
+    description: null
+    python_date_format: null
+  - column_name: product_name
+    verbose_name: null
+    is_dttm: false
+    is_active: true
+    type: VARCHAR
+    groupby: true
+    filterable: true
+    expression: null
+    description: null
+    python_date_format: null
+  - column_name: category
+    verbose_name: null
+    is_dttm: false
+    is_active: true
+    type: VARCHAR
+    groupby: true
+    filterable: true
+    expression: null
+    description: null
+    python_date_format: null
+  - column_name: units
+    verbose_name: null
+    is_dttm: false
+    is_active: true
+    type: BIGINT
+    groupby: true
+    filterable: true
+    expression: null
+    description: null
+    python_date_format: null
+  - column_name: revenue
+    verbose_name: null
+    is_dttm: false
+    is_active: true
+    type: DECIMAL
+    groupby: true
+    filterable: true
+    expression: null
+    description: null
+    python_date_format: null
+  - column_name: revenue_share
+    verbose_name: null
+    is_dttm: false
+    is_active: true
+    type: DECIMAL
+    groupby: true
+    filterable: true
+    expression: null
+    description: null
+    python_date_format: null
+  - column_name: rank_in_category
+    verbose_name: null
+    is_dttm: false
+    is_active: true
+    type: BIGINT
+    groupby: true
+    filterable: true
+    expression: null
+    description: null
+    python_date_format: null
+version: 1.0.0
+database_uuid: bbb03e90-0c81-5c87-838a-0497064b6381
