@@ -131,7 +131,7 @@ identity:
     # (scripts/check-version-parity.sh).
     image:
       repository: quay.io/keycloak/keycloak
-      tag: "26.8.1"
+      tag: "26.8.2"
       pullPolicy: IfNotPresent
     # Small single-node sizing (fits next to install-core on a cx33).
     resources:

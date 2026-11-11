@@ -33,7 +33,7 @@ SPARK_OPERATOR_VERSION := 2.5.2
 # Pinned image versions (no chart: plain manifests in manifests/keycloak.yaml).
 # Mirrored in manifests/keycloak.yaml and chart/values.yaml
 # (identity.keycloak.image.tag); scripts/check-version-parity.sh checks all three.
-KEYCLOAK_VERSION   := 26.8.1
+KEYCLOAK_VERSION   := 26.8.2
 
 HELM_FLAGS := --namespace $(NAMESPACE) --create-namespace --wait --timeout 10m
 
