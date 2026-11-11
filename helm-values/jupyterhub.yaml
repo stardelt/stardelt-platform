@@ -221,6 +221,18 @@ hub:
 
       c.KubeSpawner.modify_pod_hook = _stardelt_labels
 
+    27-demo-mode: |
+      # A visitor gets a notebook, and it must not keep anything (epic#895 decision 10).
+      # `visitors` is the public demo's realm group and `demo` is ONE hub user, so every
+      # visitor lands in the same pod: the home is wiped on spawn by
+      # `singleuser.lifecycleHooks.postStart` when this flag is set.
+      def _demo_mode(spawner):
+          names = {group.name for group in spawner.user.groups}
+          if "visitors" in names and not names & {"stardelt-users", "stardelt-admins"}:
+              spawner.environment["DEMO_MODE"] = "1"
+
+      c.KubeSpawner.pre_spawn_hook = _demo_mode
+
   config:
     JupyterHub:
       authenticator_class: generic-oauth
@@ -248,12 +260,12 @@ hub:
       # gates on JupyterHub groups, hence manage_groups + the auth_state path.
       manage_groups: true
       auth_state_groups_key: oauth_user.groups
-      # Default-closed: only members of the platform admin group may sign in.
+      # Default-closed: only listed groups may sign in.
       # Add groups here, or set allow_all: true to admit every realm user.
-      # Two groups may use notebooks: platform admins, and everyone the realm puts
-      # in `stardelt-users` — the realm's default group, so a user created in the
-      # console joins it automatically and can open a notebook without an admin.
-      allowed_groups: [stardelt-admins, stardelt-users]
+      # Three groups may use notebooks: platform admins, `stardelt-users` (the realm's
+      # default group), and `visitors` — the public demo's group, whose server is
+      # disposable (`27-demo-mode` above, epic#895 decision 10).
+      allowed_groups: [stardelt-admins, stardelt-users, visitors]
       admin_groups: ["stardelt-admins"]
   resources:
     requests: { cpu: "50m", memory: "256Mi" }
@@ -361,16 +373,33 @@ singleuser:
     # (`make openbao`): without it installed the helper answers "not reachable" in one line. A person
     # signs in with their own token; the store decides what they may read.
     STARDELT_SECRET_STORE_URL: http://openbao.stardelt.svc.cluster.local:8200
-  # Seed the quickstart into the home directory on every spawn, never
-  # overwriting a user's edited copy (`cp -n`). postStart always exits 0: a
-  # failing hook would make kubelet restart the container in a loop.
+  # Seed the quickstart into the home directory on every spawn, never overwriting a
+  # user's edited copy (`cp -n`). A demo spawn (`DEMO_MODE=1`, `27-demo-mode`) is
+  # thrown away first: one shared person must not inherit another visitor's files.
+  # The clone is a public repository, so it needs no credential; the single-user
+  # NetworkPolicy already allows public egress. postStart always exits 0: a failing
+  # hook would make kubelet restart the container in a loop.
   lifecycleHooks:
     postStart:
       exec:
         command:
           - bash
           - -c
-          - cp -n /opt/stardelt/notebooks/*.ipynb "$HOME/" || true
+          - |
+            if [ "${DEMO_MODE:-0}" = 1 ]; then
+              find "$HOME" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+            fi
+            cp -n /opt/stardelt/notebooks/*.ipynb "$HOME/" || true
+            if [ "${DEMO_MODE:-0}" = 1 ]; then
+              timeout 90 git clone --depth 1 https://github.com/stardelt/stardelt-demos \
+                "$HOME/stardelt-demos" 2>/dev/null || true
+              printf '%s\n' \
+                'This notebook is shared: the public demo signs everyone in as `demo`.' \
+                'Files and kernels are visible to other visitors, and Start/Restart wipes this home.' \
+                '' \
+                '`stardelt-demos/` holds the bundle sources of the shop (examples/shop-bundle).' \
+                > "$HOME/README.md"
+            fi
   startTimeout: 300
   memory:
     limit: 1G
