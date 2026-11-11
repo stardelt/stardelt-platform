@@ -20,6 +20,7 @@
 #   0.  the Catalogs bronze, silver and gold exist (it never creates a Catalog);
 #   0b. the ServicePrincipal pipeline-demo is ready, i.e. `make demo-access YES=1` ran;
 #   1.  the realm group `visitors` exists (marked stardelt-managed=public-demo);
+#   1b. the ServicePrincipal pipeline-visitors is ready, and its principal is in the group visitors, not demo;
 #   2.  the person `demo` exists, is enabled, needs no actions and knows the password
 #       `demo`; a person `demo` this script did not create is refused;
 #   3.  `demo` is a member of `visitors` and of no other group (`stardelt-users` included:
@@ -150,6 +151,7 @@ if [ "$mode" = check ]; then
       0) check_0 || rc=1 ;;
       0c) check_0c || rc=1 ;;
       1) check_1 || rc=1 ;;
+      1b) check_1b || rc=1 ;;
       2) check_2 || rc=1 ;;
       3) check_3 || rc=1 ;;
       4) check_4 || rc=1 ;;
@@ -264,6 +266,24 @@ if [ "$mode" = check ]; then
       return 1
     fi
     check_msg="realm group $GROUP"
+  }
+
+  # 1b. The principal a visitor's pipeline runs as, ready, and owned by `visitors`.
+  check_1b() {
+    local ready owner
+    ready="$(kubectl -n "$NAMESPACE" get serviceprincipals.stardelt.io pipeline-visitors -o jsonpath='{.status.ready}' 2>/dev/null || true)"
+    if [ "$ready" != true ]; then
+      check_msg="ServicePrincipal pipeline-visitors is not ready (.status.ready=${ready:-missing})"
+      check_fix="make public-demo YES=1"
+      return 1
+    fi
+    owner="$(kubectl -n "$NAMESPACE" get serviceprincipals.stardelt.io pipeline-visitors -o jsonpath='{.spec.ownerGroup}' 2>/dev/null || true)"
+    if [ "$owner" != visitors ]; then
+      check_msg="pipeline-visitors is owned by '$owner', not 'visitors' — a pipeline there could rewrite the shop"
+      check_fix="kubectl -n $NAMESPACE delete serviceprincipal pipeline-visitors && make public-demo YES=1"
+      return 1
+    fi
+    check_msg="ServicePrincipal pipeline-visitors is ready and owned by visitors"
   }
 
   # 2. The person: exists, enabled, no required action left.
@@ -411,6 +431,7 @@ if [ "$mode" = check ]; then
   render 0
   render 0c
   render 1
+  render 1b
   render 2
   render 3
   render 4
@@ -491,6 +512,36 @@ else
 fi
 gid="$(group_id "$GROUP")"
 [ -n "$gid" ] || fail "group $GROUP is not in the realm after creating it"
+
+# 1b. The principal a visitor's pipeline runs as (epic#895 decision 11). In `visitors`, never
+# in `demo`: a pipeline reaches exactly what `visitors` reaches — read the shop, write the
+# playground — and the group that owns the shop tables stays out of it.
+principal=pipeline-visitors
+NAMESPACE="$NAMESPACE" REALM="$REALM" make --no-print-directory sync-principal \
+  NAME="$principal" GROUP="$GROUP" \
+  || fail "make sync-principal failed for $principal"
+cat >"$tmp/principal.yaml" <<YAML
+apiVersion: stardelt.io/v1alpha1
+kind: ServicePrincipal
+metadata:
+  name: $principal
+  namespace: $NAMESPACE
+  labels:
+    stardelt.io/public-demo: "true"
+spec:
+  ownerGroup: $GROUP
+  purpose: pipeline
+  audiences: [trino, lakekeeper]
+YAML
+kubectl apply -f "$tmp/principal.yaml" >/dev/null || fail "cannot apply ServicePrincipal $principal"
+echo "› ServicePrincipal $principal: applied"
+for _ in $(seq 1 45); do
+  ready="$(kubectl -n "$NAMESPACE" get serviceprincipals.stardelt.io "$principal" -o jsonpath='{.status.ready}' 2>/dev/null || true)"
+  [ "$ready" = true ] && break
+  sleep 2
+done
+[ "$ready" = true ] || fail "ServicePrincipal $principal is not ready after 90 seconds: kubectl -n $NAMESPACE describe serviceprincipals.stardelt.io $principal"
+echo "› ServicePrincipal $principal: ready"
 
 # 2. The person. It belongs to this script: a `demo` without the mark is somebody else's.
 user_json="$tmp/user.json"
