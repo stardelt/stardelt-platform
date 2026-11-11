@@ -265,6 +265,22 @@ if app == "spark":
     )
     replaced += executor
 
+    # The runtime catalogue carries the same image for the operator's
+    # SparkCluster; `scripts/check-spark-runtimes.sh` compares the two and fails
+    # when they drift. Keep the writer here so the manual pin and the rollup
+    # cannot move one file without the other (platform#998).
+    catalogue = "chart/files/spark-runtimes.json"
+    ctext = open(catalogue).read()
+    ctext, cn = re.subn(
+        r'("image":\s*"ghcr\.io/stardelt/spark:[^\s@]+)@sha256:[0-9a-f]{64}"',
+        lambda m: f'{m.group(1)}@{digest}"',
+        ctext,
+    )
+    if cn != 1:
+        sys.exit(f"expected exactly one spark image in {catalogue}, found {cn}")
+    open(catalogue, "w").write(ctext)
+    print(f"› {catalogue}: image pinned to {repo}:…@{digest[:19]}…")
+
 if replaced:
     open(path, "w").write(text)
     print(f"› {path}: image pinned to {repo}:…@{digest[:19]}…")
