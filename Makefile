@@ -81,7 +81,7 @@ CHART_EXTRA ?=
 # client redirect URIs on the app subdomains. Same default as `dev-dns`.
 BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 
-.PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator openfga trino catalogs upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-refresh dev-watch dev-status check-pins verify-pins dev-up dev-down dev-dns dev-dns-down platform-config check-hub-config
+.PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator openfga trino catalogs upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-refresh dev-watch dev-status check-pins check-cnpg-pin verify-pins dev-up dev-down dev-dns dev-dns-down platform-config check-hub-config
 .PHONY: chart-deps chart-template chart-install
 .PHONY: verify-backups verify-backups-identity verify-backups-nova verify-backups-openfga verify-backups-all verify-images verify-streaming verify-compute verify-maintenance verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
 .PHONY: backups verify-pgdump offsite-backup export-recovery-secrets import-recovery-secrets
@@ -1376,6 +1376,9 @@ dev-watch: _context ## Follow one image's `dev` tag and roll it when CI publishe
 
 dev-status: _context ## Show what the cluster runs against what the manifests pin
 	@NS=$(NAMESPACE) TAG=$(TAG) bash scripts/dev-status.sh
+
+check-cnpg-pin: ## Fail when the CloudNativePG chart pin leaves 0.28.x before the backup-plugin migration (platform#192)
+	@python3 scripts/check_cnpg_pin.py
 
 check-pins: ## Fail when the registry's `dev`/`demo` digest moved ahead of a checked-in pin, or the operator's loader pin differs
 	@python3 scripts/check_pin_freshness.py
