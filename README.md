@@ -766,7 +766,9 @@ deletes nothing. `bash scripts/demo-access.sh --manifest` prints the `ServicePri
 *The public demo (lab only).* `make public-demo YES=1` converges, in one idempotent command, the account a public demo
 signs in with: the realm group `visitors`; the person `demo` with the password `demo` (public on purpose — it protects
 nothing), enabled, in `visitors` and in no other group, and without the realm role `default-roles-stardelt`, so it does
-not even get the account console; browse and select for `visitors` on the Catalogs `bronze`, `silver` and `gold`; the
+not even get the account console; the `ServicePrincipal` `pipeline-visitors`, which a visitor's pipeline runs as and
+which belongs to `visitors` (so a pipeline reaches the playground and never the tables `demo` owns); browse and select
+for `visitors` on the Catalogs `bronze`, `silver` and `gold`; the
 Catalog `playground` and the SqlWarehouse `demo` (`xs`) it may write to; the ConfigMap `stardelt-public-demo` that tells
 Nova the account is shared (Nova restarts once, the first time); and one access sync plus `make catalogs`. **Everything in
 `bronze`, `silver` and `gold` becomes readable by anyone on the internet**, which is why it prints that warning and why it
