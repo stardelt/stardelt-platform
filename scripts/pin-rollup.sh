@@ -114,6 +114,12 @@ fi
 
 rewrite_files "$OP_FILE" "$NOVA_FILE" "$SPARK_FILE" "$operator_digest" "$nova_digest" "$spark_digest"
 
+# Spark is pinned in two files; its writer lives in pin-image.sh so the manual
+# and the rollup path cannot drift.
+if [ "$old_spark" != "$spark_digest" ]; then
+  APP=spark WRITE_MANIFEST_ONLY=1 ./scripts/pin-image.sh >/dev/null
+fi
+
 # The loader is pinned three times in the two files below; its writer stays in
 # pin-image.sh so the two callers cannot drift. WRITE_MANIFEST_ONLY skips every
 # cluster call — this script runs on a GitHub runner with no kubeconfig.
@@ -136,9 +142,11 @@ airflow_check="$(bash scripts/check-airflow-pin.sh 2>&1)" || airflow_rc=$?
 airflow_rc=${airflow_rc:-0}
 superset_check="$(bash scripts/check-superset-roles.sh 2>&1)" || superset_rc=$?
 superset_rc=${superset_rc:-0}
-printf '%s\n%s\n' "$airflow_check" "$superset_check"
-if [ "$airflow_rc" -ne 0 ] || [ "$superset_rc" -ne 0 ]; then
-  echo "pin-rollup: a pin guard failed (airflow $airflow_rc, superset $superset_rc)" >&2
+spark_check="$(bash scripts/check-spark-runtimes.sh 2>&1)" || spark_rc=$?
+spark_rc=${spark_rc:-0}
+printf '%s\n%s\n%s\n' "$airflow_check" "$superset_check" "$spark_check"
+if [ "$airflow_rc" -ne 0 ] || [ "$superset_rc" -ne 0 ] || [ "$spark_rc" -ne 0 ]; then
+  echo "pin-rollup: a pin guard failed (airflow $airflow_rc, superset $superset_rc, spark $spark_rc)" >&2
   exit 1
 fi
 
@@ -161,7 +169,7 @@ trap 'rm -f "$body_file"' EXIT
   echo ""
   echo "## Verification (bot push suppresses pull-request checks)"
   echo ""
-  echo "Pull-request checks do not run for pushes made with \`GITHUB_TOKEN\`, so the rollup ran these four checks itself. A reviewer can trust these results instead."
+  echo "Pull-request checks do not run for pushes made with \`GITHUB_TOKEN\`, so the rollup ran these five checks itself. A reviewer can trust these results instead."
   echo ""
   echo "\`helm lint chart\` renders the umbrella chart's templates with its sub-charts not fetched (a GitHub release download 504 blocks the roll; they are unrelated to a digest pin). The merge to \`main\` runs the full CI \`Helm lint\` job with every dependency."
   echo ""
@@ -184,6 +192,11 @@ trap 'rm -f "$body_file"' EXIT
   echo '```'
   echo "$superset_check"
   echo '```'
+  echo ""
+  echo "### scripts/check-spark-runtimes.sh (exit ${spark_rc})"
+  echo '```'
+  echo "$spark_check"
+  echo '```'
 } > "$body_file"
 
 git config user.name "github-actions[bot]" 2>/dev/null || true
@@ -191,7 +204,8 @@ git config user.email "41898282+github-actions[bot]@users.noreply.github.com" 2>
 
 branch="chore/pin-rollup"
 git switch -C "$branch"
-git add "$OP_FILE" "$NOVA_FILE" "$SPARK_FILE" "$AIRFLOW_FILE" "$AIRFLOW_GROUP_FILE" "$SUPERSET_FILE" "$SUPERSET_GROUP_FILE"
+git add "$OP_FILE" "$NOVA_FILE" "$SPARK_FILE" "$AIRFLOW_FILE" "$AIRFLOW_GROUP_FILE" "$SUPERSET_FILE" "$SUPERSET_GROUP_FILE" \
+  chart/files/spark-runtimes.json
 git commit -m "chore(pins): rollup image digests
 
 $(for c in "${changes[@]}"; do echo "- $c"; done)"
