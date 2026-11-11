@@ -1,6 +1,12 @@
 name: Pin rollup
 on:
   schedule: [{ cron: "*/30 * * * *" }]
+  # GitHub's scheduler on this repository fires the */30 cron about every eight hours
+  # (measured 2026-11-09..11). A push to main that rebuilds an image must roll its pin
+  # now, not eight hours later; the cron stays as a backstop.
+  workflow_run:
+    workflows: ["Image"]
+    types: [completed]
   workflow_dispatch:
 permissions:
   contents: write
@@ -8,6 +14,7 @@ permissions:
 concurrency: { group: pin-rollup, cancel-in-progress: true }
 jobs:
   rollup:
+    if: github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
