@@ -1,7 +1,7 @@
 # The dev seed's permission fixtures (platform#309, opt-in since platform#365):
 # three catalogs with different grants per group, so the permission probe has a
 # `true` and a `false` for the same verb. The baseline layout is
-# `dev/seed/catalogs.yaml` (the maintainer's five catalogs); this file is not
+# `dev/seed/catalogs.yaml` (the maintainer's two catalogs, `warehouse` and `shared`); this file is not
 # applied by `make seed-dev-access`.
 #
 #   make seed-permission-fixtures YES=1      # apply this file + the seed.nation tables
