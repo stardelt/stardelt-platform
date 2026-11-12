@@ -9,8 +9,11 @@
 # regresses to anonymous.
 #
 # This policy is ingress-only: it does not restrict what Lakekeeper itself
-# reaches (Postgres, S3), and it has no namespaceSelector and no ipBlock rule.
-# Kubelet probes come from the node and are unaffected.
+# reaches (Postgres, S3), and it has no ipBlock rule. The single
+# `namespaceSelector: {}` rule is the metrics scrape source below — a pod
+# labelled `app.kubernetes.io/name: prometheus` (stardelt-operator#607) reads
+# port 9000 from any namespace, read-only; every caller rule stays
+# same-namespace. Kubelet probes come from the node and are unaffected.
 #
 # The callers below are the pods that actually use the catalog, checked against
 # the live configuration in stardelt-platform#274:
@@ -120,3 +123,12 @@ spec:
       ports:
         - protocol: TCP
           port: 8282
+    # The customer's Prometheus (stardelt-operator#607): a scrape source, read-only.
+    - from:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 9000

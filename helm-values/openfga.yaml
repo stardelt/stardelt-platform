@@ -79,12 +79,14 @@ extraEnvVars:
   - { name: OPENFGA_LIST_OBJECTS_ITERATOR_CACHE_ENABLED, value: "true" }
   - { name: OPENFGA_CACHE_CONTROLLER_ENABLED, value: "true" }
 
-# No tracing, no Prometheus metrics: the platform does not scrape this release
-# yet, and the node's spare memory goes to the engines. The store is load-bearing
-# since the cut-over, so turn metrics on together with a scrape target — restarts
-# and 503s should be visible before somebody notices through a dashboard.
+# No tracing; Prometheus metrics ON (the scrape target exists now,
+# stardelt/stardelt-platform#607): the chart adds a `metrics` Service port 2112,
+# and the ingress policy admits exactly a pod labelled
+# `app.kubernetes.io/name: prometheus` there — nothing else may read 2112.
+# The store is load-bearing since the cut-over, so restarts and 503s should be
+# visible before somebody notices through a dashboard.
 telemetry:
   trace:
     enabled: false
   metrics:
-    enabled: false
+    enabled: true

@@ -17,6 +17,11 @@
 # Secrets and the backup Jobs. Kubelet probes come from the node and are
 # unaffected.
 #
+# The one exception is read-only: a pod labelled
+# `app.kubernetes.io/name: prometheus` (the customer's scraper,
+# stardelt-operator#607) may read the metrics endpoint on 2112 from any
+# namespace. It gets no access to 8080 or 8081.
+#
 # Needs a CNI that enforces NetworkPolicy — k3s does. To remove the
 # restriction, e.g. while debugging:
 #
@@ -50,3 +55,12 @@ spec:
           port: 8081
         - protocol: TCP
           port: 8080
+    # The customer's Prometheus (stardelt-operator#607): a scrape source, read-only.
+    - from:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 2112
