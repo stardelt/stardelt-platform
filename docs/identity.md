@@ -355,9 +355,12 @@ included — reads `CATALOG_CLIENT_ID`, `CATALOG_CLIENT_SECRET` and `CATALOG_TOK
 `airflow.extraEnv`. Two details matter. All three variables come from the **same** Secret, because
 Nova refuses to start on a partial configuration (`stardelt-nova#222`) and an optional
 `secretKeyRef` cannot make one variable conditional on another; that is why a service client's
-Secret also carries `token-url`, derived from the identity contract's issuer by
-`make sync-catalog-clients`. And every reference is `optional`, so an install without an IdP (no
-Secret) keeps Nova and Airflow running and both keep calling Lakekeeper anonymously — the
+Secret also carries `token-url`, which `make sync-catalog-clients` writes (platform mode only —
+with an external provider there is no Keycloak to sync against). Trino's catalog client does not
+read that key: it takes `CATALOG_TOKEN_URL` from ConfigMap `stardelt-identity` key
+`tokenEndpoint` (#611), so with an external provider it signs in at the provider's own token
+endpoint instead of the realm path. And every reference is `optional`, so an install without an
+IdP (no Secret) keeps Nova and Airflow running and both keep calling Lakekeeper anonymously — the
 `install-core` shape. No cluster permission changes: the Role is the same as before.
 
 *Catalog authentication is enforced (platform#285, step 5).* Lakekeeper is no longer anonymous:
