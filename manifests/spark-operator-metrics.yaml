@@ -1,0 +1,26 @@
+# The Spark operator controller's Prometheus endpoint (stardelt-platform#1140, #607).
+# The chart already turns the endpoint on (`prometheus.metrics.enable: true`) and
+# annotates the controller pod, but creates no Service for it; without one a scrape
+# config has no name to select. ClusterIP only, never exposed by an Ingress.
+apiVersion: v1
+kind: Service
+metadata:
+  name: spark-operator-metrics
+  namespace: stardelt
+  labels:
+    app.kubernetes.io/name: spark-operator
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/part-of: stardelt
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: /metrics
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: spark-operator
+    app.kubernetes.io/component: controller
+  ports:
+    - name: metrics
+      port: 8080
+      targetPort: 8080
