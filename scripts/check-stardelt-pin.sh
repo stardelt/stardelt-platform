@@ -15,7 +15,9 @@
 # They must be the same commit, the commit must be a full SHA — a moving tag is
 # not an upgrade path, the same rule the image pins follow (scripts/pin-image.sh)
 # — and the Dockerfile must install *that* ref rather than a second, hardcoded
-# copy of it.
+# copy of it. The Dockerfile carries a second, differently named pin for the demo
+# bundle it bakes in (STARDELT_DEMOS_REF, stardelt-platform#1129): exactly those
+# two pins are allowed, each once.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -29,6 +31,14 @@ makefile_tag=$(sed -n 's/^STARDELT_LIB_TAG[[:space:]]*:*=[[:space:]]*//p' "$make
 
 # The Dockerfile's pin: the build arg's default, `ARG STARDELT_LIB_REF=<sha>`.
 dockerfile_ref=$(sed -n 's/^ARG[[:space:]]\{1,\}STARDELT_LIB_REF=//p' "$dockerfile" | head -1)
+
+# The demo bundle is baked into the image (stardelt-platform#1129), so the Dockerfile
+# carries its commit as a second, differently named pin.
+dockerfile_demos_ref=$(sed -n 's/^ARG[[:space:]]\{1,\}STARDELT_DEMOS_REF=//p' "$dockerfile" | head -1)
+if [ -z "$dockerfile_demos_ref" ]; then
+  echo "check-stardelt-pin: no STARDELT_DEMOS_REF build arg in $dockerfile" >&2
+  exit 1
+fi
 
 # The comment block right above the pin: it names the release the commit is.
 dockerfile_comment=$(awk '
@@ -49,7 +59,7 @@ if [ -z "$dockerfile_ref" ]; then
   exit 1
 fi
 
-for pin in "$makefile_ref" "$dockerfile_ref"; do
+for pin in "$makefile_ref" "$dockerfile_ref" "$dockerfile_demos_ref"; do
   if [[ ! "$pin" =~ ^[0-9a-f]{40}$ ]]; then
     echo "check-stardelt-pin: the pin is not a full commit SHA: ${pin}" >&2
     echo "  A moving tag is not an upgrade path: pin the commit (scripts/pin-image.sh says" >&2
@@ -75,12 +85,27 @@ if ! grep -q 'stardelt\(\[[a-z,]*\]\)\{0,1\} @ git+https://github.com/stardelt/s
   exit 1
 fi
 
-# One commit in the Dockerfile: the ARG default and nothing else.
-sha_count=$(grep -c -oE '[0-9a-f]{40}' "$dockerfile" || true)
-if [ "$sha_count" != "1" ]; then
-  echo "check-stardelt-pin: $dockerfile names ${sha_count} commit SHAs — exactly one (the ARG default) is expected." >&2
+# The archive URL interpolates the ARG: a commit written into it would outlive the pin.
+# shellcheck disable=SC2016
+if ! grep -q 'stardelt-demos/archive/${STARDELT_DEMOS_REF}.tar.gz' "$dockerfile"; then
+  echo "check-stardelt-pin: $dockerfile does not fetch the demo bundle at \${STARDELT_DEMOS_REF}" >&2
   exit 1
 fi
+
+# Two pins in the Dockerfile, each named exactly once: the STARDELT_LIB_REF default and
+# the STARDELT_DEMOS_REF default. A third SHA, or a second copy of either, still fails.
+sha_count=$(grep -oE '[0-9a-f]{40}' "$dockerfile" | wc -l)
+if [ "$sha_count" -ne 2 ]; then
+  echo "check-stardelt-pin: $dockerfile names ${sha_count} commit SHAs — exactly two (the STARDELT_LIB_REF and STARDELT_DEMOS_REF defaults) are expected." >&2
+  exit 1
+fi
+for pin in "$dockerfile_ref" "$dockerfile_demos_ref"; do
+  copies=$(grep -oF "$pin" "$dockerfile" | wc -l)
+  if [ "$copies" -ne 1 ]; then
+    echo "check-stardelt-pin: $dockerfile names $pin ${copies} times — once (its ARG default)." >&2
+    exit 1
+  fi
+done
 
 # The release the commit belongs to is named next to the pin, so a reader knows
 # which version the image ships without counting commits.

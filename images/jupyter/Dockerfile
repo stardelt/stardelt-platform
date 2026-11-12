@@ -133,3 +133,17 @@ RUN python3 -c "from IPython.terminal.ipapp import TerminalIPythonApp as A; a = 
 # The single-user server's framing policy (Nova's origin, passed at spawn) —
 # see the file's docstring for why this exists and what happens without it.
 COPY jupyter_server_config.py /usr/local/etc/jupyter/jupyter_server_config.py
+
+# The demo's shop bundle, baked in (stardelt-platform#1101). The public demo's
+# notebook must not depend on a network clone at spawn: once a visitor has no
+# public egress, the clone fails silently and the demo loses its bundle. Pinned
+# by commit, like the library above; the archive is public, no credential.
+ARG STARDELT_DEMOS_REF=17acac27b896c0f776822c7037983e45cefff52c
+USER root
+RUN python3 -c "import urllib.request; urllib.request.urlretrieve('https://github.com/stardelt/stardelt-demos/archive/${STARDELT_DEMOS_REF}.tar.gz', '/tmp/demos.tar.gz')" \
+    && mkdir -p /opt/stardelt \
+    && tar -xzf /tmp/demos.tar.gz -C /opt/stardelt \
+    && mv "/opt/stardelt/stardelt-demos-${STARDELT_DEMOS_REF}" /opt/stardelt/stardelt-demos \
+    && test -f /opt/stardelt/stardelt-demos/examples/shop-bundle/bundle.yaml \
+    && rm /tmp/demos.tar.gz
+USER ${NB_UID}
