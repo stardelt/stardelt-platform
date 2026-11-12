@@ -1,5 +1,5 @@
 # Lakekeeper — Iceberg REST catalog.
-# Chart: lakekeeper/lakekeeper 0.11.0, appVersion 0.12.2.
+# Chart: lakekeeper/lakekeeper 0.14.0, appVersion 0.15.0.
 #
 # Decisions for the MVP:
 #   - bundled postgres OFF → use CNPG Cluster `lakekeeper-pg`

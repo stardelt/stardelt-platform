@@ -38,7 +38,7 @@
       "registryUrlTemplate": "https://seaweedfs.github.io/seaweedfs/helm"
     },
     {
-      "description": "Makefile pin `LAKEKEEPER_VERSION` -> Helm chart `lakekeeper` from the chart repo the Makefile adds (`https://lakekeeper.github.io/lakekeeper-charts`). datasource=helm is load-bearing here: chart 0.11.0 ships application 0.12.2, so a docker or github-releases datasource would propose an app version that no chart version exists for.",
+      "description": "Makefile pin `LAKEKEEPER_VERSION` -> Helm chart `lakekeeper` from the chart repo the Makefile adds (`https://lakekeeper.github.io/lakekeeper-charts`). datasource=helm is load-bearing here: chart 0.14.0 ships application 0.15.0, so a docker or github-releases datasource would propose an app version that no chart version exists for.",
       "customType": "regex",
       "fileMatch": ["/(^|/)Makefile$/"],
       "matchStrings": ["LAKEKEEPER_VERSION\\s*:=\\s*(?<currentValue>[^\\s#]+)"],
