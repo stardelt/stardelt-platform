@@ -42,9 +42,10 @@ Lakekeeper), because authorization is keyed on the IdP's subjects; a bare
   its protection — only the Lakekeeper catalog pod and its migration Job may
   reach 8080/8081, so no other workload can grant itself permissions. Nothing
   is exposed outside the cluster.
-- **Image.** `openfga/openfga:v1.14.0`, pinned explicitly so a chart bump cannot
-  move the application; Lakekeeper 0.12.2 requires OpenFGA >= 1.11 and is tested
-  against 1.14. Chart pin: `OPENFGA_VERSION` in the Makefile. Licence:
+- **Image.** `openfga/openfga:v1.22.1`, pinned explicitly so a chart bump cannot
+  move the application; it is the pair Lakekeeper 0.15 ships with, and Lakekeeper
+  0.12.2, which is on the lab today, requires OpenFGA >= 1.11. Chart pin:
+  `OPENFGA_VERSION` in the Makefile. Licence:
   Apache-2.0 (permissive policy, `stardelt-docs` → architecture/licenses).
 
 ---
