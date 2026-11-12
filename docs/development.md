@@ -167,7 +167,7 @@ Collaboration/release branches are planned later (issue #38).
 | CloudNative-PG | 0.28.2 | — |
 | SeaweedFS | 4.25.1 | 4.25 |
 | Lakekeeper | 0.11.0 | 0.12.2 |
-| OpenFGA | 0.2.62 | v1.14.0 |
+| OpenFGA | 0.4.1 | v1.22.1 |
 | Trino | 1.45.0 | 484 |
 | Apache Airflow | 1.22.0 | 3.2.2 |
 | Apache Superset | 0.15.5 | 5.0.0 |
