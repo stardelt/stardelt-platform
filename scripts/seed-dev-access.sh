@@ -19,7 +19,8 @@
 # (dev/seed/catalogs.yaml). The seed does NOT apply that file unless
 # `SEED_CATALOGS=1`, and it never recreates a Catalog that does not exist without
 # it: the Catalog objects belong to whoever runs the cluster, and a deleted one
-# may be a decision, not drift.
+# may be a decision, not drift. A run with `SEED_CATALOGS=1` also applies, after
+# the Catalogs, the maintenance principal in `dev/seed/principals.yaml`.
 #
 # What every seed run does create is cheap and invisible: the realm groups
 # `finops` and `analytics`, the people `dev-finops`, `dev-analytics`,
@@ -69,6 +70,7 @@ SEED_ATTRIBUTE=stardelt-managed
 SEED_VALUE=seed
 SEED_SECRET=dev-seed-users
 CATALOGS_FILE=dev/seed/catalogs.yaml
+PRINCIPALS_FILE=dev/seed/principals.yaml
 BASELINE_CATALOGS=(warehouse shared bronze silver gold)
 # The seed's three compute classes (platform#313). `small` is the default one and
 # stays after `unseed`: the default class is a property of the install, the other
@@ -114,7 +116,7 @@ if [ "$YES" != 1 ]; then
       echo "would delete the Catalogs ${FIXTURES_CATALOGS[*]} (never a baseline one) — re-run with YES=1" ;;
     *)
       if [ "$SEED_CATALOGS" = 1 ]; then
-        echo "would create the groups ${SEED_GROUPS[*]}, the users ${SEED_USERS[*]}, Secret $NAMESPACE/$SEED_SECRET, apply $WAREHOUSES_FILE (${SEED_WAREHOUSES[*]}) and $CATALOGS_FILE (SEED_CATALOGS=1) — re-run with YES=1"
+        echo "would create the groups ${SEED_GROUPS[*]}, the users ${SEED_USERS[*]}, Secret $NAMESPACE/$SEED_SECRET, apply $WAREHOUSES_FILE (${SEED_WAREHOUSES[*]}) and $CATALOGS_FILE and $PRINCIPALS_FILE (SEED_CATALOGS=1) — re-run with YES=1"
       else
         echo "would create the groups ${SEED_GROUPS[*]}, the users ${SEED_USERS[*]}, Secret $NAMESPACE/$SEED_SECRET and apply $WAREHOUSES_FILE (${SEED_WAREHOUSES[*]}); no Catalog would be touched (set SEED_CATALOGS=1 to apply $CATALOGS_FILE) — re-run with YES=1"
       fi ;;
@@ -253,6 +255,9 @@ if [ "$mode" = unseed ]; then
   echo "› kept: the default warehouse small, every Catalog (the baseline ${BASELINE_CATALOGS[*]}, and the fixtures if applied),"
   echo "  every Lakekeeper warehouse and every table — deleting a Catalog deletes no data anyway."
   echo "  The existing user analyst is not a seed object and is left alone."
+  # The maintenance principal stays too: it is cheap, it is labelled
+  # stardelt.io/seed: "true", and a person who wants it gone runs
+  # `kubectl -n stardelt delete sp pipeline-stardelt-admins`.
   echo "seed-dev-access: OK — the dev seed people are gone"
   exit 0
 fi
@@ -577,6 +582,21 @@ kubectl apply -f "$WAREHOUSES_FILE"
 if [ "$SEED_CATALOGS" = 1 ]; then
   [ -f "$CATALOGS_FILE" ] || fail "$CATALOGS_FILE is missing"
   kubectl apply -f "$CATALOGS_FILE"
+  [ -f "$PRINCIPALS_FILE" ] || fail "$PRINCIPALS_FILE is missing"
+  # The client and its Secret first: on a chart install no PlatformInstance exists, so the
+  # operator never creates them, and a ServicePrincipal alone stays ready=false with a
+  # maint-<catalog> CronJob that cannot start (stardelt-operator#583). `make sync-principal`
+  # is idempotent and writes the Secret the operator reads on both install paths.
+  NAMESPACE="$NAMESPACE" REALM="$REALM" make --no-print-directory sync-principal \
+    NAME=pipeline-stardelt-admins GROUP=stardelt-admins \
+    || fail "make sync-principal failed for pipeline-stardelt-admins"
+  echo "› principal pipeline-stardelt-admins: client and Secret sp-pipeline-stardelt-admins converged"
+  kubectl apply -f "$PRINCIPALS_FILE"
+  kubectl -n "$NAMESPACE" wait --for=jsonpath='{.status.ready}'=true \
+    serviceprincipal/pipeline-stardelt-admins --timeout=90s \
+    || fail "ServicePrincipal pipeline-stardelt-admins did not become ready in 90 s — read it with: kubectl -n $NAMESPACE get sp pipeline-stardelt-admins -o yaml"
+  echo "› ServicePrincipal pipeline-stardelt-admins: ready — Catalog shared/warehouse report"
+  echo "  MaintenanceReady=True and maint-shared/maint-warehouse appear within five minutes"
   converge_catalogs
   report_catalog_phases
 else

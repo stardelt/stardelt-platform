@@ -941,7 +941,7 @@ catalogs: _context ## Converge Catalogs into Trino catalogs + bridge mappings (r
 # ---------------------------------------------------------------------------
 .PHONY: seed-dev-access unseed-dev-access seed-permission-fixtures unseed-permission-fixtures
 .PHONY: verify-catalog-permissions
-seed-dev-access: _context ## Create the dev seed groups, people, Secret and the three warehouses (no Catalog unless SEED_CATALOGS=1; needs YES=1)
+seed-dev-access: _context ## Create the dev seed groups, people, Secret and the three warehouses (and the baseline Catalogs and their maintenance principal with SEED_CATALOGS=1; needs YES=1)
 	@NAMESPACE=$(NAMESPACE) YES=$(YES) SEED_CATALOGS=$(SEED_CATALOGS) bash scripts/seed-dev-access.sh
 
 unseed-dev-access: _context ## Remove the dev seed users, groups, Secret and the medium/large warehouses (keeps small and every Catalog; needs YES=1)

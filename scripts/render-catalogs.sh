@@ -174,7 +174,11 @@ with open(path) as handle:
             continue
         members = [member for member in rest.split(",") if member]
         break
-print(json.dumps(sorted(set(members))))
+# No spaces: the Makefile expands this output unquoted, so `json.dumps`'s
+# default `", "` separator would split the list into two arguments
+# (platform#1026 verification: an administrator group with two members, the
+# seeded maintenance principal's service account among them).
+print(json.dumps(sorted(set(members)), separators=(",", ":")))
 PY
 )"
     printf -- '--set-json OPABridge.adminUsers=%s\n' "$admins"

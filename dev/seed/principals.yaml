@@ -1,0 +1,22 @@
+# The principals the seeded Catalogs need, next to the Catalogs themselves
+# (stardelt-platform#867, option A). `shared` and `warehouse` are owned by
+# `stardelt-admins`, and the operator names a Catalog's maintenance principal
+# `pipeline-<ownerGroup>` (crates/stardelt-operator/src/maintenance.rs). Without
+# this object the Catalog reports `MaintenanceReady=False NoRunner` and no table
+# is ever compacted or expired.
+#
+# Applied by `SEED_CATALOGS=1 make seed-dev-access YES=1`, after the Catalogs.
+# The seed converges the Keycloak client and the Secret `sp-pipeline-stardelt-admins`
+# with `make sync-principal` first: the operator creates that client itself only on
+# a platform-mode install, and the Secret is the source of truth on both paths.
+apiVersion: stardelt.io/v1alpha1
+kind: ServicePrincipal
+metadata:
+  name: pipeline-stardelt-admins
+  namespace: stardelt
+  labels:
+    stardelt.io/seed: "true"
+spec:
+  ownerGroup: stardelt-admins
+  purpose: maintenance
+  audiences: [trino, lakekeeper]
