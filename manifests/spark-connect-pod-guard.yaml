@@ -1,0 +1,70 @@
+# What the Spark Connect driver may create (platform#1096 question 2).
+#
+# The driver runs every client's code and must create executor pods, so its
+# ServiceAccount `spark-connect` holds pods/create. Without this policy that right
+# also creates: a pod under another ServiceAccount, one that mounts the Keycloak
+# admin Secret, a hostPath or hostNetwork pod, a privileged container, an
+# ephemeral debug container on a running pod.
+#
+# The allow-list is the measured executor shape (lab, 2026-11-12): ServiceAccount
+# `spark-executor`, one configMap volume + one emptyDir, no host access, no
+# init containers, secret values only from Secret `stardelt-s3-creds`, and the
+# repository's Spark image. Spark's shape is a contract: if a future Spark adds a
+# volume type, this policy denies executor creation and `make verify-spark-guard`
+# says which rule — update both together.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: spark-connect-executor-pods
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["UPDATE"]
+        resources: ["pods/ephemeralcontainers"]
+  matchConditions:
+    - name: created-by-spark-connect
+      expression: "request.userInfo.username == 'system:serviceaccount:' + request.namespace + ':spark-connect'"
+  validations:
+    - expression: "object.spec.serviceAccountName == 'spark-executor'"
+      message: "a pod created by the Spark Connect driver must run as ServiceAccount spark-executor"
+    - expression: "!has(object.spec.hostNetwork) || object.spec.hostNetwork == false"
+      message: "the Spark Connect driver may not create a host-network pod"
+    - expression: "!has(object.spec.hostPID) || object.spec.hostPID == false"
+      message: "the Spark Connect driver may not create a host-PID pod"
+    - expression: "!has(object.spec.hostIPC) || object.spec.hostIPC == false"
+      message: "the Spark Connect driver may not create a host-IPC pod"
+    - expression: "!has(object.spec.initContainers) || object.spec.initContainers.size() == 0"
+      message: "the Spark Connect driver may not create a pod with init containers"
+    - expression: "!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.size() == 0"
+      message: "the Spark Connect driver may not add an ephemeral container"
+    - expression: "object.spec.containers.all(c, c.image.startsWith('ghcr.io/stardelt/spark:'))"
+      message: "every container a Spark Connect driver creates must use the stardelt Spark image"
+    - expression: "object.spec.containers.all(c, !has(c.securityContext) || !has(c.securityContext.privileged) || c.securityContext.privileged != true)"
+      message: "the Spark Connect driver may not create a privileged container"
+    - expression: "object.spec.containers.all(c, !has(c.ports) || c.ports.all(p, !has(p.hostPort) || p.hostPort == 0))"
+      message: "the Spark Connect driver may not bind a host port"
+    - expression: "!has(object.spec.volumes) || object.spec.volumes.all(v, has(v.configMap) || has(v.emptyDir))"
+      message: "executor pods may mount only configMap and emptyDir volumes (no secret, hostPath, PVC, projected or csi volume)"
+    - expression: "object.spec.containers.all(c, !has(c.env) || c.env.all(e, !has(e.valueFrom) || !has(e.valueFrom.secretKeyRef) || e.valueFrom.secretKeyRef.name == 'stardelt-s3-creds'))"
+      message: "executor pods may read only Secret stardelt-s3-creds (secretKeyRef)"
+    - expression: "object.spec.containers.all(c, !has(c.envFrom) || c.envFrom.all(e, !has(e.secretRef) || e.secretRef.name == 'stardelt-s3-creds'))"
+      message: "executor pods may read only Secret stardelt-s3-creds (envFrom)"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: spark-connect-executor-pods
+spec:
+  policyName: spark-connect-executor-pods
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: stardelt

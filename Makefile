@@ -81,7 +81,7 @@ CHART_EXTRA ?=
 # client redirect URIs on the app subdomains. Same default as `dev-dns`.
 BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 
-.PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator openfga trino catalogs upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-refresh dev-watch dev-status check-pins check-cnpg-pin verify-pins dev-up dev-down dev-dns dev-dns-down platform-config check-hub-config
+.PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator openfga trino catalogs upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-refresh dev-watch dev-status check-pins check-cnpg-pin verify-pins verify-spark-guard dev-up dev-down dev-dns dev-dns-down platform-config check-hub-config
 .PHONY: chart-deps chart-template chart-install
 .PHONY: verify-backups verify-backups-identity verify-backups-nova verify-backups-openfga verify-backups-all verify-images verify-streaming verify-compute verify-maintenance verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
 .PHONY: backups verify-pgdump offsite-backup export-recovery-secrets import-recovery-secrets
@@ -206,6 +206,9 @@ verify-streaming: _context ## The broker, the Spark Operator's watch and every S
 
 verify-compute: _context ## The SparkCluster CRD, runtime catalogue, Nova RBAC and every cluster's reconcile state (manual)
 	@NS=$(NAMESPACE) bash scripts/verify-compute.sh
+
+verify-spark-guard: _context ## The Spark Connect driver may create executor pods only (platform#1096)
+	@NS=$(NAMESPACE) bash scripts/verify-spark-pod-guard.sh
 
 verify-maintenance: _context ## Every Catalog's maint-<catalog> CronJob, its staggered schedule and its principal (manual)
 	@NS=$(NAMESPACE) bash scripts/verify-maintenance.sh
@@ -586,6 +589,15 @@ install-spark: deps _context ## Install the Spark Connect endpoint (Iceberg on t
 	  kubectl -n $(NAMESPACE) rollout restart deploy/spark-connect; \
 	fi
 	@kubectl -n $(NAMESPACE) rollout status deploy/spark-connect --timeout=5m
+	@# The driver's pod-create right (platform#1096). ValidatingAdmissionPolicy is
+	@# admissionregistration.k8s.io/v1, Kubernetes 1.30+. On an older cluster the
+	@# guard cannot exist; say so instead of failing the install.
+	@if kubectl api-resources --api-group=admissionregistration.k8s.io -o name 2>/dev/null \
+	    | grep -qx 'validatingadmissionpolicies.admissionregistration.k8s.io'; then \
+	  kubectl apply -f manifests/spark-connect-pod-guard.yaml; \
+	else \
+	  echo "› spark-connect pod guard: skipped — ValidatingAdmissionPolicy needs Kubernetes 1.30+"; \
+	fi
 	@kubectl -n $(NAMESPACE) get configmap stardelt-spark-runtimes -o name
 	@echo "Spark Connect ready: sc://spark-connect.$(NAMESPACE).svc.cluster.local:15002 (in-cluster only)"
 	@NS=$(NAMESPACE) bash scripts/verify-compute.sh
@@ -1252,6 +1264,7 @@ uninstall: _context ## Uninstall all stardelt components (reverse order)
 	@kubectl -n $(NAMESPACE) delete configmap access-sync-script --ignore-not-found
 	@kubectl -n $(NAMESPACE) delete configmap trino-warehouses trino-group-file --ignore-not-found
 	@kubectl delete -f manifests/spark.yaml                   --ignore-not-found
+	@kubectl delete -f manifests/spark-connect-pod-guard.yaml --ignore-not-found
 	@kubectl -n $(NAMESPACE) delete configmap stardelt-spark-runtimes --ignore-not-found
 	@kubectl delete -f manifests/trino-tls.yaml               --ignore-not-found
 	@kubectl delete -f manifests/nova-deployment.yaml        --ignore-not-found
