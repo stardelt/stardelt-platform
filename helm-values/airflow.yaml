@@ -93,6 +93,8 @@ apiServer:
       value: stardelt_fab_auth.StardeltFabAuthManager
     - name: PYTHONPATH
       value: /opt/airflow/stardelt-auth
+    - name: STARDELT_TOKEN_USERS
+      value: nova-api
   # Identity contract + Keycloak client secret, projected as files from the
   # ConfigMap/Secret the identity install generates. `optional: true` on each
   # source keeps a platform installed without `make install-identity` booting on
@@ -121,7 +123,7 @@ apiServer:
     # name, so a new `-vN` ConfigMap name rolls the pod; an edit in place does not.
     - name: stardelt-auth-manager
       configMap:
-        name: airflow-auth-manager-v1
+        name: airflow-auth-manager-v2
   extraVolumeMounts:
     - name: stardelt-identity
       mountPath: /opt/airflow/stardelt-identity
