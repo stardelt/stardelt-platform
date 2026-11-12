@@ -74,6 +74,16 @@ ingress:
   # Keycloak only when identity.mode=platform. Example: exposeUnauthenticated: [trino]
   exposeUnauthenticated: []
 
+monitoring:
+  # Render one ServiceMonitor per component that exposes Prometheus metrics on a
+  # Service port, so the customer's Prometheus Operator can select them. Needs the
+  # monitoring.coreos.com/v1 CRDs: Helm does not check them, and `helm install`
+  # fails when the CRDs are absent — leave this off there.
+  enabled: false
+  # Added to every rendered object's labels. The customer's Prometheus selects by
+  # them, e.g. { release: kube-prometheus-stack }.
+  labels: {}
+
 # The Spark runtime catalogue (internal#161 slice 4a): the ConfigMap
 # `stardelt-spark-runtimes`, one runtime per entry. The image pair (Spark image + the notebook
 # image whose Python minor matches) is named by the runtime key; the content lives in
