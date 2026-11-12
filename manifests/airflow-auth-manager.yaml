@@ -8,19 +8,19 @@
 # `nova-api` and `admin` both get 401 from Airflow, and Nova renders that as
 # "the scheduler did not answer" and "Could not read runs".
 #
-# `stardelt_fab_auth.py` keeps the FAB user store and lets the token endpoint
-# check a local password whatever the interactive login type is. A Keycloak user
-# has no local password (FAB stores none for OAuth sign-ins), so people still
-# sign in through OIDC and cannot be issued a token by this route.
+# `stardelt_fab_auth.py` lets the token endpoint check a local password for the
+# service users named in `STARDELT_TOKEN_USERS` (default `nova-api`) while people
+# sign in through OIDC. FAB stores the hash of an empty password for a user it
+# registers through OAuth, so the empty-password check and the allow-list both stay.
 #
 # The api-server mounts this ConfigMap at /opt/airflow/stardelt-auth
 # (helm-values/airflow.yaml, apiServer.extraVolumes/extraVolumeMounts and env).
-# Bump the `-v1` suffix when the module changes: a ConfigMap edit alone does not
+# Bump the `-v2` suffix when the module changes: a ConfigMap edit alone does not
 # roll the pod, while a new volume name does.
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: airflow-auth-manager-v1
+  name: airflow-auth-manager-v2
   namespace: stardelt
   labels: { app.kubernetes.io/part-of: stardelt, stardelt.io/managed-by: platform }
 data:
@@ -37,19 +37,22 @@ data:
     runs" from the same 502.
     """
 
+    import os
     from typing import Any
 
     from airflow.providers.fab.auth_manager.fab_auth_manager import FabAuthManager
+    from flask_appbuilder.const import AUTH_DB, AUTH_LDAP
 
 
     class StardeltFabAuthManager(FabAuthManager):
         """FAB auth manager that also exchanges a local password for an API token."""
 
         def create_token(self, headers: dict[str, str], body: dict[str, Any]):
+            # Break-glass (STARDELT_AUTH_LOCAL_ONLY=1) runs AUTH_DB: the stock manager is right then.
+            if self.security_manager.auth_type in (AUTH_DB, AUTH_LDAP):
+                return super().create_token(headers, body)
             username = body.get("username")
             password = body.get("password")
-            # The same two checks as FabAuthManager.create_token: a missing field
-            # is a malformed request (400), not a failed sign-in (401).
             if (
                 not isinstance(username, str)
                 or not isinstance(password, str)
@@ -57,11 +60,13 @@ data:
                 or not password.strip("\x00")
             ):
                 raise ValueError("Username and password must be provided")
-
-            # The stock manager gates this on AUTH_TYPE == AUTH_DB. The gate is
-            # about the interactive login form, not about service accounts, so ask
-            # the user store directly. `rotate_session_id=False` because there is
-            # no browser session to rotate.
-            return self.security_manager.auth_user_db(
-                username, password, rotate_session_id=False
-            )
+            # Only the platform's service users may trade a password for a token. A person
+            # signs in through OIDC; FAB stores the hash of an empty password for them.
+            allowed = {
+                name.strip()
+                for name in os.environ.get("STARDELT_TOKEN_USERS", "nova-api").split(",")
+                if name.strip()
+            }
+            if username not in allowed:
+                return None  # the route answers 401, as for a wrong password
+            return self.security_manager.auth_user_db(username, password, rotate_session_id=False)
