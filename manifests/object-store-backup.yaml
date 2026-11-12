@@ -20,7 +20,7 @@
 # second bucket in the same store, which covers the realistic accidents (a dropped
 # bucket, a bad lifecycle rule, `aws s3 rm --recursive`) but not losing the store.
 # The off-cluster copy is manifests/offsite-backup.yaml (rclone to a second S3
-# destination from Secret backup-offsite); README "Backups" → "Off-cluster copy".
+# destination from Secret backup-offsite); docs/backups.md → "Off-cluster copy".
 #
 # Correction (stardelt-docs#61): this comment used to say rclone "hangs against this
 # S3 endpoint". Re-verified 2026-10-18: rclone 1.68.2 and 1.75.2 both work against

@@ -12,7 +12,7 @@
 # Single-user pods run stardelt's own image (images/jupyter/Dockerfile) and get
 # the signed-in user's Keycloak token in their environment as `TRINO_TOKEN`
 # (hub.extraConfig `20-notebook-identity`), so the shipped quickstart queries the
-# warehouse as that user. See the README, "Notebooks: the user's own identity,
+# warehouse as that user. See docs/identity.md, "Notebooks: the user's own identity,
 # inside the pod".
 #
 # Ephemeral per-user storage, small resources so it fits the cheap single node.
