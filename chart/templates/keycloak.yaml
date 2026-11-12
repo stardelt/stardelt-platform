@@ -155,6 +155,9 @@ spec:
     - name: http
       port: 8080
       targetPort: http
+    - name: metrics
+      port: 9000
+      targetPort: management
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -203,6 +206,8 @@ spec:
             - { name: KC_HTTP_ENABLED, value: "true" }
             - { name: KC_PROXY_HEADERS, value: xforwarded }
             - { name: KC_HEALTH_ENABLED, value: "true" }
+            # Prometheus text on the management port (#607); the ingress never exposes 9000.
+            - { name: KC_METRICS_ENABLED, value: "true" }
             - { name: KC_CACHE, value: local }
             - { name: JAVA_OPTS_KC_HEAP, value: "-XX:MaxRAMPercentage=65 -XX:InitialRAMPercentage=25" }
             - name: KC_BOOTSTRAP_ADMIN_USERNAME
