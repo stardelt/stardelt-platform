@@ -1,0 +1,67 @@
+# The Airflow auth manager the API server runs (platform#1047).
+#
+# The FAB provider only issues `/auth/token` JWTs when FAB's AUTH_TYPE is AUTH_DB
+# or AUTH_LDAP (`FabAuthManager.create_token`), and this platform runs
+# AUTH_TYPE=AUTH_OAUTH so people sign in through Keycloak. That gate is about the
+# interactive login form, not about the service users the platform provisions, so
+# a stock FabAuthManager lets nobody exchange a username and password for a token:
+# `nova-api` and `admin` both get 401 from Airflow, and Nova renders that as
+# "the scheduler did not answer" and "Could not read runs".
+#
+# `stardelt_fab_auth.py` keeps the FAB user store and lets the token endpoint
+# check a local password whatever the interactive login type is. A Keycloak user
+# has no local password (FAB stores none for OAuth sign-ins), so people still
+# sign in through OIDC and cannot be issued a token by this route.
+#
+# The api-server mounts this ConfigMap at /opt/airflow/stardelt-auth
+# (helm-values/airflow.yaml, apiServer.extraVolumes/extraVolumeMounts and env).
+# Bump the `-v1` suffix when the module changes: a ConfigMap edit alone does not
+# roll the pod, while a new volume name does.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: airflow-auth-manager-v1
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt, stardelt.io/managed-by: platform }
+data:
+  stardelt_fab_auth.py: |
+    """The Airflow auth manager stardelt runs: FAB users for the API, Keycloak for people.
+
+    platform#1047. `FabAuthManager.create_token` asks the FAB user store for a
+    password only when FAB's AUTH_TYPE is AUTH_DB or AUTH_LDAP. The API server
+    runs AUTH_TYPE=AUTH_OAUTH so people sign in through Keycloak, so with the
+    stock manager no username and password can be exchanged for a token -- not
+    even for the service users the platform itself creates (`nova-api` for Nova,
+    `admin` from the airflow-admin Secret). Nova then sees 401 on every call and
+    shows "the scheduler did not answer"; the runs page shows "Could not read
+    runs" from the same 502.
+    """
+
+    from typing import Any
+
+    from airflow.providers.fab.auth_manager.fab_auth_manager import FabAuthManager
+
+
+    class StardeltFabAuthManager(FabAuthManager):
+        """FAB auth manager that also exchanges a local password for an API token."""
+
+        def create_token(self, headers: dict[str, str], body: dict[str, Any]):
+            username = body.get("username")
+            password = body.get("password")
+            # The same two checks as FabAuthManager.create_token: a missing field
+            # is a malformed request (400), not a failed sign-in (401).
+            if (
+                not isinstance(username, str)
+                or not isinstance(password, str)
+                or not username
+                or not password.strip("\x00")
+            ):
+                raise ValueError("Username and password must be provided")
+
+            # The stock manager gates this on AUTH_TYPE == AUTH_DB. The gate is
+            # about the interactive login form, not about service accounts, so ask
+            # the user store directly. `rotate_session_id=False` because there is
+            # no browser session to rotate.
+            return self.security_manager.auth_user_db(
+                username, password, rotate_session_id=False
+            )
