@@ -139,9 +139,13 @@ into the catalog:
 |--------|--------------------|-------|
 | `browse` | `describe` | metadata and existence; also the ability to address the catalog |
 | `select` | `select` | read data |
-| `write` | `modify` | insert, update, delete, merge, alter; also drop and rename |
+| `write` | `write` | insert, update, delete, merge, alter, replace; not drop or rename |
 | `create` | `create` | create schemas and tables inside it |
 | `manage` | `manage_grants` | grant and revoke on this warehouse — **not** `ownership`, which would include every data right |
+
+Drop and rename are platform-administrator actions in v0.4 (the `project_admin` role); a
+data engineer rebuilds a table with `CREATE OR REPLACE TABLE`, which the bridge checks as
+a `commit`.
 
 The owner group gets `manage_grants` and nothing else. The admin group
 (`stardelt-admins`) always gets a role, its members, and `project_admin` on the
@@ -454,8 +458,12 @@ The permission model, in the words a person uses:
   | `browse` | see the catalog in a list, open it, list its schemas, tables and columns |
   | `select` | read rows (`SELECT`) |
   | `write` | insert, update, delete, and change a table |
-  | `create` | create and drop schemas and tables |
+  | `create` | create schemas and tables inside it |
   | `manage` | grant and revoke, transfer ownership, drop and rename the catalog — what the owner group holds; it does not imply `select` |
+
+  Drop and rename are platform-administrator actions in v0.4 (the `project_admin` role);
+  a data engineer rebuilds a table with `CREATE OR REPLACE`, which the bridge checks as a
+  `commit`.
 
   A group with `browse` and no `select` sees the catalog and gets a refusal as soon as it
   reads a row: "may look, may not read" is a supported state (that is `product` for the

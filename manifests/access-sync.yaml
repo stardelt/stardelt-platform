@@ -7,7 +7,7 @@
 # Part 2 (#306) adds the identity plumbing to part 1's loop: a Keycloak group becomes
 # a Lakekeeper role of the same name, the group's members are the role's assignees by
 # OIDC `sub` (`oidc~<sub>`, valid before a person has ever signed in), our verbs become
-# Lakekeeper relations (`browse`→`describe`, `select`→`select`, `write`→`modify`,
+# Lakekeeper relations (`browse`→`describe`, `select`→`select`, `write`→`write`,
 # `create`→`create`, `manage`→`manage_grants`; the owner group gets `manage_grants`
 # only), and the admin group's role holds `project_admin` on the project. The realm is
 # only read: client `trino-group-sync` (`view-users` on `realm-management`), the
