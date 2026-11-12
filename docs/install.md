@@ -111,6 +111,12 @@ bootstrap), converges the access-sync and then runs the verify targets
 (`verify-trino-auth`, `verify-catalog-permissions`, `verify-backups-all`). It
 is safe to run twice.
 
+`make trino` on its own checks the identity contract before it renders: if ConfigMap
+`stardelt-identity` lacks `tokenEndpoint` or `trinoUrl` it runs `scripts/identity-bootstrap.sh`
+once (the repository's base domain is the Makefile's `BASE_DOMAIN`). A `make trino` on an
+install that predates a new contract key therefore repairs the ConfigMap instead of leaving
+the coordinator in `CrashLoopBackOff` (`Environment variable is not set: CATALOG_TOKEN_URL`).
+
 Prove that for yourself — the gate snapshots every object of the platform,
 runs the flow again and compares:
 
