@@ -42,5 +42,7 @@ must_fail "$plain" seaweedfs-master 9333 "master"
 must_fail "$plain" seaweedfs-volume 8080 "volume"
 must_pass "$plain" seaweedfs-s3 8333 "S3 gateway (control)"
 must_pass "$peer" seaweedfs-filer 8888 "SeaweedFS pod -> filer"
-[ "$problems" -eq 0 ] && { echo "PASS (5 of 5)"; exit 0; }
-echo "FAIL ($problems problem(s))"; exit 1
+# The FAIL branch exits first on purpose: a trailing unconditional `exit` makes
+# ShellCheck (0.9 SC2317, 0.11 SC2329) call the trap-only `cleanup` unreachable.
+[ "$problems" -eq 0 ] || { echo "FAIL ($problems problem(s))"; exit 1; }
+echo "PASS (5 of 5)"
