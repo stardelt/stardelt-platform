@@ -39,6 +39,16 @@ class SparkExecutorIdentityTest(unittest.TestCase):
         sa = self.by_name("ServiceAccount", "spark-connect")
         self.assertIsNot(sa.get("automountServiceAccountToken"), False)
 
+    def test_the_driver_role_grants_no_services_and_no_pvcs(self):
+        role = self.by_name("Role", "spark-connect")
+        resources = [r["resources"] for r in role["rules"]]
+        self.assertEqual(resources, [["pods"], ["configmaps"]])
+
+    def test_the_driver_role_cannot_update_or_collect_delete_configmaps(self):
+        role = self.by_name("Role", "spark-connect")
+        configmaps = next(r for r in role["rules"] if r["resources"] == ["configmaps"])
+        self.assertEqual(configmaps["verbs"], ["get", "list", "create", "delete"])
+
     def test_the_ingress_policy_still_admits_executors(self):
         policy = self.by_name("NetworkPolicy", "spark-connect-ingress")
         rules = policy["spec"]["ingress"]

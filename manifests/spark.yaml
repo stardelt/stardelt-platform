@@ -49,10 +49,15 @@ metadata:
   labels: { app.kubernetes.io/name: spark-executor, app.kubernetes.io/part-of: stardelt }
 automountServiceAccountToken: false
 ---
-# The driver creates/deletes executor pods through the Kubernetes scheduler
-# backend, so it needs exactly that: manage pods in its own namespace. Services
-# are for the driver endpoint if this ever moves to cluster mode; configmaps for
-# Spark's own cluster-mode resources.
+# The driver creates and deletes executor pods through the Kubernetes scheduler
+# backend, so it needs that: manage pods in its own namespace, and one ConfigMap
+# per session that carries the executor configuration (measured 2026-11-12: one
+# `spark-exec-<hash>-conf-map` per query, mounted as `spark-conf-volume-exec`).
+# It needs no Services and no PVCs (measured: a shuffle query creates neither),
+# and it must not `update` or `deletecollection` ConfigMaps: a client's code runs
+# in the driver, and those verbs would rewrite or remove another workload's
+# ConfigMap (platform#1096, slice 3). The name pattern is enforced by the
+# `spark-connect-configmaps` admission policy in spark-connect-pod-guard.yaml.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -64,14 +69,8 @@ rules:
     resources: ["pods"]
     verbs: ["get", "list", "watch", "create", "delete", "deletecollection"]
   - apiGroups: [""]
-    resources: ["services"]
-    verbs: ["get", "create", "delete", "deletecollection"]
-  - apiGroups: [""]
     resources: ["configmaps"]
-    verbs: ["get", "list", "create", "update", "delete", "deletecollection"]
-  - apiGroups: [""]
-    resources: ["persistentvolumeclaims"]
-    verbs: ["get", "list", "create", "delete", "deletecollection"]
+    verbs: ["get", "list", "create", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

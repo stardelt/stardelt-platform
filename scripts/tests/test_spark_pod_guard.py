@@ -69,6 +69,31 @@ class SparkPodGuardTest(unittest.TestCase):
         selector = self.binding["spec"]["matchResources"]["namespaceSelector"]
         self.assertEqual(selector["matchLabels"]["kubernetes.io/metadata.name"], "stardelt")
 
+    def test_the_config_map_policy_is_cluster_scoped_and_fails_closed(self):
+        policy = next(d for d in self.docs
+                      if d.get("kind") == "ValidatingAdmissionPolicy"
+                      and d["metadata"]["name"] == "spark-connect-configmaps")
+        self.assertNotIn("namespace", policy["metadata"])
+        self.assertEqual(policy["spec"]["failurePolicy"], "Fail")
+        self.assertEqual(
+            policy["spec"]["matchConstraints"]["resourceRules"],
+            [{"apiGroups": [""], "apiVersions": ["v1"],
+              "operations": ["CREATE", "DELETE"], "resources": ["configmaps"]}],
+        )
+        self.assertEqual(
+            [v["expression"] for v in policy["spec"]["validations"]],
+            ["request.name.startsWith('spark-') && request.name.endsWith('-conf-map')"],
+        )
+
+    def test_the_config_map_binding_denies_in_the_platform_namespace(self):
+        binding = next(d for d in self.docs
+                       if d.get("kind") == "ValidatingAdmissionPolicyBinding"
+                       and d["metadata"]["name"] == "spark-connect-configmaps")
+        self.assertEqual(binding["spec"]["policyName"], "spark-connect-configmaps")
+        self.assertEqual(binding["spec"]["validationActions"], ["Deny"])
+        selector = binding["spec"]["matchResources"]["namespaceSelector"]
+        self.assertEqual(selector["matchLabels"]["kubernetes.io/metadata.name"], "stardelt")
+
 
 if __name__ == "__main__":
     unittest.main()

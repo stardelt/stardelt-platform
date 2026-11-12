@@ -68,3 +68,42 @@ spec:
     namespaceSelector:
       matchLabels:
         kubernetes.io/metadata.name: stardelt
+---
+# What ConfigMaps the driver may create or delete (platform#1096, slice 3).
+#
+# Spark writes one ConfigMap per session (`spark-exec-<16 hex>-conf-map`, measured
+# on the lab 2026-11-12) and mounts it into the executors. A client's code runs in
+# the driver, so without this name filter a session could create or delete any
+# ConfigMap in the namespace — `trino-catalog`, `keycloak-realm`, `airflow-config`.
+# The Role drops `update` and `deletecollection`; this policy bounds the two verbs
+# it keeps (`create`, `delete`) to Spark's own names.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: spark-connect-configmaps
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "DELETE"]
+        resources: ["configmaps"]
+  matchConditions:
+    - name: created-by-spark-connect
+      expression: "request.userInfo.username == 'system:serviceaccount:' + request.namespace + ':spark-connect'"
+  validations:
+    - expression: "request.name.startsWith('spark-') && request.name.endsWith('-conf-map')"
+      message: "the Spark Connect driver may create or delete only its own spark-*-conf-map ConfigMaps"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: spark-connect-configmaps
+spec:
+  policyName: spark-connect-configmaps
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: stardelt
