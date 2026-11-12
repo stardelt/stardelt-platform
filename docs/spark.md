@@ -71,6 +71,11 @@ Trino, Lakekeeper, S3 and the Kubernetes API to every user pod for the same feat
 rule is the point (stardelt-platform#90). Spark pods are not part of the umbrella chart; when
 they are absent the rule matches nothing.
 
+Egress alone is not the whole gate: the server's own ingress policy (`NetworkPolicy
+spark-connect-ingress` in `manifests/spark.yaml`) admits members' notebook pods on 15002 and the
+server's executor pods, nothing else. The public demo's notebook cannot open a Spark session;
+members can.
+
 The image is `ghcr.io/stardelt/spark` (`images/spark/Dockerfile`): Apache Spark 4.1.4
 plus the Iceberg 1.12 runtime and AWS bundle. The jars are baked in at image build
 time (checksum-verified from Maven Central), so a pod never downloads dependencies —

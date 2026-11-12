@@ -460,6 +460,7 @@ singleuser:
   #
   #   egress rule                              reaches
   #   podSelector spark-connect + 15002        Spark Connect, and nothing else on that port
+  #                                            (the server admits members only: manifests/spark.yaml, spark-connect-ingress)
   #   podSelector trino coordinator + 8443     the warehouse's TLS endpoint, nothing else
   #   podSelector openbao + 8200               the secret store, for stardelt.connection()
   #
