@@ -567,12 +567,31 @@ for catalog, schema, table in DATA_TABLES:
 
 # -- table 3: reads that must keep working --------------------------------
 if not data_only:
+    # The information_schema row is a read that must keep working, so it has to name a catalog
+    # every principal can reach. `warehouse` is the platform's technical catalog and
+    # administrators only since platform#495/#499; naming it here asserted a deny and went red
+    # on 2026-11-03 (platform#1077). Pick from the live layout instead of naming a catalog,
+    # for the reason in #365's comment on table 4. The deny on `warehouse` is still tested —
+    # by table 4's matrix rows, which take their expectation from the same grants.
+    browsable_by_all = [
+        catalog for catalog in catalog_names
+        if all(expect_by_catalog[catalog][name]["browse"] for name in names)
+    ]
+    if not browsable_by_all:
+        sys.exit(
+            "bridge-replay: no catalog in the live layout is browsable by every principal "
+            f"({', '.join(names)}); table 3's information_schema row has nothing to probe. "
+            "Check the Catalog objects' grants — scripts/lib/catalog-layout.py reads them."
+        )
+    infoschema_catalog = browsable_by_all[0]
+
     for job, operation, resource in (
         ("req_select1", "ExecuteQuery", None),
         ("req_nodes", "SelectFromColumns",
          {"table": {"catalogName": "system", "schemaName": "runtime", "tableName": "nodes"}}),
         ("req_infoschema", "SelectFromColumns",
-         {"table": {"catalogName": "warehouse", "schemaName": "information_schema", "tableName": "tables"}}),
+         {"table": {"catalogName": infoschema_catalog, "schemaName": "information_schema",
+                    "tableName": "tables"}}),
     ):
         action = {"operation": operation}
         if resource:
