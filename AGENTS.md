@@ -49,7 +49,7 @@ CI (`.github/workflows/ci.yml`): yamllint on `helm-values/` + `manifests/`,
 - **PR-only.** Never push to `main`; branch off `origin/main` and keep PRs small.
 - **License policy: OSI-permissive only.** The single documented exception is OpenBao
   (MPL-2.0) — see `../stardelt-docs/docs/architecture/licenses.md`.
-- Chart bumps arrive as Renovate PRs; README tables and `ci.yml` carry hand-maintained
+- Chart bumps arrive as Renovate PRs; `chart/Chart.yaml` and `ci.yml` carry hand-maintained
   copies of the pins — keep them in sync.
 - Read the master spec first; never add a component without a contract and a license.
 - Never commit a default credential. `scripts/check-no-default-secrets.sh` (CI) fails on the known ones; generate values at install time instead.
