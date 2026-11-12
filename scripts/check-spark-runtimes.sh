@@ -74,11 +74,10 @@ dockerfile_spark=$(grep -oE '^FROM apache/spark:[0-9]+\.[0-9]+\.[0-9]+' "$spark_
 [ "$catalogue_spark" = "$dockerfile_spark" ] \
   || fail "sparkVersion differs: $catalogue has '$catalogue_spark', $spark_dockerfile builds '$dockerfile_spark'"
 
-# --- 4. serviceAccount == the ServiceAccount in manifests/spark.yaml ----------
+# --- 4. serviceAccount == the executor ServiceAccount in manifests/spark.yaml --
 catalogue_sa=$(jq -r --arg n "$runtime" '.[$n].serviceAccount' "$catalogue")
-manifest_sa=$(awk '/^kind: ServiceAccount$/ { found = 1 }
-                   found && /^[[:space:]]+name:/ { print $2; exit }' "$manifest")
-[ -n "$manifest_sa" ] || fail "no ServiceAccount name found in $manifest"
+manifest_sa=$(awk '/^[[:space:]]*spark\.kubernetes\.authenticate\.executor\.serviceAccountName[[:space:]]/ { print $2; exit }' "$manifest")
+[ -n "$manifest_sa" ] || fail "no executor serviceAccountName in $manifest"
 [ "$catalogue_sa" = "$manifest_sa" ] \
   || fail "serviceAccount differs: $catalogue has '$catalogue_sa', $manifest has '$manifest_sa'"
 
