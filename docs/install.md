@@ -332,7 +332,7 @@ Nova's state store (`nova-pg`, database `nova`: saved queries, personal settings
 
 With `nova.secretStore.url` set, the chart also renders the `nova-connections` Role and RoleBinding: `get`, `list`, `create`, `delete` and `patch` on `connections.stardelt.io` in the release namespace — nothing else, no Secrets access. `patch` is for the break-glass notice Nova sets as an annotation on the `Connection`. Example: `--set nova.secretStore.url=http://openbao.<namespace>.svc.cluster.local:8200`.
 
-`make verify-backups` expects recent write activity on the catalog: its WAL-freshness check fails on an idle cluster, which is correct. The SeaweedFS filer needs **512Mi** of memory — at 256Mi it was OOM-killed in a loop and took S3 writes down with it (platform#230); raise it only with a measured peak, never by lowering another limit.
+`make verify-backups` checks that the bucket has every WAL segment PostgreSQL has queued for archiving: the current segment is archived, or the one before it is and `pg_wal/archive_status` holds no `.ready` file. An idle cluster passes at any age; a segment that is waiting behind is a gap. The SeaweedFS filer needs **512Mi** of memory — at 256Mi it was OOM-killed in a loop and took S3 writes down with it (platform#230); raise it only with a measured peak, never by lowering another limit.
 
 ---
 

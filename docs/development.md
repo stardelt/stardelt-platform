@@ -11,7 +11,7 @@ Part of the [stardelt-platform](../README.md) manual.
 | `install-core` | Core only (storage + catalog + query + Nova) — fits a small node; `SLIM=1` for 8 GB |
 | `verify-backup-config` | Post-apply guard (also run by both install targets): the live `lakekeeper-pg` Cluster must still declare `spec.backup`, or the command fails loudly |
 | `verify-backups-nova` | Same full WAL check for `nova-pg` (`s3://backups/nova-pg/wals/`) |
-| `verify-backups` | Full WAL check: `spec.backup` + the newest object in `s3://backups/lakekeeper-pg/wals/` is younger than `MAX_AGE_SECONDS` (900) + it matches `pg_stat_archiver.last_archived_wal`. `SKIP_OBJECTS=1` skips the S3 half |
+| `verify-backups` | Full WAL check: `spec.backup` + the bucket covers every WAL segment PostgreSQL has queued (the current segment, or the previous one with no `.ready` file) + it matches `pg_stat_archiver.last_archived_wal`. `SKIP_OBJECTS=1` skips the S3 half |
 | `verify-backups-identity` | Same full WAL check for `keycloak-pg` (`s3://backups/keycloak-pg/wals/`) |
 | `verify-backups-openfga` | Same full WAL check for `openfga-pg` (`s3://backups/openfga-pg/wals/`) |
 | `backups` | Apply the two `pg_dump` CronJobs (`superset-pg-dump`, `airflow-pg-dump`) from `manifests/pg-dump-backup.yaml` |

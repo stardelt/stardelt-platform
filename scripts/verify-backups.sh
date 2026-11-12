@@ -4,6 +4,7 @@
 #   make verify-backups                 # full check
 #   make verify-backup-config           # config only — the post-apply guard
 #   bash scripts/verify-backups.sh --config-only
+#   bash scripts/verify-backups.sh --self-test   # exercise the archive_covers() rule, no cluster
 #
 # Why this exists (stardelt-platform#59): `kubectl apply` is client-side apply, so
 # applying a manifest whose `backup:` block is missing *removes* spec.backup from the
@@ -14,8 +15,12 @@
 # *bucket* against the *database* instead of trusting either:
 #
 #   (a) the live Cluster declares spec.backup.barmanObjectStore.destinationPath
-#   (b) the newest object under <destinationPath>/<cluster>/wals/ is younger than
-#       MAX_AGE_SECONDS (default 900 = 3 missed 5 min archive_timeout windows)
+#   (b) the bucket has everything Postgres *asked* to archive: the current WAL
+#       segment is archived, or the segment before it is and pg_wal/archive_status
+#       holds no .ready file. A segment that holds no records is never switched by
+#       archive_timeout, so an idle cluster passes at any age; a queued segment
+#       that is missing from the bucket is a gap. (The old wall-clock freshness
+#       test could not tell a quiet store from a dead archiver: both look old.)
 #   (c) pg_stat_archiver.last_archived_wal — read *before* the listing — appears as an
 #       object under wals/. A no-op archiver advances last_archived_wal while the
 #       bucket stays behind; that disagreement is what the incident produced.
@@ -39,7 +44,6 @@
 #                     CLUSTER here, because stardelt-demos exports CLUSTER for
 #                     the *kind* cluster and that would otherwise be read as this
 #                     Cluster (#76).
-#   MAX_AGE_SECONDS   default 900
 #   SKIP_OBJECTS=1    skip (b)+(c) — for environments without S3 credentials or
 #                     access; (a) still runs. Deliberate escape, not a way to make
 #                     a red check green.
@@ -51,16 +55,17 @@ set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-stardelt}"
 CLUSTER="${CLUSTER:-lakekeeper-pg}"
-MAX_AGE_SECONDS="${MAX_AGE_SECONDS:-900}"
 S3_CHECK_IMAGE="${S3_CHECK_IMAGE:-amazon/aws-cli:2.17.0}"
 SKIP_OBJECTS="${SKIP_OBJECTS:-}"
+SELF_TEST=0
 
 CONFIG_ONLY=0
 for arg in "$@"; do
   case "$arg" in
     --config-only) CONFIG_ONLY=1 ;;
+    --self-test) SELF_TEST=1 ;;
     *)
-      echo "usage: $0 [--config-only]" >&2
+      echo "usage: $0 [--config-only|--self-test]" >&2
       exit 2
       ;;
   esac
@@ -69,6 +74,50 @@ done
 ok()   { printf '✓ %s\n' "$*"; }
 info() { printf '› %s\n' "$*"; }
 err()  { printf '✗ %s\n' "$*" >&2; }
+
+segment_of() {
+  # The WAL segment a bucket key names: `<prefix>/<segment>[.<lsn>.backup].gz` → `<segment>`.
+  local base="${1##*/}"
+  base="${base%.gz}"
+  printf '%s' "${base%%.*}"
+}
+
+previous_segment() {
+  # The 24-character segment name one before $1 (the last 8 hex digits carry the number).
+  local head="${1:0:16}" tail="${1:16:8}"
+  printf '%s%08X' "$head" $(( (16#$tail - 1) & 0xFFFFFFFF ))
+}
+
+archive_covers() {
+  # 0 when the bucket has everything PostgreSQL *asked* to archive: the current segment is
+  # archived (quiet store), or the segment before it is archived and nothing is queued for
+  # archiving (`ready` = number of `.ready` files in pg_wal/archive_status). A segment that
+  # holds no records is never switched, so `previous` + ready=0 is healthy at any age.
+  local current="$1" newest="$2" ready="$3"
+  [ "$newest" = "$current" ] && return 0
+  [ "$newest" = "$(previous_segment "$current")" ] && [ "$ready" = 0 ] && return 0
+  return 1
+}
+
+if [ "$SELF_TEST" = 1 ]; then
+  failures=0
+  expect() { # expect <0|1> <label> <current> <newest> <ready>
+    local want="$1" label="$2"; shift 2
+    if archive_covers "$@"; then got=0; else got=1; fi
+    if [ "$got" = "$want" ]; then ok "self-test: $label"; else err "self-test: $label (wanted $want, got $got)"; failures=$((failures + 1)); fi
+  }
+  check_eq() { # check_eq <label> <actual> <expected>
+    if [ "$2" = "$3" ]; then ok "self-test: $1"; else err "self-test: $1 (got '$2')"; failures=$((failures + 1)); fi
+  }
+  check_eq 'plain key' "$(segment_of 'openfga-pg/wals/0000000100000000/0000000100000000000000C9.gz')" '0000000100000000000000C9'
+  check_eq 'label key' "$(segment_of 'openfga-pg/wals/0000000100000000/0000000100000000000000C9.00000028.backup.gz')" '0000000100000000000000C9'
+  check_eq 'previous segment' "$(previous_segment '0000000100000000000000CA')" '0000000100000000000000C9'
+  expect 0 'quiet store: current segment archived' '0000000100000000000000C9' '0000000100000000000000C9' 0
+  expect 0 'open, empty segment: previous archived, nothing queued' '0000000100000000000000CA' '0000000100000000000000C9' 0
+  expect 1 'dead archiver: a segment is queued' '0000000100000000000000CA' '0000000100000000000000C9' 1
+  expect 1 'dead archiver: two segments behind' '0000000100000000000000CB' '0000000100000000000000C9' 0
+  exit "$failures"
+fi
 
 cluster_jsonpath() {
   kubectl -n "$NAMESPACE" get cluster "$CLUSTER" -o jsonpath="$1"
@@ -159,14 +208,21 @@ fi
 if ! stats="$(kubectl -n "$NAMESPACE" exec "$primary" -c postgres -- \
   psql -U postgres -d postgres -At -F'|' -c \
   "select archived_count, failed_count, coalesce(last_archived_wal, ''), \
-          coalesce(to_char(last_archived_time at time zone 'UTC', 'YYYY-MM-DD HH24:MI:SS'), '') \
+          coalesce(to_char(last_archived_time at time zone 'UTC', 'YYYY-MM-DD HH24:MI:SS'), ''), \
+          coalesce(pg_walfile_name(pg_current_wal_lsn()), ''), \
+          (select count(*) from pg_ls_archive_statusdir() where name like '%.ready') \
    from pg_stat_archiver;" 2>&1)"; then
   err "cannot read pg_stat_archiver from $NAMESPACE/$primary:"
   printf '%s\n' "$stats" >&2
   exit 1
 fi
 
-IFS='|' read -r archived_count failed_count last_wal last_time <<<"$stats"
+IFS='|' read -r archived_count failed_count last_wal last_time current_seg ready_count <<<"$stats"
+
+if [ -z "$current_seg" ]; then
+  err "cannot read the current WAL segment from $NAMESPACE/$CLUSTER."
+  exit 1
+fi
 
 if [ -z "$last_wal" ]; then
   err "pg_stat_archiver has no last_archived_wal on $NAMESPACE/$CLUSTER ($archived_count archived, $failed_count failed)."
@@ -198,12 +254,8 @@ if [ -z "$access_name" ] || [ -z "$access_key" ] || [ -z "$secret_name" ] || [ -
   exit 1
 fi
 
-# Runs inside the listing pod: print the pod's own idea of "now" (so the
-# freshness comparison does not depend on the caller's clock), then the listing.
+# Runs inside the listing pod: the recursive listing of the WAL prefix.
 pod_command="$(cat <<'POD_SCRIPT'
-now="$(date -u +%s)"
-printf "NOW %s\n" "$now"
-printf "DEADLINE %s\n" "$(date -u -d "@$(( now - MAX_AGE_SECONDS ))" "+%Y-%m-%d %H:%M:%S")"
 if [ -n "${AWS_ENDPOINT_URL:-}" ]; then set -- --endpoint-url "$AWS_ENDPOINT_URL"; else set --; fi
 aws s3 ls --recursive "$S3_WAL_URI" "$@"
 POD_SCRIPT
@@ -215,7 +267,6 @@ pod_spec="$(jq -n \
   --arg image "$S3_CHECK_IMAGE" \
   --arg cmd "$pod_command" \
   --arg wal_uri "$wal_uri" \
-  --arg max_age "$MAX_AGE_SECONDS" \
   --arg endpoint "$endpoint" \
   --arg a_name "$access_name" --arg a_key "$access_key" \
   --arg s_name "$secret_name" --arg s_key "$secret_key" \
@@ -232,7 +283,6 @@ pod_spec="$(jq -n \
         env: (
           [
             { name: "S3_WAL_URI", value: $wal_uri },
-            { name: "MAX_AGE_SECONDS", value: $max_age },
             { name: "AWS_ACCESS_KEY_ID", valueFrom: { secretKeyRef: { name: $a_name, key: $a_key } } },
             { name: "AWS_SECRET_ACCESS_KEY", valueFrom: { secretKeyRef: { name: $s_name, key: $s_key } } }
           ]
@@ -261,14 +311,7 @@ if ! probe_out="$(kubectl -n "$NAMESPACE" run "$pod_name" \
   exit 1
 fi
 
-deadline="$(printf '%s\n' "$probe_out" | sed -n 's/^DEADLINE //p' | head -n 1)"
 listing="$(printf '%s\n' "$probe_out" | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} ' || true)"
-
-if [ -z "$deadline" ]; then
-  err "the listing pod produced no deadline — unexpected output:"
-  printf '%s\n' "$probe_out" >&2
-  exit 1
-fi
 
 count="$(printf '%s\n' "$listing" | grep -c . || true)"
 if [ "$count" = 0 ]; then
@@ -291,12 +334,12 @@ newest="$(printf '%s\n' "$listing" | awk '
 newest_stamp="${newest%%|*}"
 newest_key="${newest##*|}"
 
-if [[ "$newest_stamp" > "$deadline" ]]; then
-  ok "newest WAL object $newest_key @ ${newest_stamp}Z is fresh (deadline ${deadline}Z, MAX_AGE_SECONDS=$MAX_AGE_SECONDS)"
+newest_seg="$(segment_of "$newest_key")"
+if archive_covers "$current_seg" "$newest_seg" "$ready_count"; then
+  ok "the archive has everything PostgreSQL queued: current WAL segment $current_seg, newest archived $newest_seg, $ready_count .ready file(s) (newest object $newest_key @ ${newest_stamp}Z)"
 else
-  err "newest object under $wal_uri is $newest_key @ ${newest_stamp}Z — older than MAX_AGE_SECONDS=$MAX_AGE_SECONDS (deadline ${deadline}Z)."
-  err "  The bucket is not receiving WAL. pg_stat_archiver and the operator's conditions"
-  err "  can still look healthy while this is true (#59); investigate before trusting a restore."
+  err "the archive is behind PostgreSQL: current WAL segment $current_seg, newest archived segment $newest_seg, $ready_count .ready file(s) waiting (newest object $newest_key @ ${newest_stamp}Z)."
+  err "  A segment is queued for archiving but is not in the bucket — investigate before trusting a restore (#59)."
   exit 1
 fi
 
