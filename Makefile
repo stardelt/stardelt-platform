@@ -429,6 +429,7 @@ step-app-secrets: ## The Airflow/Superset Secrets (generated once, kept across i
 
 step-airflow: ## Airflow and the pipeline templates
 	@echo "› Airflow"
+	@kubectl apply -f manifests/airflow-auth-manager.yaml
 	@helm upgrade --install airflow apache-airflow/airflow \
 	  --version $(AIRFLOW_VERSION) \
 	  $(HELM_FLAGS) \

@@ -80,13 +80,28 @@ apiServer:
   replicas: 1
   service:
     type: ClusterIP
+  # The auth manager that serves `/auth/token` (platform#1047). It is set here, on
+  # the one container that serves the API, and not in `config:`: the module below
+  # has to be importable in every pod that loads it, and only the api-server mounts
+  # it. The stock FabAuthManager refuses to exchange a password for a token while
+  # AUTH_TYPE=AUTH_OAUTH (the Keycloak login below), and the service users the
+  # platform creates -- `nova-api` for Nova, `admin` from the airflow-admin Secret --
+  # have no other way in. The subclass keeps the FAB user store and asks it directly;
+  # Keycloak users have no local password and still sign in through OIDC.
+  env:
+    - name: AIRFLOW__CORE__AUTH_MANAGER
+      value: stardelt_fab_auth.StardeltFabAuthManager
+    - name: PYTHONPATH
+      value: /opt/airflow/stardelt-auth
   # Identity contract + Keycloak client secret, projected as files from the
   # ConfigMap/Secret the identity install generates. `optional: true` on each
   # source keeps a platform installed without `make install-identity` booting on
   # the local admin login (see below), and only the api-server — the only
   # component that builds the FAB app — gets them. (`apiServer.env` would be
   # smaller, but chart 1.22.0's env helper drops `optional`, so an absent
-  # ConfigMap would block the pod on clusters that never ran install-identity.)
+  # ConfigMap would block the pod on clusters that never ran install-identity --
+  # the reason the identity files use volumes, and the auth module mounts with
+  # them.)
   extraVolumes:
     - name: stardelt-identity
       projected:
@@ -102,9 +117,17 @@ apiServer:
               optional: true
               items:
                 - { key: airflow, path: client-secret }
+    # The auth-manager subclass (manifests/airflow-auth-manager.yaml). Mounted by
+    # name, so a new `-vN` ConfigMap name rolls the pod; an edit in place does not.
+    - name: stardelt-auth-manager
+      configMap:
+        name: airflow-auth-manager-v1
   extraVolumeMounts:
     - name: stardelt-identity
       mountPath: /opt/airflow/stardelt-identity
+      readOnly: true
+    - name: stardelt-auth-manager
+      mountPath: /opt/airflow/stardelt-auth
       readOnly: true
   # The FAB auth manager reads its Flask config from webserver_config.py
   # (`[fab] config_file`, /opt/airflow/webserver_config.py). The chart mounts this
