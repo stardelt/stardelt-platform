@@ -1,5 +1,5 @@
 # OpenFGA — the catalog's permission store (authz 1/8, platform#302).
-# Chart: openfga/openfga 0.2.62, appVersion v1.14.0. Licence: Apache-2.0.
+# Chart: openfga/openfga 0.4.1, appVersion v1.22.1. Licence: Apache-2.0.
 #
 # What it holds: relationship tuples — which subject (person, group, service
 # client) may `browse`, `select`, `create`, `modify` or manage grants on which
@@ -21,11 +21,11 @@
 
 image:
   repository: openfga/openfga
-  # Explicit, so a chart bump cannot silently move the application: 0.2.62's
-  # appVersion happens to be v1.14.0 too, but that is the chart's choice, and
-  # Lakekeeper 0.12.2 requires OpenFGA >= 1.11 and is tested against 1.14
-  # (spike platform#271 ran exactly this image).
-  tag: v1.14.0
+  # Explicit, so a chart bump cannot silently move the application: 0.4.1's
+  # default tag is empty (it falls back to the chart's appVersion), and the
+  # image is the thing the catalog depends on. Lakekeeper 0.12.2 requires
+  # OpenFGA >= 1.11; #972 moves the store to the pair Lakekeeper 0.15 ships with.
+  tag: v1.22.1
 
 replicaCount: 1
 
