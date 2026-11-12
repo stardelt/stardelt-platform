@@ -7,6 +7,7 @@
       "spark.kubernetes.container.image.pullPolicy": "IfNotPresent",
       "spark.kubernetes.container.image.pullSecrets": "ghcr-creds",
       "spark.kubernetes.executor.podNamePrefix": "stardelt-spark",
+      "spark.kubernetes.executor.label.stardelt.io/spark-connect": "executor",
       "spark.kubernetes.executor.secretKeyRef.AWS_ACCESS_KEY_ID": "stardelt-s3-creds:access-key",
       "spark.kubernetes.executor.secretKeyRef.AWS_SECRET_ACCESS_KEY": "stardelt-s3-creds:secret-key",
       "spark.cleaner.periodicGC.interval": "5min",

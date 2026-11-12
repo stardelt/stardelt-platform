@@ -102,6 +102,8 @@ data:
     spark.kubernetes.container.image.pullSecrets            ghcr-creds
     spark.kubernetes.authenticate.executor.serviceAccountName spark-connect
     spark.kubernetes.executor.podNamePrefix                 stardelt-spark
+    # The NetworkPolicy spark-connect-ingress (end of this file) admits executors by this label.
+    spark.kubernetes.executor.label.stardelt.io/spark-connect executor
     # S3 credentials reach every executor by Secret reference, never through a
     # config file. S3FileIO's default credentials chain reads these variables.
     spark.kubernetes.executor.secretKeyRef.AWS_ACCESS_KEY_ID     stardelt-s3-creds:access-key
@@ -281,3 +283,35 @@ spec:
       port: 15002
       targetPort: connect
       protocol: TCP
+---
+# Who may open a session (platform#1097). Spark Connect authenticates nobody and
+# its pods hold platform credentials, so the network is the only gate until the design
+# in platform#1096 lands. Admitted: members' notebook pods on 15002, and this
+# server's own executors on any port (they call back to the driver). Left out: the
+# public demo's notebook pod (`stardelt.io/group.visitors`, set by the hub's
+# modify_pod_hook) and every other pod, pipeline notebook pods included.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: spark-connect-ingress
+  namespace: stardelt
+  labels: { app.kubernetes.io/name: spark-connect, app.kubernetes.io/part-of: stardelt }
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: spark-connect
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              component: singleuser-server
+            matchExpressions:
+              - { key: stardelt.io/group.visitors, operator: DoesNotExist }
+      ports:
+        - protocol: TCP
+          port: 15002
+    - from:
+        - podSelector:
+            matchLabels:
+              stardelt.io/spark-connect: executor
