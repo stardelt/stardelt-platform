@@ -1,0 +1,25 @@
+{{- if .Values.monitoring.enabled }}
+{{- $base := dict "app.kubernetes.io/part-of" "stardelt" }}
+{{- $labels := merge (deepCopy (.Values.monitoring.labels | default dict)) $base }}
+{{- range $component := list "master" "filer" "volume" "s3" }}
+---
+# The object store's Prometheus endpoint (stardelt-platform#1146, #607). Same object
+# the operator renders for PlatformInstance.spec.monitoring, so the two install paths agree.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: seaweedfs-{{ $component }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- toYaml $labels | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: seaweedfs
+      app.kubernetes.io/component: {{ $component }}
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+{{- end }}
+{{- end }}
