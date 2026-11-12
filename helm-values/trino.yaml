@@ -190,11 +190,12 @@ env:
     valueFrom: { secretKeyRef: { name: svc-catalog-trino, key: client-id, optional: true } }
   - name: CATALOG_CLIENT_SECRET
     valueFrom: { secretKeyRef: { name: svc-catalog-trino, key: client-secret, optional: true } }
-  # Token endpoint = <issuer>/protocol/openid-connect/token. The kubelet expands $(VAR)
-  # from a variable defined earlier in this list, so the realm's public URL stays in
-  # ConfigMap stardelt-identity instead of being repeated in a tracked file.
+  # The catalog's client-credentials token endpoint, from ConfigMap stardelt-identity key
+  # `tokenEndpoint` (#611) — never built from the issuer here: an external provider's token
+  # path is not the realm's. Optional like the variables above, so `install-core` (no IdP, no
+  # ConfigMap) installs the same pod and the catalog properties are never rendered.
   - name: CATALOG_TOKEN_URL
-    value: "$(TRINO_OIDC_ISSUER)/protocol/openid-connect/token"
+    valueFrom: { configMapKeyRef: { name: stardelt-identity, key: tokenEndpoint, optional: true } }
   # Password of the PKCS12 keystore cert-manager writes into Secret
   # trino-coordinator-tls (manifests/trino-tls.yaml). Only the TLS overlay reads
   # it; optional like the other identity variables so a cluster without an IdP
