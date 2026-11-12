@@ -2,7 +2,7 @@
   "spark-4.1-py3.11": {
     "image": "ghcr.io/stardelt/spark:dev@sha256:1acae61431891d5354fc959374adf3d5c1fbfc5cf7a7a39b099ef7c6eba89709",
     "sparkVersion": "4.1.4",
-    "serviceAccount": "spark-connect",
+    "serviceAccount": "spark-executor",
     "sparkConf": {
       "spark.kubernetes.container.image.pullPolicy": "IfNotPresent",
       "spark.kubernetes.container.image.pullSecrets": "ghcr-creds",
