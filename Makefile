@@ -139,27 +139,26 @@ perf-baseline: ## Measure the Trino baseline on the dev node (manual)
 # any change to the backup path (a scheduled wrapper is future work on #59).
 # ---------------------------------------------------------------------------
 SKIP_OBJECTS    ?=
-MAX_AGE_SECONDS ?= 900
 # The CloudNative-PG Cluster the guards read.
 PG_CLUSTER      ?= lakekeeper-pg
 
 verify-backup-config: _context ## Assert the live Cluster still declares spec.backup (post-apply guard)
 	@NAMESPACE=$(NAMESPACE) CLUSTER=$(PG_CLUSTER) bash scripts/verify-backups.sh --config-only
 
-verify-backups: _context ## Verify WAL archiving for real: config + a fresh object in the bucket + agreement with pg_stat_archiver. SKIP_OBJECTS=1 drops the S3 half
-	@NAMESPACE=$(NAMESPACE) CLUSTER=$(PG_CLUSTER) SKIP_OBJECTS="$(SKIP_OBJECTS)" MAX_AGE_SECONDS="$(MAX_AGE_SECONDS)" \
+verify-backups: _context ## Verify WAL archiving for real: config + the bucket covers every queued WAL segment + agreement with pg_stat_archiver. SKIP_OBJECTS=1 drops the S3 half
+	@NAMESPACE=$(NAMESPACE) CLUSTER=$(PG_CLUSTER) SKIP_OBJECTS="$(SKIP_OBJECTS)" \
 	  bash scripts/verify-backups.sh
 
 verify-backups-nova: _context ## Verify WAL archiving for nova-pg (same checks as verify-backups, Nova's state store)
-	@NAMESPACE=$(NAMESPACE) CLUSTER=nova-pg SKIP_OBJECTS="$(SKIP_OBJECTS)" MAX_AGE_SECONDS="$(MAX_AGE_SECONDS)" \
+	@NAMESPACE=$(NAMESPACE) CLUSTER=nova-pg SKIP_OBJECTS="$(SKIP_OBJECTS)" \
 	  bash scripts/verify-backups.sh
 
 verify-backups-identity: _context ## Verify WAL archiving for keycloak-pg (same checks as verify-backups, identity database)
-	@NAMESPACE=$(NAMESPACE) CLUSTER=keycloak-pg SKIP_OBJECTS="$(SKIP_OBJECTS)" MAX_AGE_SECONDS="$(MAX_AGE_SECONDS)" \
+	@NAMESPACE=$(NAMESPACE) CLUSTER=keycloak-pg SKIP_OBJECTS="$(SKIP_OBJECTS)" \
 	  bash scripts/verify-backups.sh
 
 verify-backups-openfga: _context ## Verify WAL archiving for openfga-pg (same checks as verify-backups, the permission store)
-	@NAMESPACE=$(NAMESPACE) CLUSTER=openfga-pg SKIP_OBJECTS="$(SKIP_OBJECTS)" MAX_AGE_SECONDS="$(MAX_AGE_SECONDS)" \
+	@NAMESPACE=$(NAMESPACE) CLUSTER=openfga-pg SKIP_OBJECTS="$(SKIP_OBJECTS)" \
 	  bash scripts/verify-backups.sh
 
 # ---------------------------------------------------------------------------
