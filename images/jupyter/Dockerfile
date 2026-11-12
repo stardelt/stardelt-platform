@@ -121,6 +121,31 @@ RUN python3 -m pip install --no-cache-dir --upgrade-strategy only-if-needed \
     && python3 -c "import stardelt.notebook_run; print('stardelt.notebook_run: the notebook task wrapper is installed')" \
     && python3 -c "import sql; print('jupysql', sql.__version__)"
 
+# VS Code in the browser (stardelt-platform#158). code-server, MIT, a static
+# tarball with its own Node runtime; installed as root because /usr/local is
+# root-owned, then back to the notebook user. The proxy in front of it is
+# jupyter-server-proxy (BSD-3-Clause), configured in jupyter_server_config.py.
+USER root
+ARG CODE_SERVER_VERSION=4.145.2
+ARG CODE_SERVER_SHA256=2f6db6c3e8b733dd6b3aeee83532e148b2bae2e392353ba85452d03572348962
+# `HOME=/tmp` on the version check: run as root, code-server creates
+# `~/.local/share/code-server` and `~/.config/code-server` under the image's
+# HOME (/home/jovyan) and leaves them root-owned, and the notebook user can no
+# longer create `~/.local/share/jupyter` — the server then dies on startup with
+# `PermissionError: /home/jovyan/.local/share/jupyter`.
+RUN set -eux; \
+    curl -fsSL -o /tmp/code-server.tar.gz \
+      "https://github.com/coder/code-server/releases/download/v${CODE_SERVER_VERSION}/code-server-${CODE_SERVER_VERSION}-linux-amd64.tar.gz"; \
+    echo "${CODE_SERVER_SHA256}  /tmp/code-server.tar.gz" | sha256sum -c -; \
+    mkdir -p /opt/code-server; \
+    tar -xzf /tmp/code-server.tar.gz -C /opt/code-server --strip-components=1; \
+    ln -s /opt/code-server/bin/code-server /usr/local/bin/code-server; \
+    rm /tmp/code-server.tar.gz; \
+    HOME=/tmp code-server --version
+USER ${NB_UID}
+
+RUN python3 -m pip install --no-cache-dir "jupyter-server-proxy==4.6.0"
+
 # `%sql` in the first cell (stardelt-nova#288): the `jupyter` extra above brings JupySQL, and this
 # system IPython config loads the library's magic into every kernel. JupySQL's usage statistics
 # stay off even if somebody imports it without the magic.

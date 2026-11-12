@@ -76,7 +76,12 @@ if ! grep -q 'stardelt\(\[[a-z,]*\]\)\{0,1\} @ git+https://github.com/stardelt/s
 fi
 
 # One commit in the Dockerfile: the ARG default and nothing else.
-sha_count=$(grep -c -oE '[0-9a-f]{40}' "$dockerfile" || true)
+#
+# The pattern is anchored on word boundaries, so a longer digest that happens to
+# contain a 40-hex run is not counted as a commit: the image also carries
+# download checksums (`ARG CODE_SERVER_SHA256=`), and a plain `[0-9a-f]{40}`
+# matches inside a 64-hex sha256 (platform#919).
+sha_count=$(grep -c -oE '\b[0-9a-f]{40}\b' "$dockerfile" || true)
 if [ "$sha_count" != "1" ]; then
   echo "check-stardelt-pin: $dockerfile names ${sha_count} commit SHAs — exactly one (the ARG default) is expected." >&2
   exit 1

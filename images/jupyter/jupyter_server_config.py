@@ -27,3 +27,28 @@ if _nova_origin:
             "Content-Security-Policy": f"frame-ancestors 'self' {_nova_origin}",
         }
     }
+
+# VS Code in the browser through the hub's own proxy (stardelt-platform#158).
+# code-server listens on the pod's loopback only and is started by
+# jupyter-server-proxy on first use; the hub session is the only authentication,
+# so code-server's own password is off. The launcher tile is the whole UI: there
+# is no second ingress and no second login.
+c.ServerProxy.servers = {
+    "vscode": {
+        "command": [
+            "code-server",
+            "--auth", "none",
+            "--bind-addr", "127.0.0.1:{port}",
+            "--disable-telemetry",
+            "--disable-update-check",
+        ],
+        # One code-server per single-user pod, so a fixed port is safe and makes
+        # the proxied port predictable. The path a browser uses is the server
+        # NAME, not the port: `/vscode/` (jupyter-server-proxy 4.6 mounts each
+        # configured server at `/<name>/`; `/proxy/8899/` is the generic
+        # local-port proxy, which forwards but never starts the process).
+        "port": 8899,
+        "timeout": 30,
+        "launcher_entry": {"title": "VS Code", "enabled": True},
+    }
+}
