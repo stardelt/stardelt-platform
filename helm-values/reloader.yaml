@@ -20,6 +20,16 @@ reloader:
   reloadStrategy: annotations
   # See the header: a rotation recreates the Secret, which is a create event.
   reloadOnCreate: true
+  # Prometheus text on 9090 (#607): the chart creates no Service by default, so a
+  # scrape config had no stable name to select. Annotations are the fallback for a
+  # customer without the Prometheus Operator; the later ServiceMonitor slice uses
+  # the same Service.
+  service:
+    port: 9090
+    annotations:
+      prometheus.io/scrape: "true"
+      prometheus.io/port: "9090"
+      prometheus.io/path: /metrics
   deployment:
     resources:
       requests: { cpu: 10m, memory: 64Mi }

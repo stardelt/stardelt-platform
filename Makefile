@@ -618,6 +618,7 @@ install-spark-operator: deps _context _helm-repos ## Install the Kubeflow Spark 
 	  --namespace $(NAMESPACE) --version $(SPARK_OPERATOR_VERSION) \
 	  --values helm-values/spark-operator.yaml $(HELM_FLAGS)
 	@kubectl -n $(NAMESPACE) rollout status deploy/spark-operator-controller --timeout=5m
+	@kubectl -n $(NAMESPACE) apply -f manifests/spark-operator-metrics.yaml
 	@echo "Spark Operator ready: SparkApplications in namespace $(NAMESPACE)"
 
 # ---------------------------------------------------------------------------
@@ -1271,6 +1272,7 @@ uninstall: _context ## Uninstall all stardelt components (reverse order)
 	@kubectl -n $(NAMESPACE) delete configmap trino-warehouses trino-group-file --ignore-not-found
 	@kubectl delete -f manifests/spark.yaml                   --ignore-not-found
 	@kubectl delete -f manifests/spark-connect-pod-guard.yaml --ignore-not-found
+	@kubectl delete -f manifests/spark-operator-metrics.yaml --ignore-not-found
 	@kubectl -n $(NAMESPACE) delete configmap stardelt-spark-runtimes --ignore-not-found
 	@kubectl delete -f manifests/trino-tls.yaml               --ignore-not-found
 	@kubectl delete -f manifests/nova-deployment.yaml        --ignore-not-found

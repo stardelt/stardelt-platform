@@ -71,5 +71,30 @@ class PolicyTest(unittest.TestCase):
         self.assert_only_a_scraper("openfga-network-policy.yaml", 2112)
 
 
+class ServiceTest(unittest.TestCase):
+    def test_reloader_publishes_metrics_on_a_service(self):
+        self.assertEqual(
+            load_values("reloader.yaml")["reloader"]["service"],
+            {"port": 9090,
+             "annotations": {"prometheus.io/scrape": "true",
+                             "prometheus.io/port": "9090",
+                             "prometheus.io/path": "/metrics"}})
+
+    def test_the_spark_operator_metrics_service_selects_the_controller(self):
+        with open(ROOT / "manifests" / "spark-operator-metrics.yaml", encoding="utf-8") as handle:
+            documents = [d for d in yaml.safe_load_all(handle) if d]
+        services = [d for d in documents if d.get("kind") == "Service"]
+        self.assertEqual(len(services), 1,
+                         "spark-operator-metrics.yaml: expected one Service, found %d"
+                         % len(services))
+        service = services[0]
+        self.assertEqual(service["spec"]["ports"],
+                         [{"name": "metrics", "port": 8080, "targetPort": 8080}])
+        self.assertEqual(service["spec"]["selector"],
+                         {"app.kubernetes.io/name": "spark-operator",
+                          "app.kubernetes.io/component": "controller"})
+        self.assertEqual(service["metadata"]["annotations"]["prometheus.io/port"], "8080")
+
+
 if __name__ == "__main__":
     unittest.main()
