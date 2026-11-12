@@ -38,6 +38,16 @@ Usage: include "stardelt.appHost" (list $ "trino" "trino")
 {{- end -}}
 {{- end -}}
 
+{{/* OAuth2 token endpoint components exchange client credentials at. */}}
+{{- define "stardelt.tokenEndpoint" -}}
+{{- $mode := include "stardelt.identityMode" . -}}
+{{- if eq $mode "platform" -}}
+{{- printf "https://%s/realms/stardelt/protocol/openid-connect/token" (include "stardelt.appHost" (list . "keycloak" "id")) -}}
+{{- else -}}
+{{- .Values.identity.tokenEndpoint | default "" -}}
+{{- end -}}
+{{- end -}}
+
 {{/*
 Value of an existing Secret key (kept across `helm upgrade`), else a fresh
 random one. Usage: include "stardelt.secretValue" (list $ "secret-name" "key")

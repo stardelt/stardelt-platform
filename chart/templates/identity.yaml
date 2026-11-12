@@ -6,6 +6,12 @@
 {{- if not (hasPrefix "https://" .Values.identity.issuerUrl) }}
 {{- fail "identity.issuerUrl must be an https:// URL" }}
 {{- end }}
+{{- if not .Values.identity.tokenEndpoint }}
+{{- fail "identity.mode=external needs identity.tokenEndpoint (the token_endpoint of <issuerUrl>/.well-known/openid-configuration)" }}
+{{- end }}
+{{- if not (hasPrefix "https://" .Values.identity.tokenEndpoint) }}
+{{- fail "identity.tokenEndpoint must be an https:// URL" }}
+{{- end }}
 {{- end }}
 {{- if eq $mode "platform" }}
 {{- if not .Values.platform.baseDomain }}
@@ -25,6 +31,7 @@ metadata:
     stardelt.io/identity-mode: {{ $mode }}
 data:
   issuerUrl: {{ include "stardelt.issuerUrl" . | quote }}
+  tokenEndpoint: {{ include "stardelt.tokenEndpoint" . | quote }}
   groupClaim: {{ .Values.identity.groupClaim | quote }}
   adminGroup: {{ .Values.identity.adminGroup | quote }}
   # Nova reads these two to switch sign-in on; the chart sets Nova's env directly, so

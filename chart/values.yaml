@@ -122,6 +122,13 @@ identity:
   # Required for `external`; ignored for `platform` (derived from the host:
   # https://id.<baseDomain>/realms/stardelt).
   issuerUrl: ""
+  # `external` only: the provider's OAuth2 token endpoint — `token_endpoint` in
+  # <issuerUrl>/.well-known/openid-configuration. Required for `external`: neither Helm nor
+  # the operator can fetch an external discovery document (Helm has no HTTP; the operator's
+  # only transport is the API-server proxy, which cannot leave the cluster). Ignored for
+  # `platform`, which derives it from the Keycloak it deploys. Published as `tokenEndpoint`
+  # in ConfigMap `stardelt-identity` so no component builds the realm path itself (#611).
+  tokenEndpoint: ""
   groupClaim: groups
   adminGroup: stardelt-admins
 

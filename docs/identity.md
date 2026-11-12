@@ -5,16 +5,19 @@ Part of the [stardelt-platform](../README.md) manual.
 stardelt has two identity modes (contract: `docs/architecture/identity` in stardelt-docs):
 an **external** OIDC provider (Entra ID, Okta, a corporate Keycloak) or the **platform** IdP,
 Keycloak, that every building block authenticates against. Either way the platform publishes
-the same ConfigMap, `stardelt-identity`, with `issuerUrl`, `groupClaim` (`groups`) and
-`adminGroup` (`stardelt-admins`). The platforms' own installer adds `authMode`, `publicUrl` and
-`trinoUrl` (the coordinator's in-cluster TLS endpoint, which exists under exactly the same
-condition — see "TLS on the coordinator").
+the same ConfigMap, `stardelt-identity`, with `issuerUrl`, `tokenEndpoint`, `groupClaim`
+(`groups`) and `adminGroup` (`stardelt-admins`). The platforms' own installer adds `authMode`,
+`publicUrl` and `trinoUrl` (the coordinator's in-cluster TLS endpoint, which exists under exactly
+the same condition — see "TLS on the coordinator"). `tokenEndpoint` is the provider's OAuth2
+client-credentials endpoint, resolved once here so no component builds the realm path itself:
+`platform` derives it from the Keycloak this platform deploys, `external` takes it from
+`identity.tokenEndpoint` (the `token_endpoint` of `<issuerUrl>/.well-known/openid-configuration`).
 
 | Umbrella chart | Makefile | What is deployed |
 |---|---|---|
 | `identity.mode: none` (default) | — | nothing |
 | `identity.mode: platform` | `make install-identity` | Keycloak (official `quay.io/keycloak/keycloak`, Apache-2.0) + its own CNPG Cluster `keycloak-pg`, realm `stardelt`; Ingress `id.<baseDomain>` when `ingress.enabled` (playground: `dev/playground/ingress.yaml`) |
-| `identity.mode: external` + `identity.issuerUrl` | — | only `stardelt-identity` (render fails without an https issuer) |
+| `identity.mode: external` + `identity.issuerUrl` + `identity.tokenEndpoint` | — | only `stardelt-identity` (render fails without an https issuer and token endpoint) |
 
 ```sh
 make install-core SLIM=1                                    # CNPG operator first
