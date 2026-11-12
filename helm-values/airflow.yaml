@@ -364,8 +364,17 @@ extraEnv: |
         name: stardelt-identity
         key: trinoUrl
         optional: true
+  # The pipeline runner's client-credentials token endpoint, from ConfigMap
+  # stardelt-identity key `tokenEndpoint` (#611) — never a literal Keycloak URL here: an
+  # external provider's path is not the realm's, and the in-cluster Service does not exist
+  # in `identity.mode: external`. Optional like the client id/secret above: without an IdP
+  # the variable is simply absent and a pipeline task fails with a clear message.
   - name: PIPELINE_TOKEN_URL
-    value: http://keycloak:8080/realms/stardelt/protocol/openid-connect/token
+    valueFrom:
+      configMapKeyRef:
+        name: stardelt-identity
+        key: tokenEndpoint
+        optional: true
   - name: PIPELINE_CLIENT_ID
     value: pipeline-runner
   - name: PIPELINE_CLIENT_SECRET
