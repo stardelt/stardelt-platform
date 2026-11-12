@@ -329,7 +329,13 @@ jobs:
           test "$(helm template stardelt chart -n stardelt --set identity.mode=platform --set platform.baseDomain=example.com \
                     | grep -c 'https://localhost:8443/oauth2/callback')" = 1
           helm template stardelt chart -n stardelt \
-            --set identity.mode=external --set identity.issuerUrl=https://login.example.com/realms/x > /dev/null
+            --set identity.mode=external --set identity.issuerUrl=https://login.example.com/realms/x \
+            --set identity.tokenEndpoint=https://login.example.com/realms/x/protocol/openid-connect/token > /dev/null
+          # external mode without the token endpoint must fail the render (#611)
+          if helm template stardelt chart -n stardelt --set identity.mode=external \
+               --set identity.issuerUrl=https://login.example.com/realms/x > /dev/null 2>&1; then
+            echo "expected render failure for external without identity.tokenEndpoint" >&2; exit 1
+          fi
           # invalid identity settings must fail the render (`!` alone is ignored by `set -e`)
           for bad in "identity.mode=external" "identity.mode=platform" "identity.mode=bogus"; do
             if helm template stardelt chart -n stardelt --set "$bad" > /dev/null 2>&1; then

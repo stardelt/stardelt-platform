@@ -164,8 +164,13 @@ echo "› ConfigMap keycloak-env (KC_HOSTNAME=https://id.${BASE_DOMAIN})"
 # plain-HTTP default applies, which is what a dev install without identity runs.
 # The key has to live in this ConfigMap rather than in Nova's manifest because
 # `kubectl apply` of the ConfigMap would otherwise prune it again.
+#
+# `tokenEndpoint` is the OAuth2 client-credentials endpoint. This script only ever
+# deploys the Keycloak above, so the realm path *is* the provider's own endpoint;
+# the key lives in the contract so consumers (#611) never build it.
 apply_configmap stardelt-identity \
   --from-literal=issuerUrl="https://id.${BASE_DOMAIN}/realms/stardelt" \
+  --from-literal=tokenEndpoint="https://id.${BASE_DOMAIN}/realms/stardelt/protocol/openid-connect/token" \
   --from-literal=groupClaim=groups \
   --from-literal=adminGroup=stardelt-admins \
   --from-literal=authMode=oidc \
