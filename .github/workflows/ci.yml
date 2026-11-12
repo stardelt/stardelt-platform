@@ -140,7 +140,7 @@ jobs:
       - name: helm template — openfga
         run: |
           bash scripts/retry.sh helm template openfga openfga/openfga \
-            --version 0.2.62 \
+            --version 0.4.1 \
             --namespace stardelt \
             -f helm-values/openfga.yaml > /tmp/openfga.yaml
           # The datastore Secret is CNPG's `openfga-pg-app`, read on key `uri`
