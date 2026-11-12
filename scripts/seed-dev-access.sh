@@ -14,10 +14,10 @@
 # a second run changes nothing; the class file only changes when a rendered class
 # does, and `unseed` keeps `small` and deletes `medium` and `large`.
 #
-# The baseline is the maintainer's layout: `warehouse`, `shared`, `bronze`,
-# `silver`, `gold`, each granted the four data verbs to `stardelt-users`
-# (dev/seed/catalogs.yaml). The seed does NOT apply that file unless
-# `SEED_CATALOGS=1`, and it never recreates a Catalog that does not exist without
+# The baseline is the maintainer's layout, `dev/seed/catalogs.yaml`: `warehouse`
+# (administrators only) and `shared` (read and write for `stardelt-users`). The
+# seed does NOT apply that file unless `SEED_CATALOGS=1`, and it never recreates
+# a Catalog that does not exist without
 # it: the Catalog objects belong to whoever runs the cluster, and a deleted one
 # may be a decision, not drift. A run with `SEED_CATALOGS=1` also applies, after
 # the Catalogs, the maintenance principal in `dev/seed/principals.yaml`.
@@ -71,7 +71,7 @@ SEED_VALUE=seed
 SEED_SECRET=dev-seed-users
 CATALOGS_FILE=dev/seed/catalogs.yaml
 PRINCIPALS_FILE=dev/seed/principals.yaml
-BASELINE_CATALOGS=(warehouse shared bronze silver gold)
+BASELINE_CATALOGS=(warehouse shared)
 # The seed's three compute classes (platform#313). `small` is the default one and
 # stays after `unseed`: the default class is a property of the install, the other
 # two are the seed's differentiators.

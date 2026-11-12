@@ -1949,7 +1949,7 @@ unchanged.
 
 The dev seed is a small permission set you can check by hand, for development and for
 demoing the model (platform#309). Its **baseline is the layout the maintainer runs** —
-`warehouse`, `shared`, `bronze`, `silver`, `gold`, each granted the four data verbs to
+`warehouse` (administrators only) and `shared`, granted read and write to
 `stardelt-users` (`dev/seed/catalogs.yaml`) — and the seed does not touch the Catalog
 objects at all unless you ask it to (layout decision, platform#365).
 

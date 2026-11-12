@@ -205,7 +205,7 @@ server:
 # `runtime.nodes`, `runtime.queries`, `metadata.*`, `jdbc.*`), and the sample
 # connectors `tpch` and `tpcds`. Nobody's data lives there, so no grant can
 # express "who may read them"; the platform's catalogs are `warehouse`,
-# `shared`, `bronze`, `silver`, `gold` and whatever a `Catalog` object creates.
+# `shared`, and whatever a `Catalog` object creates.
 # Trino hides a catalog from `SHOW CATALOGS` when a person's catalog access is
 # `none`, and refuses a statement against it with `Access Denied: Cannot access
 # catalog …` — so an ordinary person no longer sees the three in the SQL editor,
