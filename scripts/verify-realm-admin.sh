@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Prove that the realm-admin credential the README documents still opens realm
+# Prove that the realm-admin credential docs/identity.md documents still opens realm
 # `stardelt` — i.e. that Secret `stardelt-realm-admin` and the live Keycloak do
 # not disagree (stardelt-platform#81).
 #
