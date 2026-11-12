@@ -60,5 +60,5 @@ CI (`.github/workflows/ci.yml`): yamllint on `helm-values/` + `manifests/`,
   `main` publishes `dev` + `sha-<short>`). `nova` and `stardelt-operator` packages are public;
   `superset` is private, so the cluster needs the `ghcr-creds` pull secret on
   `./dev/ghcr-pull-secret.sh` (`GHCR_TOKEN=<read:packages PAT>`, else your `gh` login token).
-- `make install` and `make install-core` generate the `stardelt-s3-creds` Secret on first run (`scripts/s3-secrets.sh`); to bring your own, see README "S3 credentials".
+- `make install` and `make install-core` generate the `stardelt-s3-creds` Secret on first run (`scripts/s3-secrets.sh`); to bring your own, see docs/credentials.md.
 - `SLIM=1` adds `-f helm-values/slim/trino.yaml` (install-core only).

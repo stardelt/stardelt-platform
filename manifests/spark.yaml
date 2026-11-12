@@ -11,7 +11,8 @@
 # once several Spark applications share a cluster, and it is where the stardelt
 # operator's Workspace/Pipeline reconciliation will point. On this 16 GB shared
 # node its controller alone requests 2 GiB by default, permanently, to manage a
-# single long-running app. The CRD path is the explicit follow-up (see README).
+# single long-running app. The CRD path is the explicit follow-up (see docs/spark.md,
+# "Why a Deployment, not the Spark Kubernetes Operator").
 #
 # Why not a standalone master + worker: on one node they add two permanent JVMs
 # and a second scheduler without adding isolation. Kubernetes already schedules,
@@ -107,7 +108,8 @@ data:
     spark.kubernetes.executor.secretKeyRef.AWS_SECRET_ACCESS_KEY stardelt-s3-creds:secret-key
 
     # --- Sizing on the shared 16 GB node ------------------------------------
-    # Driver: 1g heap, 3 GiB container limit; about 0.7 GiB of a busy driver is off-heap Arrow/Netty buffers (README has the budget table).
+    # Driver: 1g heap, 3 GiB container limit; about 0.7 GiB of a busy driver is
+    # off-heap Arrow/Netty buffers (docs/spark.md, "Shape and the memory budget").
     # Executors: 1 core + 1g heap + 384m overhead each, at most two at a time,
     # scaled to zero when idle.
     spark.driver.memory                                     1g

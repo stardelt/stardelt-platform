@@ -1,7 +1,7 @@
 # Off-cluster copy: rclone copies the backup buckets to the operator's own S3.
 #
 # Every other mechanism in this repo writes into the same SeaweedFS that holds
-# the data it protects (README "Backups"): CNPG WAL + base backups and the
+# the data it protects (docs/backups.md): CNPG WAL + base backups and the
 # pg_dump files under `s3://backups/`, the object archive in `lakehouse-backup`.
 # That covers mistakes and corruption; it does not survive losing the cluster,
 # the node or the store's volumes. This CronJob copies those three buckets
@@ -17,7 +17,7 @@
 #
 # Without Secret `backup-offsite` the job still applies, runs, prints
 # `offsite: not configured` and exits 0 — a destination is the operator's
-# decision, never a default (the dev cluster has none; see README "Backups").
+# decision, never a default (the dev cluster has none; see docs/backups.md).
 #
 # `copy`, never `sync`: nothing is deleted at the destination, so an object
 # removed from the source stays recoverable there. The versioned `notebooks`

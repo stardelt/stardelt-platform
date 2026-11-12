@@ -50,7 +50,7 @@ OPABridge:
       lakekeeperWarehouse: warehouse
   allowUnmanagedCatalogs: true
   # stardelt's additions to the chart's rules (platform#333, "The bridge
-  # contract" in the README). The chart's policies answer catalog, schema and
+  # contract" in docs/catalogs.md). The chart's policies answer catalog, schema and
   # table questions from Lakekeeper's grants; three operations Trino 480 asks
   # have no rule at all, and the bridge's default deny then breaks ordinary use:
   #
