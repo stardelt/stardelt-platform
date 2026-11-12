@@ -83,7 +83,7 @@ BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 
 .PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator openfga trino catalogs upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-refresh dev-watch dev-status check-pins check-cnpg-pin verify-pins verify-spark-guard dev-up dev-down dev-dns dev-dns-down platform-config check-hub-config
 .PHONY: chart-deps chart-template chart-install
-.PHONY: verify-backups verify-backups-identity verify-backups-nova verify-backups-openfga verify-backups-all verify-images verify-streaming verify-compute verify-maintenance verify-backup-config verify-realm-admin sync-realm-admin sync-realm-user-management
+.PHONY: verify-backups verify-backups-identity verify-backups-nova verify-backups-openfga verify-backups-all verify-images verify-streaming verify-compute verify-maintenance verify-backup-config verify-realm-admin verify-seaweedfs-ports sync-realm-admin sync-realm-user-management
 .PHONY: backups verify-pgdump offsite-backup export-recovery-secrets import-recovery-secrets
 .PHONY: sync-oidc-clients verify-oidc-clients verify-trino-tls verify-trino-auth sync-trino-group-sync-client sync-pipeline-runner-client sync-dev-client sync-catalog-audience openbao test-openbao-policies seaweedfs-admin
 .PHONY: external-secrets verify-external-secrets eso-stores
@@ -144,6 +144,9 @@ PG_CLUSTER      ?= lakekeeper-pg
 
 verify-backup-config: _context ## Assert the live Cluster still declares spec.backup (post-apply guard)
 	@NAMESPACE=$(NAMESPACE) CLUSTER=$(PG_CLUSTER) bash scripts/verify-backups.sh --config-only
+
+verify-seaweedfs-ports: _context ## Only SeaweedFS reaches its unsigned ports (platform#1100)
+	@NS=$(NAMESPACE) bash scripts/verify-seaweedfs-ports.sh
 
 verify-backups: _context ## Verify WAL archiving for real: config + the bucket covers every queued WAL segment + agreement with pg_stat_archiver. SKIP_OBJECTS=1 drops the S3 half
 	@NAMESPACE=$(NAMESPACE) CLUSTER=$(PG_CLUSTER) SKIP_OBJECTS="$(SKIP_OBJECTS)" \
@@ -369,6 +372,8 @@ step-storage: step-s3-secrets ## The object store (SeaweedFS), the versioned not
 	  --version $(SEAWEEDFS_VERSION) \
 	  $(HELM_FLAGS) \
 	  -f helm-values/seaweedfs.yaml
+	@echo "› Internal ports: only SeaweedFS reaches the filer, master and volume servers (platform#1100)"
+	@kubectl apply -f manifests/seaweedfs-network-policy.yaml
 	@echo "› Versioned notebooks bucket (published notebooks, platform#290)"
 	@$(MAKE) --no-print-directory notebooks-bucket
 	@echo "› Object-store archive: the lakehouse-backup bucket and its daily copy (platform#462)"
@@ -1291,6 +1296,7 @@ uninstall: _context ## Uninstall all stardelt components (reverse order)
 	@helm uninstall trino      --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@helm uninstall lakekeeper --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@helm uninstall openfga    --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
+	@kubectl delete -f manifests/seaweedfs-network-policy.yaml --ignore-not-found
 	@helm uninstall seaweedfs  --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@helm uninstall cnpg       --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 

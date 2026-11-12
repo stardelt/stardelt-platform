@@ -1,0 +1,37 @@
+# The object store's internal ports take unsigned requests (platform#1100).
+#
+# The S3 gateway on 8333 checks an access key; the filer (8888), master (9333) and
+# volume servers (8080) check nothing with this chart's defaults. Those ports are
+# for SeaweedFS's own components — the S3 gateway asks the filer for the object
+# namespace, the filer registers with the master, volumes heartbeat to the master,
+# the admin UI reads both. Every other pod uses the S3 gateway, where the key is
+# checked. This policy is the only gate on the unsigned ports until JWT signing or
+# scoped S3 identities land (#1100's "Then" list).
+#
+# Checked against every in-repo client (2026-11-12): the backup CronJobs
+# (aws s3 sync, rclone), the bucket-creation scripts (amazon/aws-cli), CNPG's WAL
+# archive (s3://backups/) and the engines all talk to seaweedfs-s3:8333.
+#
+# Needs a CNI that enforces NetworkPolicy — k3s does; plain Flannel does not.
+# To debug a client that must stay on the filer, delete this policy and say why;
+# it is re-applied by `make install`/`make step-storage`.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: seaweedfs-internal
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: seaweedfs
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [master, filer, volume]
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: seaweedfs
