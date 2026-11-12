@@ -1,0 +1,21 @@
+# The executor pod shape Spark builds on Kubernetes, measured on the lab 2026-11-12
+# (platform#1096): ServiceAccount spark-executor, one emptyDir, the pinned image.
+# `scripts/verify-spark-pod-guard.sh` requires that the pod guard admits it; keep it
+# equal to what a real query starts, not to what the policy allows.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: spark-executor-probe
+  namespace: stardelt
+spec:
+  serviceAccountName: spark-executor
+  restartPolicy: Never
+  volumes:
+    - name: spark-local-dir-1
+      emptyDir: {}
+  containers:
+    - name: spark-kubernetes-executor
+      image: ghcr.io/stardelt/spark:dev@sha256:1acae61431891d5354fc959374adf3d5c1fbfc5cf7a7a39b099ef7c6eba89709
+      volumeMounts:
+        - name: spark-local-dir-1
+          mountPath: /tmp
