@@ -21,6 +21,7 @@ SCRIPT = REPO / "scripts" / "check-stardelt-pin.sh"
 
 SHA = "978c7d1a46beefe68f564349668ffb43f4cd86d0"
 OTHER_SHA = "1111111111111111111111111111111111111111"
+DEMOS_SHA = "2222222222222222222222222222222222222222"
 
 
 class StardeltPinTest(unittest.TestCase):
@@ -38,6 +39,15 @@ class StardeltPinTest(unittest.TestCase):
             "ARG STARDELT_LIB_REF={sha}\n"
             'RUN pip install "stardelt @ git+https://github.com/stardelt/'
             'stardelt-python@${{STARDELT_LIB_REF}}"\n'.format(sha=SHA)
+        )
+        # The demo bundle's own pin, a second and differently named one
+        # (stardelt-platform#1129). It must be fetched at the ARG, not hardcoded.
+        self.dockerfile.write_text(
+            self.dockerfile.read_text()
+            + "ARG STARDELT_DEMOS_REF=" + DEMOS_SHA + "\n"
+            + "RUN python3 -c \"import urllib.request; urllib.request.urlretrieve("
+            + "'https://github.com/stardelt/stardelt-demos/archive/${STARDELT_DEMOS_REF}.tar.gz', "
+            + "'/tmp/demos.tar.gz')\"\n"
         )
         # The script reads the tree it is run from, so it is copied next to it.
         self.scripts = self.tmp / "scripts"
@@ -115,6 +125,20 @@ class StardeltPinTest(unittest.TestCase):
         proc = self.run_check()
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("STARDELT_LIB_REF", proc.stderr)
+
+    def test_a_second_copy_of_the_demos_commit_fails(self):
+        text = self.dockerfile.read_text() + "# again {sha}\n".format(sha=DEMOS_SHA)
+        self.dockerfile.write_text(text)
+        proc = self.run_check()
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("commit SHAs", proc.stderr)
+
+    def test_a_hardcoded_demos_commit_in_the_url_fails(self):
+        text = self.dockerfile.read_text().replace("${STARDELT_DEMOS_REF}", OTHER_SHA)
+        self.dockerfile.write_text(text)
+        proc = self.run_check()
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("STARDELT_DEMOS_REF", proc.stderr)
 
 
 if __name__ == "__main__":

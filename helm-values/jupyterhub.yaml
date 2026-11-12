@@ -395,9 +395,10 @@ singleuser:
   # Seed the quickstart into the home directory on every spawn, never overwriting a
   # user's edited copy (`cp -n`). A demo spawn (`DEMO_MODE=1`, `27-demo-mode`) is
   # thrown away first: one shared person must not inherit another visitor's files.
-  # The clone is a public repository, so it needs no credential; the single-user
-  # NetworkPolicy already allows public egress. postStart always exits 0: a failing
-  # hook would make kubelet restart the container in a loop.
+  # The shop bundle is baked into the notebook image (stardelt-platform#1101/#1129),
+  # so the spawn makes no network call: a visitor notebook with no public egress
+  # still has the shop sources. postStart always exits 0: a failing hook would
+  # make kubelet restart the container in a loop.
   lifecycleHooks:
     postStart:
       exec:
@@ -410,8 +411,7 @@ singleuser:
             fi
             cp -n /opt/stardelt/notebooks/*.ipynb "$HOME/" || true
             if [ "${DEMO_MODE:-0}" = 1 ]; then
-              timeout 90 git clone --depth 1 https://github.com/stardelt/stardelt-demos \
-                "$HOME/stardelt-demos" 2>/dev/null || true
+              cp -a /opt/stardelt/stardelt-demos "$HOME/stardelt-demos" 2>/dev/null || true
               printf '%s\n' \
                 'This notebook is shared: the public demo signs everyone in as `demo`.' \
                 'Files and kernels are visible to other visitors, and Start/Restart wipes this home.' \
