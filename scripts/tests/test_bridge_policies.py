@@ -7,7 +7,7 @@ module then:
 
 * starts a stub Lakekeeper on a thread — the token endpoint, the warehouse-name
   lookup and `/management/v1/action/batch-check` — which implements Lakekeeper's
-  relation model and its implication table (`modify` implies `select` implies
+  relation model and its implication table (`write`/`modify` imply `select` implies
   `describe`, `create` implies `describe`, `manage_grants` implies nothing) and
   counts every request it answers;
 * runs the real OPA engine (`opa eval`) over the chart's policies plus both
@@ -91,7 +91,7 @@ GRANTS = {
     },
     "silver": {
         ("stewards", "manage_grants"),
-        ("analytics", "modify"),
+        ("analytics", "write"),
     },
     "warehouse": {
         ("stewards", "manage_grants"),
@@ -116,6 +116,7 @@ OBJECTS = {
 ACTIONS = {
     "describe": {"get_config", "list_namespaces", "get_metadata"},
     "select": {"read_data"},
+    "write": {"write_data", "commit"},
     "modify": {"write_data", "commit", "drop", "rename", "delete"},
     "create": {"create_namespace", "create_table", "create_view"},
     "manage_grants": {"manage_grants"},
@@ -123,6 +124,7 @@ ACTIONS = {
 IMPLIES = {
     "manage_grants": set(),
     "create": {"describe"},
+    "write": {"select", "describe"},
     "modify": {"select", "describe"},
     "select": {"describe"},
     "describe": set(),
@@ -500,6 +502,20 @@ class BridgePolicyTest(unittest.TestCase):
         self.assertIs(self.front(table_body("sub-ana", "InsertIntoTable", "gold",
                                             "retail_demo", "taxi_daily_metrics"), table), False)
         self.assertGreater(self.stub.authorized(), 0, "the write denial comes from Lakekeeper")
+
+    def test_the_write_group_may_insert_but_not_drop(self):
+        """`write` is Lakekeeper's `write`: data changes, not drop (platform#1130)."""
+        table = access_table()
+        insert = table_body("sub-ana", "InsertIntoTable", "silver", "retail_demo",
+                            "yellow_taxi_clean")
+        drop = table_body("sub-ana", "DropTable", "silver", "retail_demo",
+                          "yellow_taxi_clean")
+        front, upstream = self.both(insert, table)
+        self.assertIs(front, True)
+        self.assertIs(upstream, True, "the front and the chart must agree")
+        front, upstream = self.both(drop, table)
+        self.assertIs(front, False)
+        self.assertIs(upstream, False, "the front and the chart must agree")
 
     def test_create_implies_browse(self):
         table = access_table()

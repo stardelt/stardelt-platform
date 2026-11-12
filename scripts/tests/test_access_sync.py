@@ -826,7 +826,7 @@ class DesiredRelationsTest(JobTestCase):
                 ("manage_grants", "stardelt-admins"),
                 ("describe", "finance"),
                 ("select", "analytics"),
-                ("modify", "etl"),
+                ("write", "etl"),
                 ("create", "builders"),
                 ("manage_grants", "stewards"),
             },
