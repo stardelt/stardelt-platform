@@ -391,22 +391,39 @@ phase_upgrade() {
 }
 
 # --- phase `delete` -----------------------------------------------------------------------
-# D18: deleting the PlatformInstance removes the workloads the operator owns and keeps the
-# data (`deletionPolicy: Retain` is the default). The operator has no PlatformInstance delete
-# path yet, so a surviving Deployment here is a product finding, not a bug in this check.
+# D18: deleting the platform removes the workloads and keeps the data (`Retain` is the only
+# policy in v0.2). The Lakehouse goes first — its own finalizer uninstalls its releases and
+# retains the catalog PVC — then the PlatformInstance, whose finalizer uninstalls the platform's
+# releases. The two bare Deployments (Nova, Keycloak) carry an ownerReference and are removed by
+# the garbage collector, so they need a wait of their own.
 phase_delete() {
   local deploys_before pvcs_before name secret ref pvc_name phase
   deploys_before="$(kubectl -n "$NAMESPACE" get deploy -o name 2>/dev/null || true)"
   pvcs_before="$(kubectl -n "$NAMESPACE" get pvc -o name 2>/dev/null || true)"
 
-  # 1. the delete itself
+  # 1. the Lakehouse first: its finalizer uninstalls its releases (trino, lakekeeper, openfga,
+  #    seaweedfs) and leaves the catalog PVC and the Secrets alone (D18).
+  if ! kubectl -n "$NAMESPACE" delete "lakehouse/${LAKEHOUSE}" --wait=true --timeout="$WAIT" >/dev/null 2>&1; then
+    bad delete "\"lakehouse/${LAKEHOUSE} was not deleted\""
+    echo "verify-fresh-node: FAIL (the Lakehouse delete did not complete)" >&2
+    exit 1
+  fi
+
+  # 2. the PlatformInstance
   if ! kubectl -n "$NAMESPACE" delete "$instance_ref" --wait=true --timeout="$WAIT" >/dev/null 2>&1; then
     bad delete "\"${instance_ref} was not deleted\""
     echo "verify-fresh-node: FAIL (the delete did not complete)" >&2
     exit 1
   fi
 
-  # 2. the workloads the operator owned are gone
+  # The bare workloads carry an ownerReference to the PlatformInstance; the garbage collector
+  # removes them after the finalizer is gone, which `kubectl delete --wait` does not wait for.
+  for name in nova keycloak; do
+    printf '%s\n' "$deploys_before" | grep -q "/${name}\$" || continue
+    kubectl -n "$NAMESPACE" wait --for=delete "deploy/${name}" --timeout=60s >/dev/null 2>&1 || true
+  done
+
+  # 3. the workloads the operator owned are gone
   for name in nova keycloak lakekeeper trino-coordinator seaweedfs-s3 openbao; do
     printf '%s\n' "$deploys_before" | grep -q "/${name}\$" || continue
     if kubectl -n "$NAMESPACE" get "deploy/${name}" >/dev/null 2>&1; then
@@ -414,7 +431,7 @@ phase_delete() {
     fi
   done
 
-  # 3. the data is retained
+  # 4. the data is retained
   for secret in stardelt-realm-admin stardelt-s3-creds; do
     if ! kubectl -n "$NAMESPACE" get "secret/${secret}" >/dev/null 2>&1; then
       bad delete "secret/${secret} was removed"
@@ -435,7 +452,7 @@ phase_delete() {
     fi
   done <<<"$pvcs_before"
 
-  # 4. the custom resources are gone
+  # 5. the custom resources are gone
   if kubectl -n "$NAMESPACE" get "$instance_ref" >/dev/null 2>&1; then
     bad delete "${instance_ref} is still present"
   fi
