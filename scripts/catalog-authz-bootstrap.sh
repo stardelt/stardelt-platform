@@ -6,7 +6,7 @@
 # Idempotent: a second run reports every step as already done.
 #
 # A mistake locks the catalog out (every request 403). The recovery path is in the
-# README "Catalog authorization" section: reopen-bootstrap, POST bootstrap,
+# docs/catalogs.md: reopen-bootstrap, POST bootstrap,
 # `openfga reconcile`, grants again. Switching back to `allowall` is a maintainer
 # decision (upstream does not support it); never improvise a restore.
 #

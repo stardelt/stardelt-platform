@@ -19,7 +19,7 @@
 # dynamic, so any values file would have to be generated for a release anyway.
 # `--set-file` adds exactly one key on top of the two tracked values files and
 # touches neither; the identity overlay stays the only place `warehouse` is
-# written. (Verified with `helm template`, README "More catalogs": the `catalogs`
+# written. (Verified with `helm template`, docs/catalogs.md: the `catalogs`
 # map is merged key by key — a second `-f` that repeats `catalogs.warehouse`
 # replaces that catalog's whole properties block, which is exactly why the
 # identity overlay repeats it verbatim.) The property body comes from

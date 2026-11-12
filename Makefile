@@ -182,10 +182,10 @@ verify-pgdump: _context ## Run the pg_dump CronJob(s) once, restore the dump int
 # Off-cluster copy (platform#395, design platform#368): the rclone CronJob
 # copies the three backup buckets (backups, lakehouse-backup, notebooks) to
 # the operator's own S3 destination. Without Secret backup-offsite it applies,
-# runs as a no-op and verify-backups-all reports it NOT CONFIGURED; see the
-# README section "Backups".
+# runs as a no-op and verify-backups-all reports it NOT CONFIGURED; see
+# docs/backups.md.
 # ---------------------------------------------------------------------------
-offsite-backup: _context ## Apply the off-cluster copy CronJob (configure it with Secret backup-offsite; see README Backups)
+offsite-backup: _context ## Apply the off-cluster copy CronJob (configure it with Secret backup-offsite; see docs/backups.md)
 	@kubectl apply -f manifests/offsite-backup.yaml
 
 # ---------------------------------------------------------------------------
@@ -240,7 +240,7 @@ verify-connections: _context ## The live connection path is wired (CRD field, re
 # exist only as Secrets in the cluster's own datastore. export writes them to
 # one encrypted file OUTSIDE this repository (the default is the operator's home
 # directory; the script refuses a path inside the work tree); import puts them
-# back, first, before the databases and the object store. See README "Backups"
+# back, first, before the databases and the object store. See docs/backups.md
 # → "Recovery keys".
 # ---------------------------------------------------------------------------
 FILE ?= $(HOME)/stardelt-recovery-secrets.enc
@@ -809,9 +809,8 @@ sync-catalog-clients: _context ## Create/converge the seven svc-catalog-* servic
 # `authz.backend: openfga`, re-bootstrap the catalog, reconcile OpenFGA and
 # write the grants, then run the verification table. Idempotent: a second run
 # reports every step as already done. A mistake locks the catalog out (403) —
-# the recovery path is in the script and in the README "Catalog authorization"
-# section. Never switch back to `allowall` by improvising; that is a maintainer
-# decision.
+# the recovery path is in the script and in docs/catalogs.md. Never switch back
+# to `allowall` by improvising; that is a maintainer decision.
 # ---------------------------------------------------------------------------
 .PHONY: catalog-authz
 catalog-authz: _context ## Cut Lakekeeper over to OpenFGA authorization (idempotent; scripts/catalog-authz-bootstrap.sh)
@@ -1016,7 +1015,7 @@ catalog-enforce: deps _context ## Switch Trino to the permission bridge and the 
 	@echo "  Superset, a notebook, Nova, Airflow, and the latency of one scan."
 	@echo "  Roll back with: make catalog-enforce-rollback"
 
-catalog-enforce-rollback: deps _context ## Put Trino back on the file rules alone (recovery; see the README)
+catalog-enforce-rollback: deps _context ## Put Trino back on the file rules alone (recovery; see docs/catalogs.md)
 	@# The recovery for a failed cell of the switch's verification: take the OPA
 	@# bridge out of the access-control chain and leave everything else as it is.
 	@# The principal stays the Keycloak `sub` and the group file is the one
