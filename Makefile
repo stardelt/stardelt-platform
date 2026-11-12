@@ -918,7 +918,7 @@ catalogs: _context ## Converge Catalogs into Trino catalogs + bridge mappings (r
 # Dev seed (platform#309, layout platform#365) — a small, repeatable permission
 # set a person can check by hand: two domain groups (`finops`, `analytics`) and
 # three seed people (plus the existing `analyst`). The baseline layout is the
-# maintainer's five Catalogs (warehouse, shared, bronze, silver, gold); the seed
+# maintainer's two Catalogs (warehouse, shared); the seed
 # creates groups, people and their Secret but does NOT apply
 # dev/seed/catalogs.yaml unless SEED_CATALOGS=1 (that is how a deleted baseline
 # Catalog comes back). The differentiated fixtures (finance, product, sandbox,
