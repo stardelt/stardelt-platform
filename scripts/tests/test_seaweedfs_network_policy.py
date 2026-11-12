@@ -9,10 +9,13 @@ shape:
 
 * only master/filer/volume are selected as targets — the S3 gateway and the admin UI
   stay reachable in the namespace (8333 checks keys; the admin UI is not a data path);
-* the one ingress rule admits SeaweedFS pods on *all* ports — the components use HTTP
+* the first ingress rule admits SeaweedFS pods on *all* ports — the components use HTTP
   and gRPC ports alike (8888/18888, 9333/19333, 8080/18080), so a ``ports`` list would
   cut one of them off;
-* the policy is ingress-only, with no ``namespaceSelector`` and no ``ipBlock``.
+* the second rule admits the customer's Prometheus on 9327 only, where master, filer
+  and volume answer Prometheus text (stardelt-operator#607);
+* the policy is ingress-only, the second (scrape) rule is the only peer that crosses
+  namespaces, on 9327 only, and there is no ``ipBlock``.
 
 The installer has to apply it and the teardown to remove it, otherwise the gate exists
 only where someone applied it by hand.
@@ -74,14 +77,14 @@ class Shape(unittest.TestCase):
         self.assertEqual(expression["operator"], "In")
         self.assertEqual(sorted(expression["values"]), sorted(TARGETED_COMPONENTS))
 
-    def test_one_rule_admits_only_seaweedfs_on_every_port(self):
+    def test_the_first_rule_admits_only_seaweedfs_on_every_port(self):
         ingress = policy()["spec"]["ingress"]
-        self.assertEqual(len(ingress), 1, ingress)
+        self.assertEqual(len(ingress), 2, ingress)
         rule = ingress[0]
         self.assertEqual(
             rule["from"],
             [{"podSelector": {"matchLabels": {"app.kubernetes.io/name": "seaweedfs"}}}],
-            "the only admitted peer is a SeaweedFS pod selector",
+            "the only admitted peer of the first rule is a SeaweedFS pod selector",
         )
         self.assertNotIn(
             "ports",
@@ -90,10 +93,42 @@ class Shape(unittest.TestCase):
             "(8888/18888, 9333/19333, 8080/18080)",
         )
 
-    def test_no_peer_reaches_across_namespaces_or_by_address(self):
-        blob = MANIFEST.read_text()
-        self.assertNotIn("namespaceSelector", blob)
-        self.assertNotIn("ipBlock", blob)
+    def test_only_the_scrape_rule_crosses_namespaces_or_uses_an_address(self):
+        self.assertEqual(
+            policy()["spec"]["ingress"][1]["from"],
+            [
+                {
+                    "namespaceSelector": {},
+                    "podSelector": {
+                        "matchLabels": {"app.kubernetes.io/name": "prometheus"}
+                    },
+                }
+            ],
+            "the scrape rule admits a labelled Prometheus in every namespace",
+        )
+        self.assertEqual(
+            policy()["spec"]["ingress"][1]["ports"],
+            [{"protocol": "TCP", "port": 9327}],
+            "the scrape rule opens 9327 only",
+        )
+        self.assertEqual(
+            MANIFEST.read_text().count("namespaceSelector"),
+            1,
+            "only the scrape rule may cross namespaces",
+        )
+        self.assertNotIn("ipBlock", MANIFEST.read_text())
+
+    def test_the_scrape_rule_opens_9327_and_not_the_unsigned_ports(self):
+        ports = [
+            entry["port"]
+            for rule in policy()["spec"]["ingress"]
+            for entry in rule.get("ports", [])
+        ]
+        self.assertEqual(
+            ports,
+            [9327],
+            "the first rule names no ports; the scrape rule adds 9327 and nothing else",
+        )
 
 
 class Installer(unittest.TestCase):

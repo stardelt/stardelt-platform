@@ -35,3 +35,14 @@ spec:
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: seaweedfs
+    # The customer's Prometheus (stardelt-operator#607): read-only metrics on 9327.
+    # master/filer/volume answer Prometheus text there; the unsigned data ports
+    # (8888, 9333, 8080) stay closed by the rule above.
+    - from:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 9327
