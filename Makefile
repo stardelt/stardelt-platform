@@ -83,7 +83,7 @@ BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 
 .PHONY: _context help deps lint install install-core install-notebooks install-spark install-identity install-operator openfga trino catalogs upgrade uninstall build-superset-image push-superset-image build-jupyter-image push-jupyter-image pf pin pin-images dev-refresh dev-watch dev-status check-pins check-cnpg-pin verify-pins verify-spark-guard dev-up dev-down dev-dns dev-dns-down platform-config check-hub-config
 .PHONY: chart-deps chart-template chart-install
-.PHONY: verify-backups verify-backups-identity verify-backups-nova verify-backups-openfga verify-backups-all verify-images verify-streaming verify-compute verify-maintenance verify-backup-config verify-realm-admin verify-seaweedfs-ports sync-realm-admin sync-realm-user-management
+.PHONY: verify-backups verify-backups-identity verify-backups-nova verify-backups-openfga verify-backups-all verify-images verify-streaming verify-compute verify-maintenance verify-backup-config verify-realm-admin verify-seaweedfs-ports verify-metrics sync-realm-admin sync-realm-user-management
 .PHONY: backups verify-pgdump offsite-backup export-recovery-secrets import-recovery-secrets
 .PHONY: sync-oidc-clients verify-oidc-clients verify-trino-tls verify-trino-auth sync-trino-group-sync-client sync-pipeline-runner-client sync-dev-client sync-catalog-audience openbao test-openbao-policies seaweedfs-admin
 .PHONY: external-secrets verify-external-secrets eso-stores
@@ -147,6 +147,9 @@ verify-backup-config: _context ## Assert the live Cluster still declares spec.ba
 
 verify-seaweedfs-ports: _context ## Only SeaweedFS reaches its unsigned ports (platform#1100)
 	@NS=$(NAMESPACE) bash scripts/verify-seaweedfs-ports.sh
+
+verify-metrics: _context ## Every metrics endpoint a scraper can reach answers Prometheus text (#607)
+	@NS=$(NAMESPACE) bash scripts/verify-metrics.sh
 
 verify-backups: _context ## Verify WAL archiving for real: config + the bucket covers every queued WAL segment + agreement with pg_stat_archiver. SKIP_OBJECTS=1 drops the S3 half
 	@NAMESPACE=$(NAMESPACE) CLUSTER=$(PG_CLUSTER) SKIP_OBJECTS="$(SKIP_OBJECTS)" \
