@@ -14,7 +14,11 @@ permissions:
 concurrency: { group: pin-rollup, cancel-in-progress: true }
 jobs:
   rollup:
-    if: github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    # A PR build pushes no image, so it must not roll the pins. A push to main and a manual
+    # Image run both push one, so both roll: a dispatched rebuild that moves a digest would
+    # otherwise wait for the next cron — the same delay this trigger exists to remove
+    # (platform#1013).
+    if: github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
