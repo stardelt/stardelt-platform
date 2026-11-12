@@ -655,6 +655,7 @@ install-kafka: deps _context _helm-repos ## Install the streaming bus (Strimzi +
 # ---------------------------------------------------------------------------
 trino: deps _context ## Install/upgrade Trino, with OAuth2+TLS when a platform IdP is present
 	@NAMESPACE=$(NAMESPACE) bash scripts/nova-events-token.sh
+	@NAMESPACE=$(NAMESPACE) BASE_DOMAIN=$(BASE_DOMAIN) bash scripts/identity-contract-preflight.sh
 	@if kubectl -n $(NAMESPACE) get configmap stardelt-identity >/dev/null 2>&1; then \
 	  echo "› Trino $(TRINO_VERSION) + helm-values/trino-identity.yaml (platform IdP present)"; \
 	  kubectl get crd certificates.cert-manager.io >/dev/null 2>&1 || { \
