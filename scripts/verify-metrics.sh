@@ -16,6 +16,11 @@
 # OpenBao (openbao:8200/v1/sys/metrics?format=prometheus) belongs to the "open to any pod
 # in the namespace" group — its listener allows unauthenticated metrics — and its path is
 # not /metrics, so the row carries it.
+#
+# Spark Connect is the one target whose path is not the standard `/metrics` and whose body
+# has no `# TYPE` lines: its driver serves plain samples at
+# `/metrics/executors/prometheus` on the UI port (platform#1158), and its NetworkPolicy
+# admits only a scraper-labelled pod on that port.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 NS="${NS:-${NAMESPACE:-stardelt}}"
@@ -49,6 +54,7 @@ targets=(
   airflow-statsd:9102
   hub:8081/hub/metrics
   openbao:8200/v1/sys/metrics?format=prometheus
+  spark-connect:4040/metrics/executors/prometheus
 )
 
 for target in "${targets[@]}"; do
@@ -72,7 +78,11 @@ for target in "${targets[@]}"; do
     [ "$code" = "200" ] && break
     if [ "$attempt" = 1 ]; then sleep 1; fi
   done
-  first=$(kubectl -n "$NS" exec "$POD" -- grep -m1 '^# TYPE' /tmp/metrics-body 2>/dev/null || true)
+  # Spark's servlet has no `# TYPE`/`# HELP` lines at all (platform#1158): its
+  # marker is the first sample line. Every other target asserts a `# TYPE` line.
+  marker='^# TYPE'
+  case "$target" in spark-connect:*) marker='^spark_info' ;; esac
+  first=$(kubectl -n "$NS" exec "$POD" -- grep -m1 "$marker" /tmp/metrics-body 2>/dev/null || true)
   # The label is the URL without the scheme: `hub:8081/hub/metrics` for a target that
   # carries its own path, `host:port/metrics` for the rest.
   label="${url#http://}"

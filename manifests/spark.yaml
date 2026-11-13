@@ -145,7 +145,12 @@ data:
     # Small cluster, small tables: Spark's 200-partition default would spend
     # more time scheduling than scanning.
     spark.sql.shuffle.partitions                            8
-    spark.ui.enabled                                        false
+    # Prometheus text rides the UI port: Spark 4.1 serves it at
+    # /metrics/executors/prometheus (plain samples, no # TYPE lines; the first
+    # is `spark_info`). Both properties are needed and 4040 is the default port
+    # (platform#1158). The NetworkPolicy at the end of this file is the gate.
+    spark.ui.enabled                                        true
+    spark.ui.prometheus.enabled                             true
 
     # --- Spark Connect endpoint --------------------------------------------
     spark.connect.grpc.binding.address                      0.0.0.0
@@ -292,13 +297,23 @@ spec:
       port: 15002
       targetPort: connect
       protocol: TCP
+    - name: metrics
+      port: 4040
+      targetPort: 4040
+      protocol: TCP
 ---
-# Who may open a session (platform#1097). Spark Connect authenticates nobody and
-# its pods hold platform credentials, so the network is the only gate until the design
-# in platform#1096 lands. Admitted: members' notebook pods on 15002, and this
-# server's own executors on any port (they call back to the driver). Left out: the
-# public demo's notebook pod (`stardelt.io/group.visitors`, set by the hub's
-# modify_pod_hook) and every other pod, pipeline notebook pods included.
+# Who may talk to this server (platform#1097, platform#1160). Spark Connect
+# authenticates nobody and its pods hold platform credentials, so the network is
+# the only gate until the design in platform#1096 lands.
+#   * 15002 (Spark Connect's gRPC port): members' notebook pods only — the public
+#     demo's notebook pod (`stardelt.io/group.visitors`, set by the hub's
+#     modify_pod_hook) and every other pod, pipeline notebook pods included, are
+#     refused.
+#   * every port: this server's own executors (they call back to the driver).
+#   * 4040 (the driver's UI, which also serves /metrics/executors/prometheus): a
+#     pod labelled as the customer's scraper, in any namespace. The UI has no
+#     credential values and no SQL tab (platform#1158), which is the accepted
+#     exposure; the gRPC port above stays notebook-only.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -324,3 +339,16 @@ spec:
         - podSelector:
             matchLabels:
               stardelt.io/spark-connect: executor
+    # The customer's Prometheus (stardelt-operator#607): read-only, on the UI port.
+    # A NetworkPolicy selects ports, not paths, so this admits the driver's UI too —
+    # jobs, stages and the redacted environment page. That is the accepted exposure
+    # of the spike (platform#1158): no credential values, no SQL tab. The gRPC port
+    # above stays notebook-only.
+    - from:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 4040
