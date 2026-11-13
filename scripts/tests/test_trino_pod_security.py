@@ -33,6 +33,26 @@ class TrinoPodSecurityTest(unittest.TestCase):
         # containerSecurityContext replaces the chart's block: APE and capabilities must stay.
         self.assertEqual(self.values["containerSecurityContext"], CONTAINER)
 
+    def test_the_identity_overlays_give_the_init_container_its_own_block(self):
+        # Init containers inherit nothing from the chart's keys; the block is the only one
+        # (platform#1096). The wait-for-idp entry is a whole-list value, so it must carry it.
+        for name in ("trino-identity.yaml", "trino-identity-file-only.yaml"):
+            with open(ROOT / "helm-values" / name, encoding="utf-8") as handle:
+                values = yaml.safe_load(handle)
+            wait = next(
+                c for c in values["initContainers"]["coordinator"] if c["name"] == "wait-for-idp"
+            )
+            self.assertEqual(
+                wait["securityContext"],
+                {
+                    "runAsNonRoot": True,
+                    "allowPrivilegeEscalation": False,
+                    "capabilities": {"drop": ["ALL"]},
+                    "seccompProfile": {"type": "RuntimeDefault"},
+                },
+                name,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
