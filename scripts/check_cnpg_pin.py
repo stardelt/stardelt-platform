@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Fail when the CloudNativePG chart pin leaves 0.28.x before the backup-plugin migration.
+"""Fail when the CloudNativePG chart pin leaves 0.29.x before the backup-plugin migration.
 
-CNPG's native spec.backup.barmanObjectStore is removed in 1.30. The chart pin in the Makefile
-(CNPG_VERSION) sits one minor below it; renovate must not move it before platform#192 lands.
+CNPG 1.30 deprecates spec.backup.barmanObjectStore; it is removed in 1.32.0, and the barman
+plugin needs CNPG >= 1.30. Keep the pin on the 0.29.x (1.30) line until the plugin migration
+(platform#192) is done.
 Reads the Makefile only: no cluster, no helm.
 """
 from __future__ import annotations
@@ -11,7 +12,7 @@ import argparse
 import pathlib
 import re
 
-ALLOWED_PREFIX = "0.28."
+ALLOWED_PREFIX = "0.29."
 VERSION_RE = re.compile(r"^CNPG_VERSION\s*:=\s*(\S+)\s*$", re.M)
 DEFAULT_MAKEFILE = pathlib.Path(__file__).resolve().parents[1] / "Makefile"
 
@@ -35,7 +36,7 @@ def main() -> int:
             "barmanObjectStore plugin migration is done and verified (platform#192)."
         )
         return 1
-    print(f"✓ CloudNativePG chart {version} — still below the 1.30 backup-plugin migration (platform#192)")
+    print(f"✓ CloudNativePG chart {version} — the 1.30 line; the barman plugin migration (platform#192) is still ahead")
     return 0
 
 
