@@ -75,8 +75,9 @@ ingress:
   exposeUnauthenticated: []
 
 monitoring:
-  # Render one ServiceMonitor per component that exposes Prometheus metrics on a
-  # Service port, so the customer's Prometheus Operator can select them. Needs the
+  # Render the scrape objects and the starter alerts for the customer's Prometheus
+  # Operator: one ServiceMonitor per object-store role, one PodMonitor per
+  # CloudNative-PG cluster, and one PrometheusRule. Needs the
   # monitoring.coreos.com/v1 CRDs: Helm does not check them, and `helm install`
   # fails when the CRDs are absent — leave this off there.
   enabled: false

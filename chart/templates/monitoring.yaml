@@ -22,4 +22,93 @@ spec:
       path: /metrics
       interval: 30s
 {{- end }}
+{{- range $cluster := list "lakekeeper-pg" "openfga-pg" "keycloak-pg" "nova-pg" }}
+---
+# One PodMonitor per CloudNative-PG cluster: the instance manager's `metrics` port (9187)
+# is on the pod, not on a Service (stardelt-platform#1150, #607). The chart installs three
+# of these clusters; the openfga-pg monitor is inert here and keeps the two paths equal.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: cnpg-{{ $cluster }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- toYaml $labels | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      cnpg.io/cluster: {{ $cluster }}
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+{{- end }}
+---
+# The starter alerts (#607 item 5). Same expressions the operator renders, with the
+# release namespace substituted. Every series used here was measured on the lab 2026-11-12.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: stardelt-alerts
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- toYaml $labels | nindent 4 }}
+spec:
+  groups:
+    - name: stardelt
+      rules:
+        - alert: StardeltMetricsTargetDown
+          expr: up{namespace="{{ .Release.Namespace }}"} == 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: A platform metrics endpoint is not answering
+            description: Prometheus has failed to scrape a stardelt target for 10 minutes.
+            runbook_url: https://stardelt.io/docs/operations/monitoring/
+        - alert: StardeltOperatorNoLeader
+          expr: max by (namespace) (stardelt_operator_leader{namespace="{{ .Release.Namespace }}"}) == 0
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: The operator has no leader
+            description: Every operator replica reports stardelt_operator_leader 0, so nothing reconciles.
+            runbook_url: https://stardelt.io/docs/operations/monitoring/
+        - alert: StardeltOperatorReconcileErrors
+          expr: increase(stardelt_operator_reconcile_errors_total{namespace="{{ .Release.Namespace }}"}[15m]) > 3
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: The operator is failing reconciles
+            description: More than three reconciles failed in the last 15 minutes; read the operator log.
+            runbook_url: https://stardelt.io/docs/operations/monitoring/
+        - alert: StardeltSeaweedFSMasterNotLeader
+          expr: SeaweedFS_master_is_leader{namespace="{{ .Release.Namespace }}"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: The object store has no master
+            description: No SeaweedFS master reports leadership; writes and reads will fail.
+            runbook_url: https://stardelt.io/docs/operations/monitoring/
+        - alert: StardeltCnpgCollectorDown
+          expr: cnpg_collector_up{namespace="{{ .Release.Namespace }}"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: A platform database stopped exporting metrics
+            description: The CloudNative-PG instance manager of a cluster is down, so its database health is unknown.
+            runbook_url: https://stardelt.io/docs/operations/monitoring/
+        - alert: StardeltCnpgClientsWaiting
+          expr: cnpg_backends_waiting_total{namespace="{{ .Release.Namespace }}"} > 5
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: A platform database has clients waiting
+            description: More than five backends have waited for a lock or a connection for 10 minutes.
+            runbook_url: https://stardelt.io/docs/operations/monitoring/
 {{- end }}

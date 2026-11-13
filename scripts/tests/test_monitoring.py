@@ -1,12 +1,14 @@
-"""The chart renders the object store's four ServiceMonitors (platform#1146).
+"""The chart's monitoring objects: four ServiceMonitors, four PodMonitors, one PrometheusRule.
 
 `monitoring.enabled` turns on one ServiceMonitor per SeaweedFS role that exposes
 Prometheus metrics on a `metrics` Service port — master, filer, volume and s3 —
-so the customer's Prometheus Operator can select them. The switch is off by
-default: without the `monitoring.coreos.com/v1` CRDs `helm install` fails, and a
-stock cluster has no Prometheus Operator. The operator path (stardelt-operator)
-renders the same four objects from PlatformInstance.spec.monitoring, so names,
-selectors and endpoints are asserted here: the two install paths must agree.
+one PodMonitor per CloudNative-PG cluster (the instance manager's port is on the
+pod, not on a Service), and one PrometheusRule with the starter alerts. The
+switch is off by default: without the `monitoring.coreos.com/v1` CRDs
+`helm install` fails, and a stock cluster has no Prometheus Operator. The
+operator path (stardelt-operator) renders the same objects from
+PlatformInstance.spec.monitoring, so names, selectors and endpoints are asserted
+here: the two install paths must agree.
 
 Needs Helm and the sub-charts fetched into `chart/charts/*.tgz` (gitignored;
 `helm dependency update chart`). The `lint` job runs `unittest discover` as well
@@ -28,7 +30,17 @@ HELM = shutil.which("helm")
 
 COMPONENTS = ["master", "filer", "volume", "s3"]
 EXPECTED_NAMES = {f"seaweedfs-{component}" for component in COMPONENTS}
+CLUSTERS = ["lakekeeper-pg", "openfga-pg", "keycloak-pg", "nova-pg"]
+EXPECTED_POD_MONITORS = {f"cnpg-{cluster}" for cluster in CLUSTERS}
 ENDPOINT = {"port": "metrics", "path": "/metrics", "interval": "30s"}
+ALERTS = {
+    "StardeltMetricsTargetDown",
+    "StardeltOperatorNoLeader",
+    "StardeltOperatorReconcileErrors",
+    "StardeltSeaweedFSMasterNotLeader",
+    "StardeltCnpgCollectorDown",
+    "StardeltCnpgClientsWaiting",
+}
 
 
 def missing_subcharts():
@@ -51,6 +63,14 @@ def monitors(docs):
     return [d for d in docs if d.get("kind") == "ServiceMonitor"]
 
 
+def pod_monitors(docs):
+    return [d for d in docs if d.get("kind") == "PodMonitor"]
+
+
+def rules(docs):
+    return [d for d in docs if d.get("kind") == "PrometheusRule"]
+
+
 class MonitoringChartTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -67,6 +87,10 @@ class MonitoringChartTest(unittest.TestCase):
         self.assertEqual(out.returncode, 0, out.stderr[-2000:])
         self.assertEqual(monitors(docs), [],
                          "monitoring.enabled is false by default, so no ServiceMonitor may render")
+        self.assertEqual(pod_monitors(docs), [],
+                         "monitoring.enabled is false by default, so no PodMonitor may render")
+        self.assertEqual(rules(docs), [],
+                         "monitoring.enabled is false by default, so no PrometheusRule may render")
 
     def test_the_switch_renders_the_four_object_store_monitors(self):
         out, docs = render("--set", "monitoring.enabled=true")
@@ -92,18 +116,59 @@ class MonitoringChartTest(unittest.TestCase):
             self.assertNotIn("namespaceSelector", spec,
                              f"ServiceMonitor {name} must stay in the release namespace")
 
+    def test_the_switch_renders_the_four_cnpg_pod_monitors(self):
+        out, docs = render("--set", "monitoring.enabled=true")
+        self.assertEqual(out.returncode, 0, out.stderr[-2000:])
+        rendered = pod_monitors(docs)
+        names = {d["metadata"]["name"] for d in rendered}
+        self.assertEqual(names, EXPECTED_POD_MONITORS, f"rendered PodMonitors: {sorted(names)}")
+        for doc in rendered:
+            name = doc["metadata"]["name"]
+            cluster = name.removeprefix("cnpg-")
+            self.assertEqual(doc["metadata"]["namespace"], "stardelt",
+                             f"PodMonitor {name} is not in the release namespace")
+            spec = doc["spec"]
+            self.assertEqual(spec["selector"]["matchLabels"],
+                             {"cnpg.io/cluster": cluster},
+                             f"PodMonitor {name} selects the wrong pods")
+            self.assertEqual(spec["podMetricsEndpoints"], [ENDPOINT],
+                             f"PodMonitor {name} scrapes the wrong endpoint")
+            self.assertNotIn("namespaceSelector", spec,
+                             f"PodMonitor {name} must stay in the release namespace")
+
+    def test_the_switch_renders_the_starter_alerts(self):
+        out, docs = render("--set", "monitoring.enabled=true")
+        self.assertEqual(out.returncode, 0, out.stderr[-2000:])
+        rendered = rules(docs)
+        self.assertEqual(len(rendered), 1, "expected one PrometheusRule")
+        rule = rendered[0]
+        self.assertEqual(rule["metadata"]["name"], "stardelt-alerts")
+        self.assertEqual(rule["metadata"]["namespace"], "stardelt")
+        groups = rule["spec"]["groups"]
+        self.assertEqual([group["name"] for group in groups], ["stardelt"])
+        alerts = {alert["alert"] for group in groups for alert in group["rules"]}
+        self.assertEqual(alerts, ALERTS, f"rendered alerts: {sorted(alerts)}")
+        for group in groups:
+            for alert in group["rules"]:
+                self.assertIn('namespace="stardelt"', alert["expr"],
+                              f"{alert['alert']} does not name its namespace")
+                self.assertIn("for", alert, f"{alert['alert']} has no duration")
+                self.assertEqual(alert["annotations"]["runbook_url"],
+                                 "https://stardelt.io/docs/operations/monitoring/")
+
     def test_the_labels_reach_every_object(self):
         out, docs = render("--set", "monitoring.enabled=true",
                            "--set", "monitoring.labels.release=kube-prometheus-stack")
         self.assertEqual(out.returncode, 0, out.stderr[-2000:])
-        rendered = monitors(docs)
-        self.assertEqual(len(rendered), 4, "expected four ServiceMonitors")
+        rendered = monitors(docs) + pod_monitors(docs) + rules(docs)
+        self.assertEqual(len(rendered), 9,
+                         "expected four ServiceMonitors, four PodMonitors and one rule")
         for doc in rendered:
             name = doc["metadata"]["name"]
             self.assertEqual(doc["metadata"]["labels"].get("release"), "kube-prometheus-stack",
-                             f"ServiceMonitor {name} does not carry the customer's label")
+                             f"{name} does not carry the customer's label")
             self.assertEqual(doc["metadata"]["labels"].get("app.kubernetes.io/part-of"), "stardelt",
-                             f"ServiceMonitor {name} lost app.kubernetes.io/part-of")
+                             f"{name} lost app.kubernetes.io/part-of")
 
 
 if __name__ == "__main__":
