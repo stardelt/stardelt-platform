@@ -31,6 +31,12 @@ reloader:
       prometheus.io/port: "9090"
       prometheus.io/path: /metrics
   deployment:
+    # Pod Security `restricted` (platform#1096 question 5): the chart's pod block is already
+    # correct (`runAsNonRoot`, 65534, seccomp); only the container lacked the two fields.
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      capabilities: {drop: ["ALL"]}
+      seccompProfile: {type: RuntimeDefault}
     resources:
       requests: { cpu: 10m, memory: 64Mi }
       limits: { memory: 128Mi }
