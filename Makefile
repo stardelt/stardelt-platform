@@ -559,6 +559,7 @@ install-notebooks: deps _context _helm-repos ## Install JupyterHub (notebooks)
 	  --version $(JUPYTERHUB_VERSION) \
 	  $(HELM_FLAGS) \
 	  -f helm-values/jupyterhub.yaml
+	@kubectl apply -f manifests/notebook-public-egress.yaml
 	@kubectl -n $(NAMESPACE) rollout status deploy/hub --timeout=5m
 	@echo "JupyterHub installed. Public service: proxy-public:80."
 
@@ -1310,6 +1311,7 @@ uninstall: _context ## Uninstall all stardelt components (reverse order)
 	@kubectl delete -f manifests/airflow-pipelines.yaml --ignore-not-found
 	@kubectl delete -f manifests/spark-batch-rbac.yaml --ignore-not-found
 	@kubectl delete -f manifests/pipeline-notebook-egress.yaml --ignore-not-found
+	@kubectl delete -f manifests/notebook-public-egress.yaml --ignore-not-found
 	@helm uninstall airflow    --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@helm uninstall reloader   --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@helm uninstall external-secrets --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true

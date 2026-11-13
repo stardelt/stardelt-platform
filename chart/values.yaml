@@ -1487,6 +1487,10 @@ jupyterhub:
     # chart/templates/notebooks-git-egress.yaml as TCP/443 rules), so the git
     # grant stays a documented list and never an open-all.
     networkPolicy:
+      egressAllowRules:
+        # Public egress is granted by manifests/notebook-public-egress.yaml to members only;
+        # a public-demo visitor's pod reaches no public address (platform#1101).
+        nonPrivateIPs: false
       egress:
         - to:
             - podSelector:

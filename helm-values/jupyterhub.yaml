@@ -489,10 +489,14 @@ singleuser:
   # here, as explicit HTTPS-only entries — one `to.ipBlock` per CIDR, TCP 443,
   # never `0.0.0.0/0`. A NetworkPolicy `ipBlock` takes CIDRs only, never
   # hostnames: resolve the server once and list its ranges. Public hosts
-  # (github.com, …) need no entry: the chart default
-  # `egressAllowRules.nonPrivateIPs: true` already lets user pods reach public
-  # IPs. Empty by default: user pods reach nothing private.
+  # (github.com, …) are reached through `manifests/notebook-public-egress.yaml`,
+  # which grants public egress to members' pods only; a visitor's pod reaches
+  # none (platform#1101). Empty by default: user pods reach nothing private.
   networkPolicy:
+    egressAllowRules:
+      # Public egress is granted by manifests/notebook-public-egress.yaml to members only;
+      # a public-demo visitor's pod reaches no public address (platform#1101).
+      nonPrivateIPs: false
     egress:
       - to:
           - podSelector:
