@@ -245,7 +245,8 @@ publishes `ghcr.io/stardelt/superset:dev` (plus `sha-<short>`) on merge to `main
 
 ## Jupyter single-user image
 
-`images/jupyter/Dockerfile` adds `trino`, `pyspark[connect]`, `pandas` and `pyarrow` to
+`images/jupyter/Dockerfile` adds `trino`, `pyspark-client` (the Spark Connect
+client only — no Spark jars, notebooks never run Spark locally), `pandas` and `pyarrow` to
 `quay.io/jupyter/scipy-notebook` and ships `warehouse-quickstart.ipynb`. It also installs
 the **pinned release** of the notebook helper (`stardelt/stardelt-python`): the pin lives in
 the `Makefile` (`STARDELT_LIB_REF`, the commit; `STARDELT_LIB_TAG`, the release) and the
