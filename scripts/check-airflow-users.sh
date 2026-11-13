@@ -86,4 +86,13 @@ grep -qF -e 'name: AIRFLOW__CORE__AUTH_MANAGER' "$manifest" \
 grep -qF -e 'value: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager' "$manifest" \
   || fail "AIRFLOW__CORE__AUTH_MANAGER must name the FAB auth manager (platform#994)"
 
+pipelines=manifests/airflow-pipelines.yaml
+[ -f "$pipelines" ] || fail "missing $pipelines"
+for sa in airflow-dag-processor airflow-worker airflow-scheduler; do
+  grep -qF -e "name: $sa" "$pipelines" \
+    || fail "airflow-pipeline-reader must bind $sa (platform#1170)"
+done
+[ "$(grep -c 'kind: ServiceAccount' "$pipelines")" -eq 3 ] \
+  || fail "airflow-pipeline-reader must bind exactly the three Airflow ServiceAccounts"
+
 echo "check-airflow-users: OK"
