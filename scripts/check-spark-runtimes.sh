@@ -27,7 +27,11 @@ fail() {
 }
 
 # The keys SparkConnect owns and stardelt-operator#460's builder fills from the
-# SparkCluster spec. They are the only allowed difference between the two paths.
+# SparkCluster spec, and the two server-process UI settings: the shared Spark Connect
+# server turns the UI and its Prometheus servlet on because it is the scraped endpoint
+# (stardelt-platform#1158); the per-user SparkCluster servers read this catalogue and
+# stay dark (a test pins `spark.ui.enabled: false` there). They are the only allowed
+# difference between the two paths.
 excluded_keys=$(cat <<'EOF'
 spark.master
 spark.kubernetes.namespace
@@ -45,6 +49,8 @@ spark.dynamicAllocation.initialExecutors
 spark.dynamicAllocation.maxExecutors
 spark.dynamicAllocation.executorIdleTimeout
 spark.dynamicAllocation.shuffleTracking.timeout
+spark.ui.enabled
+spark.ui.prometheus.enabled
 EOF
 )
 
@@ -110,7 +116,11 @@ manifest_pairs=$(printf '%s\n' "$manifest_conf" | awk -v exclusions="$excluded_k
   }' | sort)
 [ -n "$manifest_pairs" ] || fail "no spark.* settings outside the SparkConnect keys in $manifest"
 
-json_pairs=$(jq -r --arg n "$runtime" '.[$n].sparkConf | to_entries[] | "\(.key)\t\(.value)"' "$catalogue" | sort)
+json_pairs=$(jq -r --arg n "$runtime" '.[$n].sparkConf | to_entries[] | "\(.key)\t\(.value)"' "$catalogue" \
+  | awk -F'\t' -v exclusions="$excluded_keys" '
+      BEGIN { n = split(exclusions, lines, "\n"); for (i = 1; i <= n; i++) skip[lines[i]] = 1 }
+      !($1 in skip)' \
+  | sort)
 
 declare -A mconf jconf
 while IFS=$'\t' read -r key value; do
