@@ -10,9 +10,13 @@ What it does, in order:
   1. signs in at the hub the way a browser does (Keycloak login form, no API
      token, no direct-access grant) — with `auto_login` the hub then spawns the
      user's server itself;
-  2. by default stops and starts the server (`NOTEBOOK_RESTART=0` skips it) so
+  2. waits for the spawn the sign-in started (`auto_login` spawns it on the way
+     back from the IdP) and, by default, stops and starts only a server that was
+     already running before sign-in (`NOTEBOOK_RESTART=0` skips the restart) so
      the checks run against the image and auth_state the hub would give a new
-     user, not against whatever was running;
+     user, not against whatever was running. A spawn that is already in flight is
+     never interrupted: JupyterHub then answers `400 … pending stop` and creates
+     no pod for the follow-up start (platform#1252);
   3. runs the quickstart inside the pod with `jupyter nbconvert --execute` and
      expects it to succeed — the notebook itself asserts
      `SELECT current_user` equals the identity in the hub user's token;
@@ -62,9 +66,6 @@ RESTART = os.environ.get("NOTEBOOK_RESTART", "1") not in ("0", "false", "no")
 TIMEOUT = int(os.environ.get("NOTEBOOK_TIMEOUT", "600"))
 PRINCIPAL = os.environ.get("GROUP_PRINCIPAL", "sub")
 
-if not PASSWORD:
-    sys.exit("verify-notebook-identity: set NOTEBOOK_PASSWORD (the user's realm password)")
-
 jar = http.cookiejar.CookieJar()
 opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
 
@@ -105,7 +106,7 @@ def kubectl(*args, **kwargs):
                           capture_output=True, **kwargs)
 
 
-def token_claim(name):
+def token_claim(pod, name):
     """One claim from the pod's own TRINO_TOKEN, without verifying it.
 
     Trino verifies the token; this only answers "which string will Trino use as
@@ -148,83 +149,134 @@ def check(name, ok, detail=""):
         failures.append(name)
 
 
-# 1. Sign in like a browser: the hub redirects to Keycloak, we post the login
-#    form, and with auto_login the hub spawns the server on the way back.
-print(f"› 1/4 sign in at {HUB} as {USER}")
-status, url, html = request("GET", HUB + "/hub/login")
-if "id." in url and "form" not in html.lower():
-    # A deployment where auto_login is off would show a button; say so instead
-    # of failing with a confusing parse error.
-    sys.exit(f"verify-notebook-identity: hub did not redirect to the IdP (final URL {url})")
-action, inputs = only_form(url, html)
-inputs.update({"username": USER, "password": PASSWORD, "credentialId": ""})
-status, url, html = request("POST", action, inputs)
-if "not allowed" in html.lower() or "not authorized" in html.lower():
-    sys.exit(f"verify-notebook-identity: {USER} is not admitted by the hub "
-             "(allowed_groups in helm-values/jupyterhub.yaml gates on Keycloak groups)")
-if "/hub/" not in url and "/user/" not in url:
-    sys.exit(f"verify-notebook-identity: sign-in did not return to the hub (at {url})")
-check("signed in", True)
+# How long one retry of a restart waits, in seconds. A test sets it to 0.
+RESTART_RETRY_SECONDS = 1
 
-# 2. Optionally restart so the current image and auth_state are what we test.
-if RESTART:
+
+def server_state():
+    """The signed-in user's server as the hub reports it: ready, pending or stopped."""
+    status, _, body = request("GET", HUB + "/hub/api/user")
+    if status != 200:
+        return "unknown"
+    for server in (json.loads(body).get("servers") or {}).values():
+        if server.get("ready"):
+            return "ready"
+        if server.get("pending") or server.get("starting"):
+            return "pending"
+    return "stopped"
+
+
+def ensure_fresh_server():
+    """Make sure the checks run against a fresh spawn without wedging the spawner.
+
+    With `auto_login` the sign-in already spawns the server. Interrupting that spawn
+    (`DELETE` while it is pending) leaves JupyterHub answering `400 … pending stop` and
+    no pod is ever created for the follow-up `POST` (platform#1252). So a spawn that is
+    already in flight is waited for — it carries the current image and the new
+    auth_state — and only a server that was running before sign-in is restarted.
+    """
+    state = server_state()
+    if state == "pending":
+        print("› 2/4 sign-in started the spawn (auto_login); waiting for it")
+        return wait_for(server_ready, "server to become ready")
+    if not RESTART:
+        print("› 2/4 restart skipped (NOTEBOOK_RESTART=0)")
+        return wait_for(server_ready, "server to become ready")
     print("› 2/4 restart the server (fresh spawn, fresh token)")
     request("DELETE", f"{HUB}/hub/api/users/{USER}/server")
-    stopped = wait_for(lambda: not server_ready(), "server to stop", timeout=120)
+    stopped = wait_for(lambda: server_state() == "stopped", "server to stop", timeout=120)
     check("server stopped", stopped)
-    request("POST", f"{HUB}/hub/api/users/{USER}/server")
-else:
-    print("› 2/4 restart skipped (NOTEBOOK_RESTART=0)")
+    # The stop is asynchronous: a POST while the hub still answers "pending stop" is
+    # refused and lost, so retry it for a bounded time.
+    deadline = time.time() + 30
+    while True:
+        status, _, body = request("POST", f"{HUB}/hub/api/users/{USER}/server")
+        if status in (200, 201, 202):
+            break
+        if "pending stop" not in body or time.time() >= deadline:
+            check("server restarted", False, body.strip()[:200])
+            return False
+        time.sleep(RESTART_RETRY_SECONDS)
+    return wait_for(server_ready, "server to become ready")
 
-started = wait_for(server_ready, "server to become ready")
-check("server ready", started)
-if not started:
-    sys.exit("verify-notebook-identity: server never became ready; hub log is the next stop")
 
-# 3. Find the pod and run the quickstart inside it.
-pod = os.environ.get("NOTEBOOK_POD", "")
-if not pod:
-    listing = kubectl("get", "pods", "-l", f"hub.jupyter.org/username={USER}",
-                      "-o", "jsonpath={range .items[*]}{.metadata.name}{'\\n'}{end}")
-    pods = [p for p in listing.stdout.split() if p]
-    if not pods:
-        sys.exit(f"verify-notebook-identity: no single-user pod for {USER} in {NAMESPACE}")
-    pod = pods[-1]
-kubectl("wait", "--for=condition=Ready", f"pod/{pod}", f"--timeout={TIMEOUT}s")
-print(f"    pod: {pod}")
+def main():
+    if not PASSWORD:
+        sys.exit("verify-notebook-identity: set NOTEBOOK_PASSWORD (the user's realm password)")
 
-# The engine user the platform configured (`principal-field`), read from the same
-# token the pod uses — no second source of truth for who this person is.
-if PRINCIPAL not in ("sub", "username"):
-    sys.exit(f"verify-notebook-identity: GROUP_PRINCIPAL must be 'sub' or 'username', not {PRINCIPAL!r}")
-expected = token_claim("sub") if PRINCIPAL == "sub" else token_claim("preferred_username")
-if not expected:
-    sys.exit(f"verify-notebook-identity: the token in pod {pod} carries no {PRINCIPAL!r} claim")
+    # 1. Sign in like a browser: the hub redirects to Keycloak, we post the login
+    #    form, and with auto_login the hub spawns the server on the way back.
+    print(f"› 1/4 sign in at {HUB} as {USER}")
+    status, url, html = request("GET", HUB + "/hub/login")
+    if "id." in url and "form" not in html.lower():
+        # A deployment where auto_login is off would show a button; say so instead
+        # of failing with a confusing parse error.
+        sys.exit(f"verify-notebook-identity: hub did not redirect to the IdP (final URL {url})")
+    action, inputs = only_form(url, html)
+    inputs.update({"username": USER, "password": PASSWORD, "credentialId": ""})
+    status, url, html = request("POST", action, inputs)
+    if "not allowed" in html.lower() or "not authorized" in html.lower():
+        sys.exit(f"verify-notebook-identity: {USER} is not admitted by the hub "
+                 "(allowed_groups in helm-values/jupyterhub.yaml gates on Keycloak groups)")
+    if "/hub/" not in url and "/user/" not in url:
+        sys.exit(f"verify-notebook-identity: sign-in did not return to the hub (at {url})")
+    check("signed in", True)
 
-nbconvert = ["jupyter", "nbconvert", "--to", "markdown", "--execute", "--stdout",
-             "--ExecutePreprocessor.timeout=300", NOTEBOOK]
+    # 2. Wait for (or start) a spawn, without interrupting one already in flight.
+    started = ensure_fresh_server()
+    check("server ready", started)
+    if not started:
+        sys.exit("verify-notebook-identity: server never became ready; hub log is the next stop")
 
-print("› 3/4 execute the quickstart with the hub user's token")
-positive = kubectl("exec", pod, "--", *nbconvert)
-output = positive.stdout
-print(output)
-check("quickstart executed", positive.returncode == 0,
-      "" if positive.returncode == 0 else positive.stderr.strip()[-300:])
-check(f"Trino reports current_user = {expected} (the token's {PRINCIPAL})",
-      "signed_in_as" in output and expected in output)
-check("warehouse.covid.covid_summary was queried", "warehouse.covid.covid_summary" in output)
+    # 3. Find the pod and run the quickstart inside it.
+    pod = os.environ.get("NOTEBOOK_POD", "")
+    if not pod:
+        listing = kubectl("get", "pods", "-l", f"hub.jupyter.org/username={USER}",
+                          "-o", "jsonpath={range .items[*]}{.metadata.name}{'\\n'}{end}")
+        pods = [p for p in listing.stdout.split() if p]
+        if not pods:
+            sys.exit(f"verify-notebook-identity: no single-user pod for {USER} in {NAMESPACE}")
+        pod = pods[-1]
+    kubectl("wait", "--for=condition=Ready", f"pod/{pod}", f"--timeout={TIMEOUT}s")
+    print(f"    pod: {pod}")
 
-# 4. The negative: without the token there is nothing to authenticate with.
-print("› 4/4 execute the quickstart with TRINO_TOKEN unset (expect 401)")
-negative = kubectl("exec", pod, "--", "env", "-u", "TRINO_TOKEN", *nbconvert)
-failed = negative.returncode != 0
-refused = "401" in (negative.stdout + negative.stderr) or "Unauthorized" in (negative.stdout + negative.stderr)
-check("notebook fails without TRINO_TOKEN", failed)
-check("failure is a 401 from Trino", refused,
-      "" if refused else (negative.stdout + negative.stderr).strip()[-300:])
+    # The engine user the platform configured (`principal-field`), read from the same
+    # token the pod uses — no second source of truth for who this person is.
+    if PRINCIPAL not in ("sub", "username"):
+        sys.exit(f"verify-notebook-identity: GROUP_PRINCIPAL must be 'sub' or 'username', not {PRINCIPAL!r}")
+    expected = token_claim(pod, "sub") if PRINCIPAL == "sub" else token_claim(pod, "preferred_username")
+    if not expected:
+        sys.exit(f"verify-notebook-identity: the token in pod {pod} carries no {PRINCIPAL!r} claim")
 
-print()
-if failures:
-    print(f"verify-notebook-identity: {len(failures)} check(s) failed: {', '.join(failures)}")
-    sys.exit(1)
-print("verify-notebook-identity: all checks passed")
+    nbconvert = ["jupyter", "nbconvert", "--to", "markdown", "--execute", "--stdout",
+                 "--ExecutePreprocessor.timeout=300", NOTEBOOK]
+
+    print("› 3/4 execute the quickstart with the hub user's token")
+    positive = kubectl("exec", pod, "--", *nbconvert)
+    output = positive.stdout
+    print(output)
+    check("quickstart executed", positive.returncode == 0,
+          "" if positive.returncode == 0 else positive.stderr.strip()[-300:])
+    check(f"Trino reports current_user = {expected} (the token's {PRINCIPAL})",
+          "signed_in_as" in output and expected in output)
+    check("warehouse.covid.covid_summary was queried", "warehouse.covid.covid_summary" in output)
+
+    # 4. The negative: without the token there is nothing to authenticate with.
+    print("› 4/4 execute the quickstart with TRINO_TOKEN unset (expect 401)")
+    negative = kubectl("exec", pod, "--", "env", "-u", "TRINO_TOKEN", *nbconvert)
+    failed = negative.returncode != 0
+    refused = "401" in (negative.stdout + negative.stderr) or "Unauthorized" in (negative.stdout + negative.stderr)
+    check("notebook fails without TRINO_TOKEN", failed)
+    check("failure is a 401 from Trino", refused,
+          "" if refused else (negative.stdout + negative.stderr).strip()[-300:])
+
+    print()
+    if failures:
+        print(f"verify-notebook-identity: {len(failures)} check(s) failed: {', '.join(failures)}")
+        return 1
+    print("verify-notebook-identity: all checks passed")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

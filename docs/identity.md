@@ -114,8 +114,9 @@ and, with it, a way to query the warehouse **as themselves**.
   GitOps controller) are documented in the developer guide.
 
 `scripts/verify-notebook-identity.py` is the acceptance test for all of this: it signs in at the
-hub headlessly, restarts the server, runs the quickstart inside the pod and then runs it again
-with `TRINO_TOKEN` unset to prove the 401.
+hub headlessly (with `auto_login` that signs-in already starts a spawn, which the script waits
+for instead of interrupting; only a server that was running before sign-in is restarted), runs
+the quickstart inside the pod and then runs it again with `TRINO_TOKEN` unset to prove the 401.
 
 ```sh
 HUB_URL=https://jupyter.alpha.dev.stardelt.io NOTEBOOK_USER=analyst NOTEBOOK_PASSWORD=... \
