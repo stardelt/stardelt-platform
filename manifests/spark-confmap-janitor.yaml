@@ -98,10 +98,13 @@ spec:
                 name: spark-confmap-janitor-script
                 defaultMode: 0555
 ---
+# The script itself is filled in by `make spark-confmap-janitor-config` (the file stays a
+# real script under `scripts/`, so `bash -n` and shellcheck see it). This object carries no
+# `data` key on purpose: `data: {}` is a present field, and applying it emptied the filled
+# ConfigMap on every `make install-spark` (platform#1258 follow-up).
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: spark-confmap-janitor-script
   namespace: stardelt
   labels: { app.kubernetes.io/part-of: stardelt }
-data: {}
