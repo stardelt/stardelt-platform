@@ -1,0 +1,82 @@
+# The batch `SparkApplication` path, RBAC half (platform#1208 measured it end to end in a
+# scratch namespace: a driver with the `restricted` blocks came up and printed
+# `Pi is roughly 3.141800`). Two identities, two jobs:
+#
+#   1. the submitter — the Airflow worker creates and reads a `SparkApplication`, nothing else.
+#      No `update`, no `patch`, no `sparkapplications/finalizers`: the Spark operator owns the
+#      object after the submit, the worker must not rewrite or block its teardown.
+#   2. the runner — a `SparkApplication`'s driver runs as `spark-batch-driver` and creates the
+#      executor pods plus one ConfigMap that carries its state. The rules are the operator's
+#      `spark::role` verb for verb, which #1208 measured sufficient.
+#
+# Not granted, on purpose:
+#   - `services`: the driver logs one harmless `services is forbidden` on teardown, and every
+#     Service it makes carries an ownerReference, so the garbage collector removes it.
+#   - `update` and `deletecollection` on ConfigMaps (platform#1121): a driver's own code runs in
+#     it, and those verbs would rewrite or sweep another workload's ConfigMap.
+#   - any access to Secrets, and anything outside namespace `stardelt`.
+#
+# The driver ServiceAccount does not set `automountServiceAccountToken: false`: unlike the
+# Connect executor, it needs its token to create executor pods. Applied by `make install`
+# after the Airflow release, next to `manifests/airflow-pipelines.yaml`.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: airflow-spark-submitter
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+rules:
+  - apiGroups: ["sparkoperator.k8s.io"]
+    resources: ["sparkapplications"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: airflow-spark-submitter
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+subjects:
+  - kind: ServiceAccount
+    name: airflow-worker
+    namespace: stardelt
+roleRef:
+  kind: Role
+  name: airflow-spark-submitter
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spark-batch-driver
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: spark-batch-driver
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete", "deletecollection"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: spark-batch-driver
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+subjects:
+  - kind: ServiceAccount
+    name: spark-batch-driver
+    namespace: stardelt
+roleRef:
+  kind: Role
+  name: spark-batch-driver
+  apiGroup: rbac.authorization.k8s.io
