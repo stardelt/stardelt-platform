@@ -1,0 +1,60 @@
+{{- if .Values.airflow.enabled }}
+# A scheduled notebook pod (app.kubernetes.io/name: pipeline-notebook) executes a person's
+# code. It reaches the query engine, the object store's S3 gateway, DNS and the public
+# internet — and no other private address (platform#1100). Without this policy it can reach
+# every database pod in the namespace. Same object the Makefile path applies from
+# manifests/pipeline-notebook-egress.yaml, and the same one the operator renders
+# (stardelt-operator#649), so the install paths agree.
+#
+# Needs a CNI that enforces NetworkPolicy — k3s does; plain Flannel does not.
+# To debug a task that legitimately needs another private endpoint, add one `to` entry
+# here and in the other two copies rather than deleting the policy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: pipeline-notebook-egress
+  namespace: {{ .Release.Namespace }}
+  labels: { app.kubernetes.io/part-of: stardelt }
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: pipeline-notebook
+  policyTypes: [Egress]
+  egress:
+    # DNS: the cluster resolver (kube-system) and the private ranges a resolver may sit in.
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+        - ipBlock: { cidr: 10.0.0.0/8 }
+        - ipBlock: { cidr: 172.16.0.0/12 }
+        - ipBlock: { cidr: 192.168.0.0/16 }
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # The query engine: the governed path (PIPELINE_TRINO_URL, https 8443).
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: trino
+              app.kubernetes.io/component: coordinator
+      ports:
+        - protocol: TCP
+          port: 8443
+    # The object store's S3 gateway: the presigned GET of the notebook and PUT of the copy.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: seaweedfs
+              app.kubernetes.io/component: s3
+      ports:
+        - protocol: TCP
+          port: 8333
+    # The public internet: public datasets, and the public IdP token endpoint. Never a
+    # private range, and never the cloud metadata address.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.169.254/32]
+{{- end }}

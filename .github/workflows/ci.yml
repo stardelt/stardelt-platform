@@ -379,6 +379,8 @@ jobs:
           ! grep -q 'name: seaweedfs-s3-secret' /tmp/umbrella.yaml || { echo "SeaweedFS must read seaweedfs-s3-config, not generate its own secret" >&2; exit 1; }
       - name: Ingress allow-list renders on every public ingress (platform#427)
         run: python3 -m unittest scripts.tests.test_ingress_allowlist -v
+      - name: Notebook pod egress policy renders with Airflow (platform#1166)
+        run: python3 -m unittest scripts.tests.test_pipeline_notebook_egress -v
 
   # ---------------------------------------------------------------------------
   # Notebook helper (stardelt/stardelt-python): the library has its own
