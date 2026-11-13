@@ -1,0 +1,27 @@
+{{- if .Values.jupyterhub.enabled }}
+# Public internet for members' notebook pods only (platform#1101). A public-demo
+# visitor's pod carries stardelt.io/group.visitors=true and is not selected, so it
+# reaches no public address. NetworkPolicies only add rights: this grants members
+# what the chart's nonPrivateIPs default used to grant everyone.
+# Same object the Makefile path applies from manifests/notebook-public-egress.yaml,
+# and the same one the operator renders (stardelt/stardelt-operator#689), so the
+# install paths agree.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: notebook-public-egress
+  namespace: {{ .Release.Namespace }}
+  labels: { app.kubernetes.io/part-of: stardelt }
+spec:
+  podSelector:
+    matchLabels:
+      component: singleuser-server
+    matchExpressions:
+      - { key: stardelt.io/group.visitors, operator: DoesNotExist }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10]
+{{- end }}
