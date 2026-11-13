@@ -51,7 +51,7 @@ and, with it, a way to query the warehouse **as themselves**.
 * **Image.** `helm-values/jupyterhub.yaml` points the single-user pods at
   `ghcr.io/stardelt/jupyter-singleuser:dev` (built by the `Image` workflow from
   `images/jupyter/Dockerfile`): `scipy-notebook` plus the `trino` Python client,
-  `pyspark[connect]`, `pandas` and `pyarrow`, the git extensions `jupyterlab-git`
+  `pyspark-client`, `pandas` and `pyarrow`, the git extensions `jupyterlab-git`
   and `nbgitpuller` (both BSD-3-Clause), `stardelt-jupyterlab` (the stardelt Graphite and
   Silver themes, Graphite the default, plus a top bar with the link back to Nova, the user and
   the runtime), and the `warehouse-quickstart` notebook under

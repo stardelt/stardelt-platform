@@ -4,7 +4,8 @@
 # Upstream `scipy-notebook` plus the client libraries a warehouse notebook needs,
 # so a new user can query the platform without a `pip install` in the first cell:
 #   - trino            Python client for the warehouse (Trino → Lakekeeper)
-#   - pyspark[connect] Spark Connect client, ready for the Spark work (step 3)
+#   - pyspark-client  the Spark Connect client only (no Spark jars; notebooks
+#                      never run Spark locally)
 #   - pandas, pyarrow  DataFrames and Arrow; scipy-notebook ships pandas but not
 #                      pyarrow, which the Spark/Arrow path needs
 #   - jupyterlab-git   Git panel in JupyterLab, so notebooks live in the user's
@@ -55,7 +56,7 @@ RUN python3 -m pip uninstall -y jupyterlab-git \
     && python3 -m pip install --no-cache-dir --upgrade-strategy only-if-needed \
         pandas==2.2.3 \
         pyarrow==18.1.0 \
-        'pyspark[connect]==4.1.4' \
+        pyspark-client==4.1.4 \
         jupyterlab-git==0.55.0 \
         nbgitpuller==1.3.0 \
         papermill==2.7.0 \

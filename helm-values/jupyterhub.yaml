@@ -396,7 +396,7 @@ singleuser:
   cloudMetadata:
     blockWithIptables: false
   # stardelt's image (images/jupyter/Dockerfile): scipy-notebook + trino,
-  # pyspark[connect], pandas, pyarrow, the git extensions (jupyterlab-git,
+  # pyspark-client, pandas, pyarrow, the git extensions (jupyterlab-git,
   # nbgitpuller), and the warehouse quickstart under
   # /opt/stardelt/notebooks. Built and published by CI (Image workflow), private
   # like Superset, so the spawner pulls with the ghcr-creds Secret.

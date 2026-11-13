@@ -17,11 +17,11 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 notebook_dockerfile="images/jupyter/Dockerfile"
 spark_dockerfile="images/spark/Dockerfile"
 
-client=$(grep -oE "pyspark\[connect\]==[0-9]+(\.[0-9]+){0,2}" "$notebook_dockerfile" | head -1 | sed 's/.*==//')
+client=$(grep -oE "pyspark-client==[0-9]+(\.[0-9]+){0,2}" "$notebook_dockerfile" | head -1 | sed 's/.*==//')
 server=$(grep -oE "^FROM apache/spark:[0-9]+(\.[0-9]+){0,2}" "$spark_dockerfile" | head -1 | sed 's/.*://')
 
 if [ -z "$client" ]; then
-  echo "check-spark-parity: no pyspark pin found in $notebook_dockerfile" >&2
+  echo "check-spark-parity: no pyspark-client pin found in $notebook_dockerfile" >&2
   exit 1
 fi
 if [ -z "$server" ]; then
