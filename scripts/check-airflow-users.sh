@@ -95,4 +95,13 @@ done
 [ "$(grep -c 'kind: ServiceAccount' "$pipelines")" -eq 3 ] \
   || fail "airflow-pipeline-reader must bind exactly the three Airflow ServiceAccounts"
 
+batch=manifests/spark-batch-rbac.yaml
+[ -f "$batch" ] || fail "missing $batch"
+grep -qF -e 'sparkapplications' "$batch" \
+  || fail "$batch must grant sparkapplications (platform#1208)"
+grep -qF -e 'name: airflow-worker' "$batch" \
+  || fail "airflow-spark-submitter must bind airflow-worker (platform#1208)"
+grep -qF -e 'name: spark-batch-driver' "$batch" \
+  || fail "$batch must create and bind the spark-batch-driver ServiceAccount"
+
 echo "check-airflow-users: OK"
