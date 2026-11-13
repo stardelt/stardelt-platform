@@ -8,6 +8,22 @@
 #
 # kind tuning: 1 worker, conservative JVM heap.
 
+# Pod Security `restricted` (platform#1096 question 5). Both keys are the chart's own:
+# `securityContext` renders onto the pod, `containerSecurityContext` onto the container.
+# Each REPLACES the chart's block, so the pod repeats the ids the image runs with
+# (`kubectl -n stardelt exec deploy/trino-coordinator -c trino-coordinator -- id` →
+# `uid=1000(trino) gid=1000(trino)`) and the container repeats the two fields the chart
+# already declared. `restricted` then needs only runAsNonRoot and seccomp.
+securityContext:
+  runAsUser: 1000
+  runAsGroup: 1000
+  runAsNonRoot: true
+  seccompProfile: {type: RuntimeDefault}
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities: {drop: ["ALL"]}
+  seccompProfile: {type: RuntimeDefault}
+
 server:
   workers: 1
   config:
