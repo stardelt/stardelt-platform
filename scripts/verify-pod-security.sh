@@ -27,12 +27,28 @@ cleanup() {
   kubectl delete namespace "$PROBE" --ignore-not-found --wait=false >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
-# A previous run killed before its trap: remove what it left, then wait until it is really gone.
+# A previous run killed before its trap: remove what it left, then wait until the name is gone.
+# `--wait=true` returns when the deletion is accepted; the namespace can stay Terminating for a
+# while, and recreating it then fails. Wait for NotFound, with a bound (platform#1211).
 kubectl delete namespace "$PROBE" --ignore-not-found --wait=true >/dev/null 2>&1 || true
-kubectl create namespace "$PROBE" >/dev/null
-kubectl label namespace "$PROBE" \
-  pod-security.kubernetes.io/enforce=restricted \
-  pod-security.kubernetes.io/enforce-version=latest >/dev/null
+for _ in $(seq 1 30); do
+  kubectl get namespace "$PROBE" >/dev/null 2>&1 || break
+  sleep 1
+done
+if kubectl get namespace "$PROBE" >/dev/null 2>&1; then
+  echo "the probe namespace $PROBE is still terminating after 30 s; wait and retry, or set POD_SECURITY_PROBE_NS to another name" >&2
+  exit 1
+fi
+if ! kubectl create namespace "$PROBE" >/dev/null; then
+  echo "cannot create the probe namespace $PROBE (the API server's message is above)" >&2
+  exit 1
+fi
+if ! kubectl label namespace "$PROBE" \
+    pod-security.kubernetes.io/enforce=restricted \
+    pod-security.kubernetes.io/enforce-version=latest >/dev/null; then
+  echo "cannot label the probe namespace $PROBE restricted (the API server's message is above)" >&2
+  exit 1
+fi
 
 total=0 passed=0 failed=0 allowed=0
 : > "$tmp/allowed"
@@ -53,7 +69,7 @@ for pod in $(kubectl -n "$NS" get pods -o json \
     passed=$((passed + 1))
     continue
   fi
-  reason="$(grep -o 'violates PodSecurity "restricted:latest": .*' "$tmp/err" | head -1 | cut -c1-200)"
+  reason="$(grep -o 'violates PodSecurity "restricted:latest": .*' "$tmp/err" | head -1 | cut -c1-200 || true)"
   [ -n "$reason" ] || reason="$(head -1 "$tmp/err")"
   matched=""
   for pattern in ${allow[@]+"${allow[@]}"}; do
