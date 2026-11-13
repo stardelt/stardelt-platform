@@ -174,6 +174,8 @@ def reset(pipelines=0):
 
     Returns the number of drops that failed; the caller exits 1 so the Job shows red.
     `pipelines` is how many visitor pipelines main() already deleted, for the summary.
+    The summary is a claim about the catalog *after* the drops, so the catalog is read
+    back and anything left there makes the run a failure.
     """
     tables = run(
         f"select table_schema, table_name, table_type from {CATALOG}.information_schema.tables"
@@ -220,12 +222,28 @@ def reset(pipelines=0):
             dropped_schemas += 1
 
     run(f"create schema if not exists {CATALOG}.scratch")
+    leftover = int(
+        str(
+            run(
+                f"select count(*) from {CATALOG}.information_schema.tables"
+                " where table_schema not in ('information_schema', 'system')"
+            )[0][0]
+        )
+    )
+    failed += leftover
+    if failed or leftover:
+        print(
+            f"demo-reset: {failed} drop(s) failed; {leftover} object(s) remain in {CATALOG}; "
+            "scratch is NOT empty",
+            file=sys.stderr,
+        )
+        return failed
     print(
         f"demo-reset: removed {pipelines} visitor pipeline(s); "
         f"dropped {dropped_tables} tables, {dropped_views} views, "
         f"{dropped_schemas} schemas; scratch ready"
     )
-    return failed
+    return 0
 
 
 def main():
