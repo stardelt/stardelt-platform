@@ -14,6 +14,7 @@ import os
 import ssl
 import tempfile
 import unittest
+import urllib.error
 import urllib.parse
 from pathlib import Path
 from unittest import mock
@@ -46,6 +47,8 @@ class Reset(unittest.TestCase):
 
         def fake_run(sql):
             statements.append(sql)
+            if "select count(*)" in sql:
+                return [[0]]
             if ".information_schema.tables" in sql:
                 return [['s"1', "t", "BASE TABLE"], ['s"1', "v", "VIEW"]]
             if ".information_schema.schemata" in sql:
@@ -74,12 +77,61 @@ class Reset(unittest.TestCase):
                 " where schema_name not in ('information_schema', 'system')",
                 'drop schema playground."s""1"',
                 "create schema if not exists playground.scratch",
+                "select count(*) from playground.information_schema.tables"
+                " where table_schema not in ('information_schema', 'system')",
             ],
         )
         # The connector's own schemas are never dropped, even if a query returns them
         # (platform#943: the nightly Job failed on `drop schema playground.system`).
         self.assertNotIn('drop schema playground."system"', statements)
         self.assertNotIn('drop schema playground."information_schema"', statements)
+
+    def test_a_refused_drop_fails_the_run_and_never_prints_scratch_ready(self):
+        def fake_run(sql):
+            if "select count(*)" in sql:
+                return [[1]]
+            if ".information_schema.tables" in sql:
+                return [["scratch", "my_orders", "BASE TABLE"]]
+            if ".information_schema.schemata" in sql:
+                return [["scratch"]]
+            if sql.startswith("drop table"):
+                raise urllib.error.HTTPError("https://trino/", 403, "Access Denied", None, None)
+            return []
+
+        with mock.patch.object(JOB, "CATALOG", "playground"), mock.patch.object(JOB, "run", fake_run):
+            output = io.StringIO()
+            errors = io.StringIO()
+            with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                failed = JOB.reset()
+
+        self.assertGreaterEqual(failed, 1)
+        self.assertNotIn("scratch ready", output.getvalue())
+        self.assertIn(
+            "drop failed: 403 Access Denied",
+            errors.getvalue(),
+        )
+        self.assertIn(
+            "demo-reset: 2 drop(s) failed; 1 object(s) remain in playground; scratch is NOT empty",
+            errors.getvalue(),
+        )
+
+    def test_objects_left_after_a_silent_noop_fail_the_run(self):
+        def fake_run(sql):
+            if "select count(*)" in sql:
+                return [[2]]
+            if ".information_schema.tables" in sql:
+                return [["scratch", "my_orders", "BASE TABLE"]]
+            return []
+
+        with mock.patch.object(JOB, "CATALOG", "playground"), mock.patch.object(JOB, "run", fake_run):
+            output = io.StringIO()
+            errors = io.StringIO()
+            with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                failed = JOB.reset()
+
+        self.assertEqual(failed, 2)
+        self.assertNotIn("scratch ready", output.getvalue())
+        self.assertIn("2 object(s) remain", errors.getvalue())
 
 
 class VisitorPipelines(unittest.TestCase):
@@ -134,7 +186,12 @@ class VisitorPipelines(unittest.TestCase):
         self.assertEqual([method for method, _ in calls], ["GET"])
 
     def test_the_count_reaches_the_summary(self):
-        with mock.patch.object(JOB, "CATALOG", "playground"), mock.patch.object(JOB, "run", lambda sql: []):
+        def fake_run(sql):
+            if "select count(*)" in sql:
+                return [[0]]
+            return []
+
+        with mock.patch.object(JOB, "CATALOG", "playground"), mock.patch.object(JOB, "run", fake_run):
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 JOB.reset(2)
