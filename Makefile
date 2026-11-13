@@ -630,8 +630,8 @@ install-spark: deps _context ## Install the Spark Connect endpoint (Iceberg on t
 	else \
 	  echo "› spark-connect pod guard: skipped — ValidatingAdmissionPolicy needs Kubernetes 1.30+"; \
 	fi
-	@$(MAKE) spark-confmap-janitor-config
 	@kubectl -n $(NAMESPACE) apply -f manifests/spark-confmap-janitor.yaml
+	@$(MAKE) spark-confmap-janitor-config
 	@kubectl -n $(NAMESPACE) get configmap stardelt-spark-runtimes -o name
 	@echo "Spark Connect ready: sc://spark-connect.$(NAMESPACE).svc.cluster.local:15002 (in-cluster only)"
 	@NS=$(NAMESPACE) bash scripts/verify-compute.sh
