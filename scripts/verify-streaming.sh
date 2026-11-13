@@ -196,6 +196,31 @@ for item in (json.load(sys.stdin).get("items") or []):
   for name in $running_streams; do
     [ -n "$name" ] || continue
     script_streams=$((script_streams + 1))
+    # A Running phase is not health: a driver whose executor pod requests are all refused keeps
+    # the application Running and processes nothing (`pegelonline` did for five hours on
+    # 2026-11-13; operator#677). Two minutes of grace: the Spark operator creates the executor
+    # right after the submission, so a stream that just started is not called dead.
+    executor_since="$(kubectl -n "$NS" get sparkapplication "$name" \
+      -o jsonpath='{.status.lastSubmissionAttemptTime}' 2>/dev/null || true)"
+    executor_age=""
+    if [ -n "$executor_since" ]; then
+      executor_age=$(( $(date -u +%s) - $(date -u -d "$executor_since" +%s 2>/dev/null || date -u +%s) ))
+    fi
+    if [ -n "$executor_age" ] && [ "$executor_age" -gt 120 ]; then
+      app_id="$(kubectl -n "$NS" get sparkapplication "$name" \
+        -o jsonpath='{.status.sparkApplicationId}' 2>/dev/null || true)"
+      executors=0
+      if [ -n "$app_id" ]; then
+        executors="$(kubectl -n "$NS" get pods \
+          -l "spark-app-selector=$app_id,spark-role=executor" -o name 2>/dev/null | wc -l)"
+      fi
+      if [ "$executors" -eq 0 ]; then
+        echo "✗ $name   Running with no executor pod (submitted $executor_since) — every pod request is refused; the stream processes nothing"
+        problems=$((problems + 1))
+      else
+        echo "✓ $name   $executors executor pod(s)"
+      fi
+    fi
     script="$(kubectl -n "$NS" get cm "$name-job" -o jsonpath='{.data.stream\.py}' 2>/dev/null || true)"
     if ! kubectl -n "$NS" get sparkapplication "$name" >/dev/null 2>&1 || [ -z "$script" ]; then
       echo "! $name cannot read its job script (ConfigMap $name-job / SparkApplication $name)"
