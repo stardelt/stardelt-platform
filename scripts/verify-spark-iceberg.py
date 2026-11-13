@@ -31,7 +31,10 @@ What it checks:
      `[PYTHON_VERSION_MISMATCH]` failure that makes every one of them fail
      (platform#369), so the guard prints both versions and fails with
      "keep both on the same Python minor: Spark Connect UDFs fail otherwise".
-  5. The scratch namespace `spark_verify` is dropped again.
+  5. A table dropped with `PURGE` returns (no `NoSuchKey` retry loop) and is gone from the
+     catalog — the property `rest-catalog-purge=true` is what makes the drop single-purge
+     (stardelt-platform#1127).
+  6. The scratch namespace `spark_verify` is dropped again.
 
 Trino is queried with the same `TRINO_TOKEN` as a bearer; `TRINO_USER` /
 `TRINO_PASSWORD` (HTTP Basic) and anonymous access remain available for the
@@ -137,6 +140,10 @@ def spark_session():
     )
     for key, value in (
         ("type", "rest"),
+        # The catalog purges on the server (Lakekeeper defaults purgeRequested to true);
+        # without this the client-side purge races it and the drop fails after the table is
+        # gone (stardelt-platform#1127, measured 2/2).
+        ("rest-catalog-purge", "true"),
         ("uri", CATALOG_URI),
         ("warehouse", "warehouse"),
         ("token", CATALOG_TOKEN),
@@ -180,6 +187,30 @@ def _noop(_row) -> None:
 def _noop_partition(rows) -> None:
     for _row in rows:
         pass
+
+
+def check_purge(spark) -> None:
+    """A drop purges once, on the server — and a plain DROP TABLE is destructive here.
+
+    Lakekeeper defaults `purgeRequested` to true, while Iceberg's SparkCatalog drops without
+    the parameter and then runs its own client-side purge; the two race and the drop fails with
+    `NoSuchKey` after the table is already gone (stardelt-platform#1127). With
+    `rest-catalog-purge=true` the DELETE carries `purgeRequested=true` and there is no
+    client-side purge. The second half is the measured side effect: `DROP TABLE` without
+    `PURGE` removes the files as well, so the check records it rather than assuming it.
+    """
+    table = f"{SCRATCH}.purge_probe"
+    name = table.split(".")[-1]
+    spark_exec(spark, f"CREATE TABLE {table} (id BIGINT) USING iceberg")
+    spark_exec(spark, f"INSERT INTO {table} VALUES (1), (2)")
+    try:
+        spark_exec(spark, f"DROP TABLE {table} PURGE")
+    except Exception as exc:  # the measured failure shape: NoSuchKey after a retried task
+        check("DROP TABLE … PURGE returns", False, f"{type(exc).__name__}: {str(exc)[:300]}")
+    else:
+        check("DROP TABLE … PURGE returns", True)
+    listed = {row[0] for row in trino(f"SHOW TABLES FROM {SCRATCH}")}
+    check("the purged table is gone from the catalog", name not in listed)
 
 
 def check_python_on_executors(spark) -> None:
@@ -341,8 +372,11 @@ def main() -> int:
 
             print("\n4. Python on the executors (UDFs, pandas UDFs, mapInPandas, foreach)")
             check_python_on_executors(spark)
+
+            print("\n5. a drop purges once, on the server (platform#1127)")
+            check_purge(spark)
         finally:
-            print(f"\n5. cleaning up {SCRATCH}")
+            print(f"\n6. cleaning up {SCRATCH}")
             for statement in (
                 f"DROP TABLE IF EXISTS {SCRATCH}.from_trino",
                 f"DROP TABLE IF EXISTS {SCRATCH}.from_spark",
