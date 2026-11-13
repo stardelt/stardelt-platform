@@ -114,8 +114,9 @@ COPY --chown=${NB_UID}:${NB_GID} notebooks/ /opt/stardelt/notebooks/
 # Makefile's ref disagree. Installed rather than copied so every notebook
 # imports it with no sys.path tweak; the import check fails the build here, not
 # in a user's first cell.
-# The ref is ahead of the tag: the token-POST fix (stardelt-platform#1094).
-ARG STARDELT_LIB_REF=93605488e3780702b1c980db08176708d9abf9ec
+# The ref is ahead of the tag: the in-cluster Nova API base (stardelt-python#115) and the
+# catalog purge fix (stardelt-python#114).
+ARG STARDELT_LIB_REF=4582874642b9f356edf99c01dc4376591c24bea7
 RUN python3 -m pip install --no-cache-dir --upgrade-strategy only-if-needed \
         "stardelt[jupyter] @ git+https://github.com/stardelt/stardelt-python@${STARDELT_LIB_REF}" \
     && python3 -c "import stardelt; print('stardelt', stardelt.__version__)" \

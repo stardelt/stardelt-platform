@@ -429,6 +429,12 @@ singleuser:
           name: stardelt-identity
           key: publicUrl
           optional: true
+    # The same Nova, by its in-cluster Service, for the notebook's own HTTP calls
+    # (`stardelt.publish()`, `stardelt.api.Client`): a visitor's pod has no public
+    # egress (platform#1101), so the public origin above is unreachable from it
+    # (platform#1229). The public origin stays as it is — it is also the hub's
+    # `frame-ancestors` origin (`15-framing` below), which a browser compares.
+    STARDELT_NOVA_API_URL: http://nova.stardelt.svc.cluster.local:8080
     # Spark Connect's ClusterIP endpoint for `stardelt.spark()` (default when
     # the pod does not override it). Reachable through the egress rule below;
     # Spark has no authentication of its own, so this stays cluster-internal.
@@ -508,6 +514,7 @@ singleuser:
   #                                            (the server admits members only: manifests/spark.yaml, spark-connect-ingress)
   #   podSelector trino coordinator + 8443     the warehouse's TLS endpoint, nothing else
   #   podSelector openbao + 8200               the secret store, for stardelt.connection()
+  #   podSelector nova + 8080                  Nova's API, for stardelt.publish()/stardelt.api
   #
   # (was: ConnectionRefusedError in the quickstart's Spark cell, stardelt-platform#90;
   # the Trino rule arrived with the in-cluster TLS listener, platform#80 — before it,
@@ -548,6 +555,17 @@ singleuser:
                 app.kubernetes.io/name: openbao
         ports:
           - port: 8200
+            protocol: TCP
+      # Nova's API, in-cluster (platform#1229): the public origin is unreachable
+      # from a visitor's pod (platform#1101), so the notebook calls the Service.
+      # Same namespace, so no namespaceSelector — this admits the Nova pods here
+      # and nothing else.
+      - to:
+          - podSelector:
+              matchLabels:
+                app.kubernetes.io/name: nova
+        ports:
+          - port: 8080
             protocol: TCP
       # Example — uncomment and set the customer's ranges:
       # - to:
