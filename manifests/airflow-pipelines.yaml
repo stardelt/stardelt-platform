@@ -5,6 +5,9 @@
 # task pod parses the same DAG file before it runs a task, so its ServiceAccount needs the same
 # read access. The loader also checks a pipeline's `runAs` against its `ServicePrincipal`
 # (owner group, ready, credentials Secret name) before it builds the DAG — platform#260.
+# The scheduler parses the bundle too (Airflow 3), so `airflow dags test` in the scheduler
+# pod — the command the runbook and several tickets use — needs the same read access
+# (platform#1170).
 # No access to Secrets: the credentials reach the task pod through a `secretKeyRef` the kubelet
 # resolves. Nothing here can create, change or delete anything, and the Role is limited to this
 # namespace. Applied by `make install` after the Airflow release.
@@ -36,6 +39,9 @@ subjects:
     namespace: stardelt
   - kind: ServiceAccount
     name: airflow-worker
+    namespace: stardelt
+  - kind: ServiceAccount
+    name: airflow-scheduler
     namespace: stardelt
 roleRef:
   kind: Role
