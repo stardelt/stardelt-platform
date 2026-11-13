@@ -1,7 +1,8 @@
 # Daily base backup of the platform's Postgres clusters, on top of the
-# continuous WAL archiving configured in each Cluster's
-# `spec.backup.barmanObjectStore` (`cnpg-postgres.yaml` for the catalog,
-# `openfga-pg.yaml` for the permission store).
+# continuous WAL archiving each Cluster does through `spec.plugins` (the
+# barman-cloud plugin) and the `ObjectStore`s in `cnpg-objectstore.yaml`
+# (`cnpg-postgres.yaml` for the catalog, `openfga-pg.yaml` for the permission
+# store).
 #
 # WAL alone recovers to a point in time; a base backup makes the restore fast
 # instead of replaying every WAL segment since the volume was created. Together
@@ -25,7 +26,9 @@ spec:
   # Keep the Backup objects after the schedule is deleted, so deleting this CR
   # cannot delete the only record of what was taken.
   backupOwnerReference: self
-  method: barmanObjectStore
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io
   cluster:
     name: lakekeeper-pg
 ---
@@ -40,6 +43,8 @@ spec:
   schedule: "0 30 2 * * *"
   immediate: true
   backupOwnerReference: self
-  method: barmanObjectStore
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io
   cluster:
     name: openfga-pg
