@@ -29,26 +29,19 @@ spec:
   imageName: ghcr.io/cloudnative-pg/postgresql:18.3-system-trixie
   storage:
     size: 1Gi
+  # Backup through the barman-cloud plugin (CloudNativePG 1.30; the native
+  # `barmanObjectStore` is removed in 1.32). The plugin reads
+  # ObjectStore/keycloak-pg-backups from `manifests/cnpg-objectstore.yaml`
+  # (installed by `make step-barman-cloud-plugin`); point that store's
+  # `destinationPath`/`endpointURL` at your own bucket for production.
   backup:
     retentionPolicy: "14d"
-    barmanObjectStore:
-      destinationPath: s3://backups/
-      endpointURL: http://seaweedfs-s3.stardelt.svc.cluster.local:8333
-      s3Credentials:
-        accessKeyId:
-          name: stardelt-s3-creds
-          key: access-key
-        secretAccessKey:
-          name: stardelt-s3-creds
-          key: secret-key
-        region:
-          name: stardelt-s3-creds
-          key: region
-      wal:
-        compression: gzip
-        maxParallel: 2
-      data:
-        compression: gzip
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      enabled: true
+      isWALArchiver: true
+      parameters:
+        barmanObjectName: keycloak-pg-backups
   bootstrap:
     initdb:
       database: keycloak
@@ -76,7 +69,9 @@ spec:
   schedule: "0 45 2 * * *"      # 15 minutes after lakekeeper-pg-daily so the two do not overlap
   immediate: true
   backupOwnerReference: self
-  method: barmanObjectStore
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io
   cluster:
     name: keycloak-pg
 ---
