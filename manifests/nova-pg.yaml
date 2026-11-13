@@ -21,28 +21,19 @@ spec:
   imageName: ghcr.io/cloudnative-pg/postgresql:18.3-system-trixie
   storage:
     size: 1Gi
-  # Same continuous backup as the other two clusters; CNPG writes under
-  # <bucket>/nova-pg/, so the three share the `backups` bucket without colliding.
+  # Backup through the barman-cloud plugin (CloudNativePG 1.30; the native
+  # `barmanObjectStore` is removed in 1.32). The plugin reads
+  # ObjectStore/nova-pg-backups from `manifests/cnpg-objectstore.yaml`, installed
+  # with `cnpg/plugin-barman-cloud` by the backup-plugin step.
   backup:
     retentionPolicy: "14d"
-    barmanObjectStore:
-      destinationPath: s3://backups/
-      endpointURL: http://seaweedfs-s3.stardelt.svc.cluster.local:8333
-      s3Credentials:
-        accessKeyId:
-          name: stardelt-s3-creds
-          key: access-key
-        secretAccessKey:
-          name: stardelt-s3-creds
-          key: secret-key
-        region:
-          name: stardelt-s3-creds
-          key: region
-      wal:
-        compression: gzip
-        maxParallel: 2
-      data:
-        compression: gzip
+    target: prefer-standby
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      enabled: true
+      isWALArchiver: true
+      parameters:
+        barmanObjectName: nova-pg-backups
   bootstrap:
     initdb:
       database: nova
@@ -70,6 +61,8 @@ spec:
   schedule: "0 0 3 * * *"       # 15 minutes after keycloak-pg-daily (02:45), 30 after lakekeeper-pg-daily (02:30)
   immediate: true
   backupOwnerReference: self
-  method: barmanObjectStore
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io
   cluster:
     name: nova-pg
