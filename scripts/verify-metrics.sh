@@ -12,9 +12,6 @@
 # openfga). Plain `app.kubernetes.io/part-of=stardelt` pods are refused, which is why the
 # probe carries `app.kubernetes.io/name=prometheus` (the label monitoring.coreos.com's own
 # pods carry, operator#607).
-#
-# `nova:8081/metrics` is deliberately not listed: the nova image running on the lab
-# predates nova#903's endpoint. It joins this list after the pin.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 NS="${NS:-${NAMESPACE:-stardelt}}"
@@ -41,6 +38,7 @@ targets=(
   keycloak:9000
   lakekeeper:9000
   openfga:2112
+  nova:8081
   reloader-reloader:9090
   spark-operator-metrics:8080
   stardelt-operator-metrics:8082
