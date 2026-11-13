@@ -297,6 +297,11 @@ hub:
   # the umbrella chart's `jupyterhub.hub` — keep both in sync.
   services:
     nova: {}
+  # Prometheus text on /hub/metrics (#607). JupyterHub requires the read:metrics
+  # scope unless this is false (`JupyterHub.authenticate_prometheus`); the
+  # NetworkPolicy rule below is then the gate, exactly like SeaweedFS and the
+  # catalog. The chart's Service already advertises prometheus.io/scrape.
+  authenticatePrometheus: false
   loadRoles:
     nova-workspace:
       description: Nova reads workspace state and starts or stops servers for the signed-in person
@@ -317,15 +322,27 @@ hub:
         - "admin:auth_state!user"
         - "read:users!user"
   # The chart's own hub NetworkPolicy (on by default) admits only pods labelled
-  # `hub.jupyter.org/network-access-hub: "true"` on the hub's port. Nova is a
-  # service, not a spawner-connected pod, so it gets the hub API port by its own
-  # pod label — TCP 8081 only.
+  # `hub.jupyter.org/network-access-hub: "true"` on the hub's port. Two sources
+  # get the hub API port (TCP 8081) by their own pod label: Nova, a service rather
+  # than a spawner-connected pod, for the hub API; and the customer's Prometheus,
+  # for the unauthenticated `/hub/metrics` only.
   networkPolicy:
     ingress:
       - from:
           - podSelector:
               matchLabels:
                 app.kubernetes.io/name: nova
+        ports:
+          - port: 8081
+            protocol: TCP
+      # The customer's Prometheus in any namespace may read /hub/metrics (the only
+      # unauthenticated path on 8081; the hub API still needs a token). Same gate
+      # label as the other endpoints (#607).
+      - from:
+          - namespaceSelector: {}
+            podSelector:
+              matchLabels:
+                app.kubernetes.io/name: prometheus
         ports:
           - port: 8081
             protocol: TCP

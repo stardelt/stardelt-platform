@@ -1339,6 +1339,8 @@ jupyterhub:
     # key (chart/templates/nova.yaml, NOVA_JUPYTERHUB_API_TOKEN).
     services:
       nova: {}
+    # Prometheus text on /hub/metrics (#607); same value as helm-values/jupyterhub.yaml.
+    authenticatePrometheus: false
     loadRoles:
       nova-workspace:
         description: Nova reads workspace state and starts or stops servers for the signed-in person
@@ -1360,15 +1362,26 @@ jupyterhub:
           - "read:users!user"
     # The chart's own hub NetworkPolicy (on by default) admits only pods labelled
     # `hub.jupyter.org/network-access-hub: "true"` and the allowedIngressPorts on
-    # the hub's port. Nova is a service, not a spawner-connected pod, so it gets
-    # the hub API port by its own pod label — TCP 8081 only, and only for the
-    # `nova` pod (chart/templates/nova.yaml points Nova at http://hub:8081/hub/api).
+    # the hub's port. Two sources get TCP 8081 by their own pod label: Nova, a
+    # service rather than a spawner-connected pod, for the hub API
+    # (chart/templates/nova.yaml points Nova at http://hub:8081/hub/api); and the
+    # customer's Prometheus, for the unauthenticated `/hub/metrics` only.
     networkPolicy:
       ingress:
         - from:
             - podSelector:
                 matchLabels:
                   app.kubernetes.io/name: nova
+          ports:
+            - port: 8081
+              protocol: TCP
+        # The customer's Prometheus in any namespace may read /hub/metrics (#607);
+        # same rule as helm-values/jupyterhub.yaml.
+        - from:
+            - namespaceSelector: {}
+              podSelector:
+                matchLabels:
+                  app.kubernetes.io/name: prometheus
           ports:
             - port: 8081
               protocol: TCP
