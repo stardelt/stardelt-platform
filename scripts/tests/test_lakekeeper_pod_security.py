@@ -37,6 +37,9 @@ class LakekeeperPodSecurityTest(unittest.TestCase):
         self.assertEqual(
             wait["securityContext"],
             {
+                # numeric: the pod-level `runAsNonRoot` (required by `restricted`) makes the
+                # kubelet refuse a named image user it cannot verify (platform#1202).
+                "runAsUser": 1000,
                 "runAsNonRoot": True,
                 "allowPrivilegeEscalation": False,
                 "capabilities": {"drop": ["ALL"]},
