@@ -15,7 +15,7 @@ GHCR_SECRET ?= ghcr-creds
 SECRET ?= $(GHCR_SECRET)
 
 # Pinned chart versions
-CNPG_VERSION       := 0.28.2
+CNPG_VERSION       := 0.29.1
 SEAWEEDFS_VERSION  := 4.25.1
 LAKEKEEPER_VERSION := 0.14.0
 OPENFGA_VERSION    ?= 0.4.1
