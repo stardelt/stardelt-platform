@@ -47,6 +47,7 @@ builder = SparkSession.builder.remote(
 builder = builder.config("spark.sql.catalog.warehouse", "org.apache.iceberg.spark.SparkCatalog")
 for key, value in {
     "type": "rest",
+    "rest-catalog-purge": "true",   # the catalog purges on the server (platform#1127)
     "uri": "http://lakekeeper.stardelt.svc.cluster.local:8181/catalog",
     "warehouse": "warehouse",
     "token": token,               # the pod's own principal, audience lakekeeper
@@ -166,6 +167,7 @@ and read it back, or aggregate first; do not raise the limit. The
 | `spark.sql.catalog.<name>.s3.endpoint` | `http://seaweedfs-s3.stardelt.svc.cluster.local:8333` (`STARDELT_S3_ENDPOINT`) |
 | `spark.sql.catalog.<name>.s3.region` | `us-east-1` |
 | `spark.sql.catalog.<name>.s3.path-style-access` | `true` |
+| `spark.sql.catalog.<name>.rest-catalog-purge` | `true` — the catalog purges on the server, so a drop cannot race a client-side purge (platform#1127) |
 
 `spark.sql.defaultCatalog` is `warehouse` when that catalog is among the visible
 ones. The helper creates a fresh Connect session (`create()`, not `getOrCreate()`:
@@ -177,6 +179,13 @@ one-line warning; if every catalog is refused (typically a token without
 `aud=lakekeeper`), `spark()` raises instead of returning an empty session. A
 renewed token gets a new session; the previous one is stopped — setting `.token`
 again on a live session does not re-key an initialized catalog (gate G5).
+
+**A drop is destructive.** Lakekeeper treats a drop request without a `purgeRequested`
+parameter as a purge, so on this platform `DROP TABLE` (without `PURGE`) also removes the
+table's files, not just its metadata. The session sets `rest-catalog-purge=true` so the
+catalog does that one purge itself: without it Iceberg also runs a client-side purge, the two
+races, and `DROP TABLE … PURGE` can report a `NoSuchKey` failure after the table is already
+gone (platform#1127, measured).
 
 Lakekeeper runs without vended credentials, so both engines sign their own S3
 requests. Spark gets the credentials from Secret `stardelt-s3-creds` through
