@@ -1,0 +1,52 @@
+# The IdP's ingress gate (stardelt-platform#1161, stardelt-operator#607).
+#
+# Port 8080 (sign-in, discovery, token endpoint) stays open to every source: the
+# whole platform signs in through it — Nova, Trino, Airflow, JupyterHub, Spark,
+# Superset, the bootstrap scripts — and the ingress controller is a pod too, so a
+# peer list here would break all sign-in at once. The rule is port-scoped only,
+# which is the statement that 8080 is deliberately open in-cluster.
+#
+# Port 9000 is the management port that platform#1133 turned into a Prometheus
+# endpoint. It is not a sign-in path: it answers only a pod labelled
+# `app.kubernetes.io/name: prometheus` (any namespace) — the same scraper gate as
+# `lakekeeper-ingress`, `openfga-ingress` and `seaweedfs-internal`.
+#
+# This policy is ingress-only: it does not restrict what Keycloak itself reaches
+# (Postgres, DNS), and it has no ipBlock rule. Kubelet probes come from the node
+# and are unaffected, so the pod stays Ready.
+#
+# Needs a CNI that enforces NetworkPolicy — k3s does (the JupyterHub policies
+# already rely on its controller); plain Flannel does not. To remove the gate,
+# e.g. while debugging sign-in:
+#
+#   kubectl delete networkpolicy keycloak-ingress -n stardelt
+#
+# Re-apply with `kubectl apply -f manifests/keycloak-network-policy.yaml`;
+# `make uninstall` removes it too.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: keycloak-ingress
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: keycloak
+  policyTypes: [Ingress]
+  ingress:
+    # Sign-in, discovery and the token endpoint: every platform pod and the
+    # ingress controller must reach 8080. Port-scoped only — this rule is the
+    # statement that 8080 is deliberately open in-cluster.
+    - ports:
+        - protocol: TCP
+          port: 8080
+    # The customer's Prometheus (stardelt-operator#607): read-only, 9000 only.
+    - from:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 9000
