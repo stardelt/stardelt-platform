@@ -29,6 +29,15 @@
       "registryUrlTemplate": "https://cloudnative-pg.github.io/charts"
     },
     {
+      "description": "Makefile pin `PLUGIN_BARMAN_CLOUD_VERSION` -> Helm chart `plugin-barman-cloud` from the same chart repo as the operator (platform#192). datasource=helm: `--version` takes a chart version, and the app version (v0.16.0) is not it.",
+      "customType": "regex",
+      "fileMatch": ["/(^|/)Makefile$/"],
+      "matchStrings": ["PLUGIN_BARMAN_CLOUD_VERSION\\s*:=\\s*(?<currentValue>[^\\s#]+)"],
+      "depNameTemplate": "plugin-barman-cloud",
+      "datasourceTemplate": "helm",
+      "registryUrlTemplate": "https://cloudnative-pg.github.io/charts"
+    },
+    {
       "description": "Makefile pin `SEAWEEDFS_VERSION` -> Helm chart `seaweedfs`. datasource=helm because `--version $(SEAWEEDFS_VERSION)` is a chart version (from https://seaweedfs.github.io/seaweedfs/helm). The chart version happens to equal the app version, but Renovate must look the chart up in the chart repo to get a value the chart repo can actually serve.",
       "customType": "regex",
       "fileMatch": ["/(^|/)Makefile$/"],

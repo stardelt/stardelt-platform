@@ -1,0 +1,103 @@
+# The plugin form of each cluster's backup config (platform#192, step 2).
+# CloudNativePG 1.32.0 removes spec.backup.barmanObjectStore; a Cluster then names one of
+# these through spec.plugins[0].parameters.barmanObjectName. The destination path, the
+# credentials Secret and the 14-day retention are the same values the native
+# barmanObjectStore blocks carry today (manifests/nova-pg.yaml, cnpg-postgres.yaml,
+# openfga-pg.yaml, keycloak.yaml); the plugin writes under s3://backups/<cluster>/ as well,
+# so both forms continue the same archive chain (measured on #192).
+---
+apiVersion: barmancloud.cnpg.io/v1
+kind: ObjectStore
+metadata:
+  name: nova-pg-backups
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+spec:
+  retentionPolicy: "14d"
+  configuration:
+    destinationPath: s3://backups/
+    endpointURL: http://seaweedfs-s3.stardelt.svc.cluster.local:8333
+    s3Credentials:
+      accessKeyId:
+        name: stardelt-s3-creds
+        key: access-key
+      secretAccessKey:
+        name: stardelt-s3-creds
+        key: secret-key
+      region:
+        name: stardelt-s3-creds
+        key: region
+    wal: {compression: gzip, maxParallel: 2}
+    data: {compression: gzip}
+---
+apiVersion: barmancloud.cnpg.io/v1
+kind: ObjectStore
+metadata:
+  name: lakekeeper-pg-backups
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+spec:
+  retentionPolicy: "14d"
+  configuration:
+    destinationPath: s3://backups/
+    endpointURL: http://seaweedfs-s3.stardelt.svc.cluster.local:8333
+    s3Credentials:
+      accessKeyId:
+        name: stardelt-s3-creds
+        key: access-key
+      secretAccessKey:
+        name: stardelt-s3-creds
+        key: secret-key
+      region:
+        name: stardelt-s3-creds
+        key: region
+    wal: {compression: gzip, maxParallel: 2}
+    data: {compression: gzip}
+---
+apiVersion: barmancloud.cnpg.io/v1
+kind: ObjectStore
+metadata:
+  name: openfga-pg-backups
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+spec:
+  retentionPolicy: "14d"
+  configuration:
+    destinationPath: s3://backups/
+    endpointURL: http://seaweedfs-s3.stardelt.svc.cluster.local:8333
+    s3Credentials:
+      accessKeyId:
+        name: stardelt-s3-creds
+        key: access-key
+      secretAccessKey:
+        name: stardelt-s3-creds
+        key: secret-key
+      region:
+        name: stardelt-s3-creds
+        key: region
+    wal: {compression: gzip, maxParallel: 2}
+    data: {compression: gzip}
+---
+apiVersion: barmancloud.cnpg.io/v1
+kind: ObjectStore
+metadata:
+  name: keycloak-pg-backups
+  namespace: stardelt
+  labels: { app.kubernetes.io/part-of: stardelt }
+spec:
+  retentionPolicy: "14d"
+  configuration:
+    destinationPath: s3://backups/
+    endpointURL: http://seaweedfs-s3.stardelt.svc.cluster.local:8333
+    s3Credentials:
+      accessKeyId:
+        name: stardelt-s3-creds
+        key: access-key
+      secretAccessKey:
+        name: stardelt-s3-creds
+        key: secret-key
+      region:
+        name: stardelt-s3-creds
+        key: region
+    wal: {compression: gzip, maxParallel: 2}
+    data: {compression: gzip}

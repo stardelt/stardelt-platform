@@ -16,6 +16,7 @@ SECRET ?= $(GHCR_SECRET)
 
 # Pinned chart versions
 CNPG_VERSION       := 0.29.1
+PLUGIN_BARMAN_CLOUD_VERSION := 0.9.0
 SEAWEEDFS_VERSION  := 4.25.1
 LAKEKEEPER_VERSION := 0.14.0
 OPENFGA_VERSION    ?= 0.4.1
@@ -318,6 +319,7 @@ platform-config: _context ## Converge ConfigMap stardelt-platform-config (Nova's
 install: step-preflight ## Install all stardelt components (idempotent)
 	@$(MAKE) --no-print-directory step-reloader
 	@$(MAKE) --no-print-directory step-cnpg
+	@$(MAKE) --no-print-directory step-barman-cloud-plugin
 	@$(MAKE) --no-print-directory step-cnpg-cluster
 	@$(MAKE) --no-print-directory step-storage
 	@$(MAKE) --no-print-directory step-openfga
@@ -344,7 +346,7 @@ install: step-preflight ## Install all stardelt components (idempotent)
 # The steps are idempotent: each converges the live state to what this
 # repository declares and leaves it alone when it is already there.
 # ---------------------------------------------------------------------------
-.PHONY: step-preflight step-reloader step-cnpg step-cnpg-cluster step-s3-secrets
+.PHONY: step-preflight step-reloader step-cnpg step-barman-cloud-plugin step-cnpg-cluster step-s3-secrets
 .PHONY: step-storage step-openfga step-catalog-clients step-lakekeeper step-access-sync
 .PHONY: step-trino step-app-secrets step-airflow step-superset step-pgdump step-nova
 .PHONY: step-apps step-pins step-verify
@@ -360,6 +362,14 @@ step-cnpg: ## The CloudNative-PG operator (the Postgres clusters need it)
 	@helm upgrade --install cnpg cnpg/cloudnative-pg \
 	  --version $(CNPG_VERSION) \
 	  $(HELM_FLAGS)
+
+step-barman-cloud-plugin: ## The barman-cloud CNPG plugin and the four ObjectStores (platform#192)
+	@echo "› CloudNativePG barman-cloud plugin"
+	@helm upgrade --install barman-cloud cnpg/plugin-barman-cloud \
+	  --version $(PLUGIN_BARMAN_CLOUD_VERSION) \
+	  $(HELM_FLAGS)
+	@echo "› the four backup stores (one per database; no Cluster names one yet)"
+	@kubectl apply -f manifests/cnpg-objectstore.yaml
 
 step-cnpg-cluster: ## The catalog's Postgres cluster, its backup guard and the daily base backup
 	@echo "› CNPG Cluster (Lakekeeper Postgres)"
