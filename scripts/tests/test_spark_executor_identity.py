@@ -55,3 +55,47 @@ class SparkExecutorIdentityTest(unittest.TestCase):
         labels = [p["podSelector"]["matchLabels"]
                   for rule in rules for p in (rule.get("from") or [])]
         self.assertIn({"stardelt.io/spark-connect": "executor"}, labels)
+
+    def test_the_driver_mounts_and_selects_the_executor_pod_template(self):
+        data = self.by_name("ConfigMap", "spark-connect-config")["data"]
+        self.assertIn("executor-pod-template.yaml", data)
+
+        conf = data["spark-defaults.conf"]
+        line = next(l for l in conf.splitlines()
+                    if l.strip().startswith("spark.kubernetes.executor.podTemplateFile"))
+        self.assertEqual(line.split()[-1], "/opt/spark/conf/executor-pod-template.yaml")
+
+        deployment = self.by_name("Deployment", "spark-connect")
+        container = next(
+            c for c in deployment["spec"]["template"]["spec"]["containers"]
+            if c["name"] == "spark-connect"
+        )
+        mounts = [m for m in container["volumeMounts"]
+                  if m["mountPath"] == "/opt/spark/conf/executor-pod-template.yaml"]
+        self.assertEqual(len(mounts), 1, "the driver must mount the executor pod template")
+        self.assertEqual(mounts[0]["subPath"], "executor-pod-template.yaml")
+        self.assertIs(mounts[0]["readOnly"], True)
+
+    def test_the_executor_pod_template_declares_the_restricted_fields(self):
+        data = self.by_name("ConfigMap", "spark-connect-config")["data"]
+        pod = yaml.safe_load(data["executor-pod-template.yaml"])
+        self.assertEqual(pod["spec"]["securityContext"], {
+            "runAsNonRoot": True,
+            "runAsUser": 185,
+            "fsGroup": 185,
+            "seccompProfile": {"type": "RuntimeDefault"},
+        })
+        containers = pod["spec"]["containers"]
+        self.assertEqual(len(containers), 1)
+        self.assertEqual(containers[0]["name"], "spark-kubernetes-executor")
+        self.assertEqual(containers[0]["securityContext"], {
+            "allowPrivilegeEscalation": False,
+            "capabilities": {"drop": ["ALL"]},
+        })
+
+    def test_the_runtime_catalogue_gate_excludes_the_template_key(self):
+        script = (REPO_ROOT / "scripts" / "check-spark-runtimes.sh").read_text()
+        exclusions = script.split("excluded_keys=$(cat <<'EOF'", 1)[1].split("EOF", 1)[0]
+        keys = [line.strip() for line in exclusions.splitlines() if line.strip()]
+        self.assertIn("spark.kubernetes.executor.podTemplateFile", keys,
+                      "check-spark-runtimes.sh must allow the shared server's template difference")

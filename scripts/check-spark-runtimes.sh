@@ -30,8 +30,11 @@ fail() {
 # SparkCluster spec, and the two server-process UI settings: the shared Spark Connect
 # server turns the UI and its Prometheus servlet on because it is the scraped endpoint
 # (stardelt-platform#1158); the per-user SparkCluster servers read this catalogue and
-# stay dark (a test pins `spark.ui.enabled: false` there). They are the only allowed
-# difference between the two paths.
+# stay dark (a test pins `spark.ui.enabled: false` there). spark.kubernetes.executor.
+# podTemplateFile is also shared-server-only: it is a path into the driver container's
+# /opt/spark/conf, and the per-user SparkCluster servers mount no such template, so
+# their drivers would fail to start executors (a later operator change). They are the
+# only allowed difference between the two paths.
 excluded_keys=$(cat <<'EOF'
 spark.master
 spark.kubernetes.namespace
@@ -51,6 +54,7 @@ spark.dynamicAllocation.executorIdleTimeout
 spark.dynamicAllocation.shuffleTracking.timeout
 spark.ui.enabled
 spark.ui.prometheus.enabled
+spark.kubernetes.executor.podTemplateFile
 EOF
 )
 

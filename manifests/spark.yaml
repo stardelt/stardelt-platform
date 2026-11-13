@@ -117,6 +117,11 @@ data:
     # config file. S3FileIO's default credentials chain reads these variables.
     spark.kubernetes.executor.secretKeyRef.AWS_ACCESS_KEY_ID     stardelt-s3-creds:access-key
     spark.kubernetes.executor.secretKeyRef.AWS_SECRET_ACCESS_KEY stardelt-s3-creds:secret-key
+    # The driver reads this file when it creates an executor pod (platform#1096
+    # question 5). The file is a subPath mount, so a template change needs a driver
+    # restart; this line changes spark-defaults.conf, which `make install-spark`
+    # hashes and restarts on (Makefile:591-599).
+    spark.kubernetes.executor.podTemplateFile /opt/spark/conf/executor-pod-template.yaml
 
     # --- Sizing on the shared 16 GB node ------------------------------------
     # Driver: 1g heap, 3 GiB container limit; about 0.7 GiB of a busy driver is
@@ -189,6 +194,29 @@ data:
     spark.hadoop.fs.s3a.aws.credentials.provider            org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider
     spark.hadoop.fs.s3a.connection.ssl.enabled              true
     spark.hadoop.fs.s3a.path.style.access                   false
+  # Executors run user code and carry the platform's S3 key; they declare the
+  # restricted Pod Security fields the driver already declares (platform#1096
+  # question 5). Spark reads this file when it creates an executor pod and merges
+  # it into the generated pod; the container name is Spark's default
+  # (`spark-kubernetes-executor`, measured in the pinned image).
+  executor-pod-template.yaml: |
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: executor-pod-template
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 185
+        fsGroup: 185
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: spark-kubernetes-executor
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -268,6 +296,11 @@ spec:
             - name: spark-defaults
               mountPath: /opt/spark/conf/spark-defaults.conf
               subPath: spark-defaults.conf
+              readOnly: true
+            # The executor pod template the driver reads at executor creation.
+            - name: spark-defaults
+              mountPath: /opt/spark/conf/executor-pod-template.yaml
+              subPath: executor-pod-template.yaml
               readOnly: true
             # Spark writes staging files and the local dirs here; keep them off
             # the node's overlay and inside the container's writable layer.
