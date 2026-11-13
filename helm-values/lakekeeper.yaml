@@ -448,6 +448,11 @@ catalog:
       image: trinodb/trino:484          # already pinned; has bash + curl, unlike the distroless catalog
       imagePullPolicy: IfNotPresent
       securityContext:
+        # The user must be numeric: `runAsNonRoot` is inherited from the pod-level block the
+        # `restricted` profile requires, and for an image whose USER is a name (`trino`) the
+        # kubelet cannot verify it and refuses the container — "container has runAsNonRoot and
+        # image has non-numeric user (trino), cannot verify user is non-root" (platform#1202).
+        runAsUser: 1000                   # uid(trino) in trinodb/trino:484
         runAsNonRoot: true
         allowPrivilegeEscalation: false
         capabilities: {drop: ["ALL"]}
