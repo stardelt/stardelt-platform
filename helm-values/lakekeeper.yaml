@@ -425,6 +425,20 @@ catalog:
     requests: { cpu: "50m",  memory: "256Mi" }
     limits:   { cpu: "1",    memory: "512Mi" }
 
+  # Pod Security `restricted` (platform#1096 question 5). Both keys are the chart's own and are
+  # distinct (camelCase) from the top-level ones: they reach the catalog Deployment, its
+  # `check-db` init container and the `lakekeeper-db-migration-<revision>` Job. The chart keeps
+  # `runAsUser: 65532` / `runAsGroup: 65534` from `catalog.image.uid/gid`; `restricted` needs
+  # runAsNonRoot and seccomp on top. The `opa` sidecar has no value key (hardcoded in the chart),
+  # so this pod stays a documented limit — see the ticket.
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile: {type: RuntimeDefault}
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    capabilities: {drop: ["ALL"]}
+    seccompProfile: {type: RuntimeDefault}
+
   # The IdP is not ready when the node is: Keycloak rebuilds its image for ~2 minutes and answers
   # 503 on discovery, Lakekeeper exits on that ("Failed to parse openid configuration") and the
   # kubelet's backoff turns a 2-minute restart into 5+ minutes of catalog outage (platform#516).
@@ -433,6 +447,11 @@ catalog:
     - name: wait-for-idp
       image: trinodb/trino:484          # already pinned; has bash + curl, unlike the distroless catalog
       imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        capabilities: {drop: ["ALL"]}
+        seccompProfile: {type: RuntimeDefault}
       env:
         - name: OIDC_ISSUER
           valueFrom:
