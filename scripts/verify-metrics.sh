@@ -12,6 +12,10 @@
 # and the hub (hub:8081/hub/metrics). Plain `app.kubernetes.io/part-of=stardelt` pods are
 # refused, which is why the probe carries `app.kubernetes.io/name=prometheus` (the label
 # monitoring.coreos.com's own pods carry, operator#607).
+#
+# OpenBao (openbao:8200/v1/sys/metrics?format=prometheus) belongs to the "open to any pod
+# in the namespace" group — its listener allows unauthenticated metrics — and its path is
+# not /metrics, so the row carries it.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 NS="${NS:-${NAMESPACE:-stardelt}}"
@@ -44,6 +48,7 @@ targets=(
   stardelt-operator-metrics:8082
   airflow-statsd:9102
   hub:8081/hub/metrics
+  openbao:8200/v1/sys/metrics?format=prometheus
 )
 
 for target in "${targets[@]}"; do
