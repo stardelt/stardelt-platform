@@ -53,7 +53,7 @@ JUPYTER_IMAGE  := ghcr.io/stardelt/jupyter-singleuser:dev
 # A bump changes the ARG default in images/jupyter/Dockerfile as well (the
 # check script wants both), and that file is what makes CI rebuild the
 # notebook image.
-STARDELT_LIB_REF := 93605488e3780702b1c980db08176708d9abf9ec
+STARDELT_LIB_REF := 4582874642b9f356edf99c01dc4376591c24bea7
 STARDELT_LIB_TAG := v0.2.1
 
 # The image tag the dev channel follows. `dev` moves on every merge; every merged

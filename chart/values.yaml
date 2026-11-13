@@ -1448,6 +1448,10 @@ jupyterhub:
       # reaches Nova through the host, and values files are not templated, so
       # deployments on another domain override this.
       STARDELT_NOVA_URL: https://alpha.dev.stardelt.io
+      # The same Nova by its in-cluster Service, for the notebook's own HTTP calls
+      # (`stardelt.publish()`, `stardelt.api.Client`): a visitor's pod has no public
+      # egress (platform#1101). Keep in step with helm-values/jupyterhub.yaml.
+      STARDELT_NOVA_API_URL: http://nova.stardelt.svc.cluster.local:8080
       # Spark Connect's ClusterIP endpoint for `stardelt.spark()`. Same value
       # as the standalone helm-values/jupyterhub.yaml above: keep them in sync.
       SPARK_REMOTE: sc://spark-connect.stardelt.svc.cluster.local:15002
@@ -1503,6 +1507,9 @@ jupyterhub:
     # Spark (apply `manifests/spark.yaml` or enable it separately); when the
     # pods are absent the rule simply matches nothing.
     #
+    # Nova's API too (platform#1229): the public origin is unreachable from a
+    # visitor's pod, so the notebook calls the Service.
+    #
     # Private git servers are not listed here: they come from the top-level
     # `notebooks.gitHosts` value (rendered by
     # chart/templates/notebooks-git-egress.yaml as TCP/443 rules), so the git
@@ -1519,4 +1526,11 @@ jupyterhub:
                   app.kubernetes.io/name: spark-connect
           ports:
             - port: 15002
+              protocol: TCP
+        - to:
+            - podSelector:
+                matchLabels:
+                  app.kubernetes.io/name: nova
+          ports:
+            - port: 8080
               protocol: TCP
