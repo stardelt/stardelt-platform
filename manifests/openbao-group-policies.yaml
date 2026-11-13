@@ -72,6 +72,16 @@ spec:
           restartPolicy: Never
           serviceAccountName: openbao-group-policies
           automountServiceAccountToken: true
+          # Pod Security `restricted` (platform#1096 question 5): alpine/k8s runs as
+          # root by default, so the UID is chosen here. 65534 is measured to work for
+          # the discovery reads and for `kubectl exec openbao-0` with this Job's
+          # ServiceAccount (2026-11-13). HOME is /tmp in the container below: the
+          # image has no writable home for that user and kubectl writes its cache there.
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            seccompProfile:
+              type: RuntimeDefault
           containers:
             - name: sync
               image: alpine/k8s:1.37.1
@@ -82,6 +92,8 @@ spec:
                 # The ConfigMap mounts the policy files flat in /opt/scripts.
                 - name: POLICIES
                   value: /opt/scripts
+                - name: HOME
+                  value: /tmp
               volumeMounts:
                 - name: scripts
                   mountPath: /opt/scripts
