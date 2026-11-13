@@ -287,6 +287,14 @@ initContainers:
     - name: wait-for-idp
       image: trinodb/trino:484
       imagePullPolicy: IfNotPresent
+      # Pod Security `restricted` (platform#1190 follow-up, platform#1096 question 5): an init
+      # container inherits nothing from the chart's pod/container keys, so it needs its own block.
+      # The Trino image's user is already non-root; the pod-level runAsNonRoot covers admission.
+      securityContext:
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        capabilities: {drop: ["ALL"]}
+        seccompProfile: {type: RuntimeDefault}
       env:
         - name: TRINO_OIDC_ISSUER
           valueFrom:
