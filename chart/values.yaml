@@ -309,9 +309,12 @@ seaweedfs:
       # setting `postgres.backup.bucket` to the same name.
       - name: backups
         anonymousRead: false
+    # platform#1219: the gateway holds ~1.44 Mi of live Go heap per Mi it serves (measured, a forced GC
+    # freed nothing), so one 2.89 GB Iceberg scan needs ~5.5 Gi and OOM-killed a 1Gi container after
+    # ~700 MB. Keep in step with helm-values/seaweedfs.yaml and the operator's values/seaweedfs.yaml (D44).
     resources:
       requests: { cpu: "100m", memory: "256Mi" }
-      limits:   { cpu: "2",    memory: "1Gi"  }
+      limits:   { cpu: "2",    memory: "5.5Gi" }
 
 lakekeeper:
   # Iceberg REST catalog (chart: lakekeeper 0.11.0, appVersion 0.12.2).

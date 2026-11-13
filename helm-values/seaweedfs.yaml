@@ -62,9 +62,12 @@ s3:
     # (manifests/cnpg-backup-schedule.yaml).
     - name: backups
       anonymousRead: false
+  # platform#1219: the gateway holds ~1.44 Mi of live Go heap per Mi it serves (measured, a forced GC
+  # freed nothing), so one 2.89 GB Iceberg scan needs ~5.5 Gi and OOM-killed a 1Gi container after
+  # ~700 MB. Keep in step with chart/values.yaml and the operator's values/seaweedfs.yaml (D44).
   resources:
     requests: { cpu: "100m", memory: "256Mi" }
-    limits:   { cpu: "2",    memory: "1Gi"  }
+    limits:   { cpu: "2",    memory: "5.5Gi" }
 
 # The object store's own web UI for cluster administrators (buckets, users, policies, file browser),
 # decision D28. ClusterIP only: there is no ingress and none may be added; reach it with
