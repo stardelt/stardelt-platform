@@ -446,6 +446,7 @@ step-airflow: ## Airflow and the pipeline templates
 	  -f helm-values/airflow.yaml \
 	  --set-string kafka.bootstrap=$(KAFKA_BOOTSTRAP)
 	@kubectl apply -f manifests/airflow-pipelines.yaml
+	@kubectl apply -f manifests/pipeline-notebook-egress.yaml
 	@kubectl -n $(NAMESPACE) create configmap airflow-group-roles-script --from-file=sync.py=scripts/airflow-group-roles.py --dry-run=client -o yaml | kubectl apply -f -
 	@kubectl apply -f manifests/airflow-group-roles.yaml
 
@@ -1298,6 +1299,7 @@ uninstall: _context ## Uninstall all stardelt components (reverse order)
 	@helm uninstall jupyterhub --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@helm uninstall superset   --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@kubectl delete -f manifests/airflow-pipelines.yaml --ignore-not-found
+	@kubectl delete -f manifests/pipeline-notebook-egress.yaml --ignore-not-found
 	@helm uninstall airflow    --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@helm uninstall reloader   --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
 	@helm uninstall external-secrets --namespace $(NAMESPACE) --ignore-not-found 2>/dev/null || true
