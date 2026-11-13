@@ -48,6 +48,16 @@ spec:
           labels: { app.kubernetes.io/part-of: stardelt }
         spec:
           restartPolicy: Never
+          # Pod Security `restricted` (platform#1096 question 5): aws-cli runs as root
+          # by default; 65534 with HOME=/tmp is measured to list and sync the bucket
+          # (2026-11-13). HOME is set on the container below: the image has no
+          # writable home for that UID.
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
           containers:
             - name: s3-sync
               image: amazon/aws-cli:2.17.0
@@ -73,6 +83,11 @@ spec:
                   valueFrom: { secretKeyRef: { name: stardelt-s3-creds, key: bucket } }
                 - name: DEST_BUCKET
                   value: lakehouse-backup
+                - name: HOME
+                  value: /tmp
               resources:
                 requests: { cpu: "50m",  memory: "128Mi" }
                 limits:   { cpu: "1",    memory: "512Mi" }
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: { drop: ["ALL"] }
