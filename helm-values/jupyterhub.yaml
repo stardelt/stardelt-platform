@@ -367,6 +367,16 @@ proxy:
       limits:   { cpu: "500m", memory: "256Mi" }
 
 singleuser:
+  # The chart appends a privileged `block-cloud-metadata` init container to every single-user
+  # pod when `singleuser.cloudMetadata.blockWithIptables` is true, and that is the chart default:
+  # runAsUser 0, privileged, NET_ADMIN — a `restricted` Pod Security namespace refuses the whole
+  # notebook pod. stardelt does not need it: the single-user NetworkPolicy below
+  # (`singleuser.networkPolicy`) is deny-by-default (`egressAllowRules.nonPrivateIPs: false`)
+  # and grants 169.254.169.254 no port but DNS 53, so the metadata endpoint is already
+  # unreachable. Re-enable this only together with
+  # `singleuser.networkPolicy.egressAllowRules.cloudMetadataServer: true`.
+  cloudMetadata:
+    blockWithIptables: false
   # stardelt's image (images/jupyter/Dockerfile): scipy-notebook + trino,
   # pyspark[connect], pandas, pyarrow, the git extensions (jupyterlab-git,
   # nbgitpuller), and the warehouse quickstart under
