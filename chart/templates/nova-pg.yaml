@@ -17,28 +17,19 @@ spec:
     storageClass: {{ . }}
     {{- end }}
   {{- if .Values.postgres.backup.enabled }}
-  # Same continuous backup as the other clusters (templates/cnpg-postgres.yaml); CNPG
-  # writes under <bucket>/nova-pg/, so they share the `backups` bucket.
+  # Backup through the barman-cloud plugin (CloudNativePG 1.30; the native
+  # `spec.backup` object store was removed in 1.32). The plugin and
+  # ObjectStore/nova-pg-backups are rendered by this chart (cnpg-objectstore.yaml).
+  # CNPG writes under <bucket>/nova-pg/, so the clusters share the `backups` bucket.
   backup:
     retentionPolicy: {{ .Values.postgres.backup.retentionPolicy | quote }}
-    barmanObjectStore:
-      destinationPath: s3://{{ .Values.postgres.backup.bucket }}/
-      endpointURL: {{ tpl .Values.s3Credentials.endpoint . | quote }}
-      s3Credentials:
-        accessKeyId:
-          name: {{ .Values.s3Credentials.name }}
-          key: access-key
-        secretAccessKey:
-          name: {{ .Values.s3Credentials.name }}
-          key: secret-key
-        region:
-          name: {{ .Values.s3Credentials.name }}
-          key: region
-      wal:
-        compression: gzip
-        maxParallel: 2
-      data:
-        compression: gzip
+    target: prefer-standby
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      enabled: true
+      isWALArchiver: true
+      parameters:
+        barmanObjectName: nova-pg-backups
   {{- end }}
   bootstrap:
     initdb:
@@ -58,7 +49,9 @@ spec:
   schedule: "0 0 3 * * *"
   immediate: true
   backupOwnerReference: self
-  method: barmanObjectStore
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io
   cluster:
     name: nova-pg
 {{- end }}

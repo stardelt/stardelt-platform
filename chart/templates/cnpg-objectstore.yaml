@@ -1,0 +1,44 @@
+{{- if .Values.postgres.backup.enabled }}
+{{- /* `nova-pg-backups` follows Nova's database switch, like the Cluster it names. */}}
+{{- $stores := list "lakekeeper-pg" "openfga-pg" "keycloak-pg" }}
+{{- if and .Values.nova.enabled .Values.nova.database.enabled }}
+{{- $stores = append $stores "nova-pg" }}
+{{- end }}
+{{- range $cluster := $stores }}
+---
+# The plugin form of each platform database's backup: the same four objects
+# manifests/cnpg-objectstore.yaml applies on the Makefile path. Post-install
+# hooks so the ObjectStore CRD the plugin chart renders above is established
+# before the API server sees these (the operator does the same ordering).
+apiVersion: barmancloud.cnpg.io/v1
+kind: ObjectStore
+metadata:
+  name: {{ $cluster }}-backups
+  namespace: {{ $.Release.Namespace }}
+  labels: { app.kubernetes.io/part-of: stardelt }
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "10"
+    helm.sh/resource-policy: keep
+spec:
+  retentionPolicy: {{ $.Values.postgres.backup.retentionPolicy | quote }}
+  configuration:
+    destinationPath: s3://{{ $.Values.postgres.backup.bucket }}/
+    endpointURL: {{ tpl $.Values.s3Credentials.endpoint $ | quote }}
+    s3Credentials:
+      accessKeyId:
+        name: {{ $.Values.s3Credentials.name }}
+        key: access-key
+      secretAccessKey:
+        name: {{ $.Values.s3Credentials.name }}
+        key: secret-key
+      region:
+        name: {{ $.Values.s3Credentials.name }}
+        key: region
+    wal:
+      compression: gzip
+      maxParallel: 2
+    data:
+      compression: gzip
+{{- end }}
+{{- end }}

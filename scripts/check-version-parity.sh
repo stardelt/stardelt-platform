@@ -15,6 +15,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 # Makefile variable prefix -> chart name in Chart.yaml
 declare -A CHART_OF=(
   [CNPG]=cloudnative-pg
+  [PLUGIN_BARMAN_CLOUD]=plugin-barman-cloud
   [SEAWEEDFS]=seaweedfs
   [LAKEKEEPER]=lakekeeper
   [TRINO]=trino
