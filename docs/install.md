@@ -316,14 +316,19 @@ With ingress.enabled=true only Nova (and Keycloak in identity.mode=platform) get
 Set `s3Credentials.accessKey` / `secretKey` to choose your own, or `s3Credentials.create=false`
 and create both Secrets yourself (`manifests/s3-credentials.example.yaml` shows the first).
 
-A chart install also gets the catalog's continuous backups (`postgres.backup`,
-on by default): the `lakekeeper-pg` Cluster declares `spec.backup.barmanObjectStore`
-writing to `s3://<postgres.backup.bucket>/` on `s3Credentials.endpoint`, and the
-daily `ScheduledBackup` `lakekeeper-pg-daily` (`immediate: true`) adds base
-backups. The destination bucket must exist — the SeaweedFS sub-chart creates
-`backups`, but with `s3Credentials.create=false` create it in your own store
-first. The #59 backup guards describe a chart install as well; point them at the
-release namespace: `NAMESPACE=<release ns> make verify-backup-config` / `verify-backups`.
+A chart install also gets continuous backups (`postgres.backup`, on by default): the
+chart installs `cnpg/plugin-barman-cloud` 0.9.0 and the four `ObjectStore`s
+(`nova-pg-backups` and the others, as post-install hooks kept on uninstall), so
+**cert-manager is a prerequisite** of the chart path — the plugin release renders an
+`Issuer` and two `Certificate`s, the same prerequisite `ingress.tls` already has.
+`nova-pg` backs up through that plugin (`nova-pg-daily` uses `method: plugin`), while
+`lakekeeper-pg` and `keycloak-pg` still declare the native
+`spec.backup.barmanObjectStore` until their own migration. Backups write to
+`s3://<postgres.backup.bucket>/` on `s3Credentials.endpoint`; the destination bucket
+must exist — the SeaweedFS sub-chart creates `backups`, but with
+`s3Credentials.create=false` create it in your own store first. The #59 backup guards
+describe a chart install as well; point them at the release namespace:
+`NAMESPACE=<release ns> make verify-backup-config` / `verify-backups`.
 
 Keycloak's database (`keycloak-pg`) is backed up the same way as the catalog (WAL streaming plus a daily base backup into `s3://backups/keycloak-pg/`); check it with `make verify-backups-identity`.
 

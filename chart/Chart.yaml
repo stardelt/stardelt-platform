@@ -21,6 +21,10 @@ dependencies:
     repository: https://cloudnative-pg.github.io/charts
     version: 0.29.1
     condition: cloudnative-pg.enabled
+  - name: plugin-barman-cloud
+    repository: https://cloudnative-pg.github.io/charts
+    version: 0.9.0
+    condition: postgres.backup.enabled
   - name: seaweedfs
     repository: https://seaweedfs.github.io/seaweedfs/helm
     version: 4.25.1
