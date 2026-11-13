@@ -251,4 +251,28 @@ spec:
       volumes:
         - name: realm
           configMap: { name: keycloak-realm }
+---
+# The IdP's ingress (stardelt-platform#1161, #607): 8080 for every sign-in,
+# 9000 only for a pod labelled app.kubernetes.io/name=prometheus.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: keycloak-ingress
+  namespace: {{ .Release.Namespace }}
+  labels: { app.kubernetes.io/part-of: stardelt }
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: keycloak }
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 8080
+    - from:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels: { app.kubernetes.io/name: prometheus }
+      ports:
+        - protocol: TCP
+          port: 9000
 {{- end }}

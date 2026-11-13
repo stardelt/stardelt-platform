@@ -1177,6 +1177,8 @@ install-identity: deps _context ## Install the platform IdP (Keycloak) at id.$(B
 	@NAMESPACE=$(NAMESPACE) BASE_DOMAIN=$(BASE_DOMAIN) bash scripts/identity-bootstrap.sh
 	@echo "› [2/11] CNPG Cluster (Keycloak Postgres)"
 	@kubectl apply -f manifests/keycloak.yaml
+	@echo "› [2/11] guard: only a scraper reads the management port"
+	@kubectl apply -f manifests/keycloak-network-policy.yaml
 	@echo "› [2/11] guard: the live Cluster must still declare its backup config"
 	@$(MAKE) --no-print-directory verify-backup-config PG_CLUSTER=keycloak-pg
 	@kubectl -n $(NAMESPACE) wait --for=condition=Ready --timeout=300s cluster/keycloak-pg
@@ -1281,6 +1283,7 @@ uninstall: _context ## Uninstall all stardelt components (reverse order)
 	@kubectl delete -f manifests/nova-deployment.yaml        --ignore-not-found
 	@kubectl delete -f manifests/nova-pg.yaml                --ignore-not-found
 	@kubectl delete -f manifests/keycloak.yaml               --ignore-not-found
+	@kubectl delete -f manifests/keycloak-network-policy.yaml --ignore-not-found
 	@kubectl -n $(NAMESPACE) delete configmap keycloak-realm keycloak-env stardelt-identity --ignore-not-found
 	@kubectl delete -f manifests/lakekeeper-network-policy.yaml --ignore-not-found
 	@kubectl delete -f manifests/openfga-network-policy.yaml  --ignore-not-found
