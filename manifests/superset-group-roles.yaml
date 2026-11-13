@@ -68,6 +68,14 @@ spec:
           automountServiceAccountToken: true
           imagePullSecrets:
             - name: ghcr-creds
+          # Pod Security `restricted` (platform#1096 question 5): the image runs as
+          # 1000:1000 already (measured 2026-11-13); declare it so the pod passes the
+          # profile without an image change.
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            seccompProfile:
+              type: RuntimeDefault
           containers:
             - name: sync
               image: ghcr.io/stardelt/superset:dev@sha256:cbbc7dd6f0e676b0d01c86e4102ec0d4d711041a9ca120af393e81a4c761cb13

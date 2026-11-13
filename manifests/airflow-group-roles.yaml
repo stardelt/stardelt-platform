@@ -49,6 +49,14 @@ spec:
           restartPolicy: Never
           serviceAccountName: airflow-group-roles
           automountServiceAccountToken: true
+          # Pod Security `restricted` (platform#1096 question 5): the image runs as
+          # 50000 already (measured 2026-11-13); declare it so the pod passes the
+          # profile without an image change.
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 50000
+            seccompProfile:
+              type: RuntimeDefault
           containers:
             - name: sync
               image: >-
