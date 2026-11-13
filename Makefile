@@ -151,15 +151,13 @@ verify-seaweedfs-ports: _context ## Only SeaweedFS reaches its unsigned ports (p
 verify-metrics: _context ## Every metrics endpoint a scraper can reach answers Prometheus text (#607)
 	@NS=$(NAMESPACE) bash scripts/verify-metrics.sh
 
-# The `--allow` patterns are the accepted exceptions of platform#1096 question 5, each with its
-# reason: SeaweedFS mounts `hostPath` on the one-node lab, which is a `baseline` violation no chart
-# value can remove; Lakekeeper's `opa` sidecar has no value key in chart 0.14.0. The StreamApp driver
-# is operator#677 — drop `'^pegelonline-'` after that rolls out (the script names a stale pattern).
+# The `--allow` patterns are the accepted exceptions of #1096 question 5, each with its reason:
+# SeaweedFS sets none of chart 4.25.1's securityContext/logs keys (the chart's defaults declare no
+# security context and log to hostPath); Lakekeeper's `opa` sidecar has no value key in chart 0.14.0.
 verify-pod-security: _context ## Every running pod is admitted by a `restricted` Pod Security namespace (#1096)
 	@NS=$(NAMESPACE) bash scripts/verify-pod-security.sh \
 	  --allow '^seaweedfs-' \
-	  --allow '^lakekeeper-' \
-	  --allow '^pegelonline-'
+	  --allow '^lakekeeper-'
 
 verify-backups: _context ## Verify WAL archiving for real: config + the bucket covers every queued WAL segment + agreement with pg_stat_archiver. SKIP_OBJECTS=1 drops the S3 half
 	@NAMESPACE=$(NAMESPACE) CLUSTER=$(PG_CLUSTER) SKIP_OBJECTS="$(SKIP_OBJECTS)" \
