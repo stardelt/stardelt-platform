@@ -630,6 +630,8 @@ install-spark: deps _context ## Install the Spark Connect endpoint (Iceberg on t
 	else \
 	  echo "› spark-connect pod guard: skipped — ValidatingAdmissionPolicy needs Kubernetes 1.30+"; \
 	fi
+	@$(MAKE) spark-confmap-janitor-config
+	@kubectl -n $(NAMESPACE) apply -f manifests/spark-confmap-janitor.yaml
 	@kubectl -n $(NAMESPACE) get configmap stardelt-spark-runtimes -o name
 	@echo "Spark Connect ready: sc://spark-connect.$(NAMESPACE).svc.cluster.local:15002 (in-cluster only)"
 	@NS=$(NAMESPACE) bash scripts/verify-compute.sh
@@ -1301,6 +1303,7 @@ uninstall: _context ## Uninstall all stardelt components (reverse order)
 	@kubectl -n $(NAMESPACE) delete configmap trino-warehouses trino-group-file --ignore-not-found
 	@kubectl delete -f manifests/spark.yaml                   --ignore-not-found
 	@kubectl delete -f manifests/spark-connect-pod-guard.yaml --ignore-not-found
+	@kubectl delete -f manifests/spark-confmap-janitor.yaml --ignore-not-found
 	@kubectl delete -f manifests/spark-operator-metrics.yaml --ignore-not-found
 	@kubectl -n $(NAMESPACE) delete configmap stardelt-spark-runtimes --ignore-not-found
 	@kubectl delete -f manifests/trino-tls.yaml               --ignore-not-found
@@ -1557,3 +1560,11 @@ openbao-group-policies-config: _context
 		--from-file=breakglass-role.json=scripts/openbao-policies/breakglass-role.json \
 		--dry-run=client -o yaml | kubectl apply -f - >/dev/null
 	@echo "› openbao-group-policies script/configmap refreshed"
+
+# Fill the janitor's script ConfigMap (platform#1173): the file stays a real script under
+# scripts/ so `bash -n` and shellcheck see it, and the CronJob mounts this copy.
+spark-confmap-janitor-config: _context
+	@kubectl -n $(NAMESPACE) create configmap spark-confmap-janitor-script \
+		--from-file=spark-confmap-janitor.sh=scripts/spark-confmap-janitor.sh \
+		--dry-run=client -o yaml | kubectl apply -f - >/dev/null
+	@echo "› spark-confmap-janitor script/configmap refreshed"
