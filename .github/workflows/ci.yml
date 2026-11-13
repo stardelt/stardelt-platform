@@ -109,6 +109,12 @@ jobs:
             --version 0.29.1 \
             --namespace stardelt > /dev/null
 
+      - name: helm template — barman-cloud plugin
+        run: |
+          bash scripts/retry.sh helm template barman-cloud cnpg/plugin-barman-cloud \
+            --version 0.9.0 \
+            --namespace stardelt > /dev/null
+
       - name: helm template — seaweedfs
         run: |
           bash scripts/retry.sh helm template seaweedfs seaweedfs/seaweedfs \
