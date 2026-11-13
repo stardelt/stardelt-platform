@@ -14,6 +14,10 @@ shape:
   cut one of them off;
 * the second rule admits the customer's Prometheus on 9327 only, where master, filer
   and volume answer Prometheus text (stardelt-operator#607);
+* the third rule admits only the chart's bucket-hook Job (`job-name:
+  seaweedfs-bucket-hook`) on the four ports `weed shell` uses (9333, 8888,
+  19333, 18888); it runs during `helm upgrade`, so it meets the policy of the
+  previous install (platform#1244);
 * the policy is ingress-only, the second (scrape) rule is the only peer that crosses
   namespaces, on 9327 only, and there is no ``ipBlock``.
 
@@ -79,7 +83,7 @@ class Shape(unittest.TestCase):
 
     def test_the_first_rule_admits_only_seaweedfs_on_every_port(self):
         ingress = policy()["spec"]["ingress"]
-        self.assertEqual(len(ingress), 2, ingress)
+        self.assertEqual(len(ingress), 3, ingress)
         rule = ingress[0]
         self.assertEqual(
             rule["from"],
@@ -126,8 +130,27 @@ class Shape(unittest.TestCase):
         ]
         self.assertEqual(
             ports,
-            [9327],
-            "the first rule names no ports; the scrape rule adds 9327 and nothing else",
+            [9327, 9333, 8888, 19333, 18888],
+            "the scrape rule adds 9327, the bucket-hook rule adds its four ports, "
+            "and no rule names a range",
+        )
+
+    def test_the_bucket_hook_rule_admits_only_the_hook_job_on_its_four_ports(self):
+        rule = policy()["spec"]["ingress"][2]
+        self.assertEqual(
+            rule["from"],
+            [{"podSelector": {"matchLabels": {"job-name": "seaweedfs-bucket-hook"}}}],
+            "the hook is identified by the Job controller's job-name label",
+        )
+        self.assertEqual(
+            rule["ports"],
+            [
+                {"protocol": "TCP", "port": 9333},
+                {"protocol": "TCP", "port": 8888},
+                {"protocol": "TCP", "port": 19333},
+                {"protocol": "TCP", "port": 18888},
+            ],
+            "master HTTP, filer HTTP, master gRPC, filer gRPC",
         )
 
 
@@ -137,6 +160,14 @@ class Installer(unittest.TestCase):
             "kubectl apply -f manifests/seaweedfs-network-policy.yaml",
             recipe("step-storage"),
             "`make step-storage` installs SeaweedFS, so it must close the unsigned ports",
+        )
+
+    def test_step_storage_applies_the_policy_before_the_upgrade(self):
+        body = recipe("step-storage")
+        self.assertLess(
+            body.index("kubectl apply -f manifests/seaweedfs-network-policy.yaml"),
+            body.index("helm upgrade --install seaweedfs"),
+            "an upgrade must meet the policy it ships, not the previous one",
         )
 
     def test_uninstall_removes_the_policy(self):

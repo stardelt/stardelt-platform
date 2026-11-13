@@ -389,12 +389,15 @@ step-s3-secrets: ## The S3 key pair (generated once, kept across installs)
 
 step-storage: step-s3-secrets ## The object store (SeaweedFS), the versioned notebooks bucket and the daily archive copy
 	@echo "› SeaweedFS"
+	@# Before the upgrade, not after it: the chart's post-upgrade bucket hook runs inside
+	@# `helm upgrade` and meets the policy that is already live — the previous install's.
+	@# Applying first makes an upgrade that ships a new policy meet its own (platform#1244).
+	@echo "› Internal ports: only SeaweedFS reaches the filer, master and volume servers (platform#1100)"
+	@kubectl apply -f manifests/seaweedfs-network-policy.yaml
 	@helm upgrade --install seaweedfs seaweedfs/seaweedfs \
 	  --version $(SEAWEEDFS_VERSION) \
 	  $(HELM_FLAGS) \
 	  -f helm-values/seaweedfs.yaml
-	@echo "› Internal ports: only SeaweedFS reaches the filer, master and volume servers (platform#1100)"
-	@kubectl apply -f manifests/seaweedfs-network-policy.yaml
 	@echo "› Versioned notebooks bucket (published notebooks, platform#290)"
 	@$(MAKE) --no-print-directory notebooks-bucket
 	@echo "› Object-store archive: the lakehouse-backup bucket and its daily copy (platform#462)"
