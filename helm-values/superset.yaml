@@ -39,6 +39,13 @@ imagePullSecrets:
 # may list Catalog objects. The chart's own ServiceAccount stays off.
 serviceAccountName: superset
 
+# Pod Security `restricted` (platform#1096 question 5). The chart writes
+# `runAsUser: {{ .Values.runAsUser }}` into the pod template of the node, worker and init
+# Job and defaults it to 0. The image's own user is 1000 and /app/superset_home is writable
+# for it (measured 2026-11-13); the pod and container fields are under supersetNode,
+# supersetWorker, init and redis below.
+runAsUser: 1000
+
 bootstrapScript: |
   #!/bin/bash
   if [ ! -f ~/bootstrap ]; then echo "Running Superset" > ~/bootstrap; fi
@@ -416,6 +423,33 @@ init:
     # The password is supplied at connect time by SQLALCHEMY_CUSTOM_PASSWORD_STORE
     # (configOverrides above); the URI above stays credential-free on purpose.
   loadExamples: false
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile: {type: RuntimeDefault}
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    capabilities: {drop: ["ALL"]}
+    seccompProfile: {type: RuntimeDefault}
+  # `initContainers` is a whole-list value: the chart's own wait-for-postgres would
+  # disappear if only a securityContext were written, so the list is repeated here.
+  initContainers:
+    - name: wait-for-postgres
+      image: apache/superset:dockerize
+      imagePullPolicy: IfNotPresent
+      envFrom:
+        - secretRef:
+            name: superset-env
+      command:
+        - /bin/sh
+        - -c
+        - dockerize -wait "tcp://$DB_HOST:$DB_PORT" -timeout 120s
+      resources:
+        limits: {memory: "256Mi"}
+        requests: {cpu: "250m", memory: "128Mi"}
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities: {drop: ["ALL"]}
+        seccompProfile: {type: RuntimeDefault}
 
 # Components
 supersetNode:
@@ -430,6 +464,32 @@ supersetNode:
   resources:
     requests: { cpu: "100m", memory: "512Mi" }
     limits:   { cpu: "2",    memory: "1Gi"  }
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile: {type: RuntimeDefault}
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    capabilities: {drop: ["ALL"]}
+    seccompProfile: {type: RuntimeDefault}
+  # Whole-list value; see the note under `init` above.
+  initContainers:
+    - name: wait-for-postgres
+      image: apache/superset:dockerize
+      imagePullPolicy: IfNotPresent
+      envFrom:
+        - secretRef:
+            name: superset-env
+      command:
+        - /bin/sh
+        - -c
+        - dockerize -wait "tcp://$DB_HOST:$DB_PORT" -timeout 120s
+      resources:
+        limits: {memory: "256Mi"}
+        requests: {cpu: "250m", memory: "128Mi"}
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities: {drop: ["ALL"]}
+        seccompProfile: {type: RuntimeDefault}
 
 supersetWorker:
   replicas:
@@ -449,6 +509,32 @@ supersetWorker:
   resources:
     requests: { cpu: "100m", memory: "512Mi" }
     limits:   { cpu: "2",    memory: "1Gi"  }
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile: {type: RuntimeDefault}
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    capabilities: {drop: ["ALL"]}
+    seccompProfile: {type: RuntimeDefault}
+  # Whole-list value; this is the chart's postgres-and-redis wait, repeated.
+  initContainers:
+    - name: wait-for-postgres-redis
+      image: apache/superset:dockerize
+      imagePullPolicy: IfNotPresent
+      envFrom:
+        - secretRef:
+            name: superset-env
+      command:
+        - /bin/sh
+        - -c
+        - dockerize -wait "tcp://$DB_HOST:$DB_PORT" -wait "tcp://$REDIS_HOST:$REDIS_PORT" -timeout 120s
+      resources:
+        limits: {memory: "256Mi"}
+        requests: {cpu: "250m", memory: "128Mi"}
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities: {drop: ["ALL"]}
+        seccompProfile: {type: RuntimeDefault}
 
 supersetCeleryBeat:
   enabled: false
@@ -469,6 +555,15 @@ postgresql:
 redis:
   enabled: true
   master:
+    podSecurityContext:
+      fsGroup: 1001
+      runAsNonRoot: true
+      seccompProfile: {type: RuntimeDefault}
+    containerSecurityContext:
+      runAsUser: 1001
+      allowPrivilegeEscalation: false
+      capabilities: {drop: ["ALL"]}
+      seccompProfile: {type: RuntimeDefault}
     persistence:
       size: 1Gi
     resources:
