@@ -14,7 +14,9 @@
 # those signals is individually reassuring, which is why this check compares the
 # *bucket* against the *database* instead of trusting either:
 #
-#   (a) the live Cluster declares spec.backup.barmanObjectStore.destinationPath
+#   (a) the live Cluster declares its backup destination — either
+#       spec.backup.barmanObjectStore.destinationPath, or the ObjectStore named by
+#       a WAL-archiver plugin in spec.plugins
 #   (b) the bucket has everything Postgres *asked* to archive: the current WAL
 #       segment is archived, or the segment before it is and pg_wal/archive_status
 #       holds no .ready file. A segment that holds no records is never switched by
@@ -132,22 +134,41 @@ fi
 # (a) The live object still declares its backup config. This is the check the
 #     install targets run right after `kubectl apply -f manifests/cnpg-postgres.yaml`.
 # ---------------------------------------------------------------------------
-backup="$(cluster_jsonpath '{.spec.backup}')"
-barman="$(cluster_jsonpath '{.spec.backup.barmanObjectStore}')"
-destination="$(cluster_jsonpath '{.spec.backup.barmanObjectStore.destinationPath}')"
+# The backup config has two forms since CloudNativePG 1.30 (platform#192):
+#   native:  spec.backup.barmanObjectStore.{destinationPath,endpointURL,s3Credentials}
+#   plugin:  spec.plugins[?(@.isWALArchiver == true)].parameters.barmanObjectName
+#            -> an ObjectStore CR whose spec.configuration carries the same keys.
+# Resolve the destination first, then keep the rest of the script single-form.
+wal_plugin="$(cluster_jsonpath '{.spec.plugins[?(@.isWALArchiver == true)].parameters.barmanObjectName}')"
 
 missing=""
-if [ -z "$backup" ]; then
-  missing="spec.backup"
-elif [ -z "$barman" ]; then
-  missing="spec.backup.barmanObjectStore"
-elif [ -z "$destination" ]; then
-  missing="spec.backup.barmanObjectStore.destinationPath"
+if [ -n "$wal_plugin" ]; then
+  backup_what="spec.plugins → ObjectStore $wal_plugin"
+  destination="$(kubectl -n "$NAMESPACE" get objectstore "$wal_plugin" \
+    -o jsonpath='{.spec.configuration.destinationPath}' 2>/dev/null || true)"
+  if ! kubectl -n "$NAMESPACE" get objectstore "$wal_plugin" >/dev/null 2>&1; then
+    missing="ObjectStore $wal_plugin"
+  elif [ -z "$destination" ]; then
+    missing="ObjectStore $wal_plugin .spec.configuration.destinationPath"
+  fi
+else
+  backup_what="spec.backup.barmanObjectStore"
+  backup="$(cluster_jsonpath '{.spec.backup}')"
+  barman="$(cluster_jsonpath '{.spec.backup.barmanObjectStore}')"
+  destination="$(cluster_jsonpath '{.spec.backup.barmanObjectStore.destinationPath}')"
+  if [ -z "$backup" ]; then
+    missing="spec.backup"
+  elif [ -z "$barman" ]; then
+    missing="spec.backup.barmanObjectStore"
+  elif [ -z "$destination" ]; then
+    missing="spec.backup.barmanObjectStore.destinationPath"
+  fi
 fi
 
 if [ -n "$missing" ]; then
   {
     echo "✗ $NAMESPACE/$CLUSTER: $missing is missing (or empty) after the apply."
+    echo "✗   (backup declaration read from: $backup_what)"
     echo "✗"
     echo "✗   Without it, CloudNativePG's archive_command exits 0 without uploading:"
     echo "✗   pg_stat_archiver counts successful archives, every condition and every"
@@ -156,9 +177,17 @@ if [ -n "$missing" ]; then
     echo "✗   Likely cause: the applied manifest came from an out-of-date checkout."
     echo "✗"
     echo "✗ Repair (this check never edits anything itself):"
-    echo "✗   1. apply the declaration from an up-to-date main checkout:"
-    echo "✗        git fetch origin && git switch main && git pull --ff-only"
-    echo "✗        kubectl -n $NAMESPACE apply -f manifests/cnpg-postgres.yaml"
+    if [ -n "$wal_plugin" ]; then
+      echo "✗   1. look at the object store the Cluster names, and apply its declaration"
+      echo "✗      from an up-to-date main checkout:"
+      echo "✗        kubectl -n $NAMESPACE get objectstore"
+      echo "✗        git fetch origin && git switch main && git pull --ff-only"
+      echo "✗        kubectl -n $NAMESPACE apply -f manifests/cnpg-objectstore.yaml"
+    else
+      echo "✗   1. apply the declaration from an up-to-date main checkout:"
+      echo "✗        git fetch origin && git switch main && git pull --ff-only"
+      echo "✗        kubectl -n $NAMESPACE apply -f manifests/cnpg-postgres.yaml"
+    fi
     echo "✗   2. if the config was absent for any length of time, start a fresh chain —"
     echo "✗      WAL archived during the gap is not recoverable:"
     echo "✗        kubectl -n $NAMESPACE delete scheduledbackup lakekeeper-pg-daily"
@@ -168,7 +197,7 @@ if [ -n "$missing" ]; then
   exit 1
 fi
 
-ok "spec.backup is declared (barmanObjectStore → $destination)"
+ok "spec.backup is declared ($backup_what → $destination)"
 
 if [ "$CONFIG_ONLY" = 1 ]; then
   info "S3 checks skipped (--config-only): the declared config is intact"
@@ -238,19 +267,31 @@ info "archiver: $archived_count archived, $failed_count failed; last_archived_wa
 # endpoint/credentials — prepared via --overrides so no secret value ever lands
 # in this process's argv or the local shell history.
 # ---------------------------------------------------------------------------
+# The same keys come from whichever form declared the destination: the Cluster's
+# native spec.backup.barmanObjectStore, or the ObjectStore CR's spec.configuration.
+if [ -n "$wal_plugin" ]; then
+  creds_get() { kubectl -n "$NAMESPACE" get objectstore "$wal_plugin" -o jsonpath="{.spec.configuration$1}"; }
+else
+  creds_get() { cluster_jsonpath "{.spec.backup.barmanObjectStore$1}"; }
+fi
+
 pod_name="verify-backups-s3-$$"
 wal_uri="${destination%/}/$CLUSTER/wals/"
 
-access_name="$(cluster_jsonpath '{.spec.backup.barmanObjectStore.s3Credentials.accessKeyId.name}')"
-access_key="$(cluster_jsonpath '{.spec.backup.barmanObjectStore.s3Credentials.accessKeyId.key}')"
-secret_name="$(cluster_jsonpath '{.spec.backup.barmanObjectStore.s3Credentials.secretAccessKey.name}')"
-secret_key="$(cluster_jsonpath '{.spec.backup.barmanObjectStore.s3Credentials.secretAccessKey.key}')"
-region_name="$(cluster_jsonpath '{.spec.backup.barmanObjectStore.s3Credentials.region.name}')"
-region_key="$(cluster_jsonpath '{.spec.backup.barmanObjectStore.s3Credentials.region.key}')"
-endpoint="$(cluster_jsonpath '{.spec.backup.barmanObjectStore.endpointURL}')"
+access_name="$(creds_get '.s3Credentials.accessKeyId.name')"
+access_key="$(creds_get '.s3Credentials.accessKeyId.key')"
+secret_name="$(creds_get '.s3Credentials.secretAccessKey.name')"
+secret_key="$(creds_get '.s3Credentials.secretAccessKey.key')"
+region_name="$(creds_get '.s3Credentials.region.name')"
+region_key="$(creds_get '.s3Credentials.region.key')"
+endpoint="$(creds_get '.endpointURL')"
 
 if [ -z "$access_name" ] || [ -z "$access_key" ] || [ -z "$secret_name" ] || [ -z "$secret_key" ]; then
-  err "the Cluster declares no complete s3Credentials — cannot list the bucket (SKIP_OBJECTS=1 skips this deliberately)."
+  if [ -n "$wal_plugin" ]; then
+    err "ObjectStore $wal_plugin declares no complete s3Credentials — cannot list the bucket (SKIP_OBJECTS=1 skips this deliberately)."
+  else
+    err "the Cluster declares no complete s3Credentials — cannot list the bucket (SKIP_OBJECTS=1 skips this deliberately)."
+  fi
   exit 1
 fi
 

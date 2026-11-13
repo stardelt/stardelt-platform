@@ -183,6 +183,9 @@ fi
 clusters_json="$(kubectl -n "$NAMESPACE" get clusters.postgresql.cnpg.io -o json 2>/dev/null || echo '{"items":[]}')"
 cronjobs_json="$(kubectl -n "$NAMESPACE" get cronjob -o json 2>/dev/null || echo '{"items":[]}')"
 scheduledbackups_json="$(kubectl -n "$NAMESPACE" get scheduledbackup -o json 2>/dev/null || echo '{"items":[]}')"
+# The plugin form of the backup config (platform#192): the Cluster names an
+# ObjectStore CR, whose spec.configuration carries the destination and keys.
+objectstores_json="$(kubectl -n "$NAMESPACE" get objectstore -o json 2>/dev/null || echo '{"items":[]}')"
 now="$(date -u +%s)"
 
 declare -A pvc_mech=() pvc_target=() pvc_reason=() s3_uri=()
@@ -389,9 +392,25 @@ for pvc in "${pvcs[@]}"; do
     cnpg)
       mech_disp="CNPG $target: WAL + $target-daily"
       exists="$(jq -r --arg c "$target" 'any(.items[]?; .metadata.name == $c)' <<<"$clusters_json")"
-      destination="$(jq -r --arg c "$target" \
-        '.items[] | select(.metadata.name == $c) | (.spec.backup.barmanObjectStore.destinationPath // "")' \
+      destination="$(jq -r --arg c "$target" '
+        .items[] | select(.metadata.name == $c) |
+        if (.spec.plugins // [] | map(select(.isWALArchiver == true)) | length) > 0
+        then (.spec.plugins[] | select(.isWALArchiver == true) | .parameters.barmanObjectName)
+        else (.spec.backup.barmanObjectStore.destinationPath // "")
+        end' <<<"$clusters_json")"
+      # A WAL-archiver plugin means `destination` above is an ObjectStore *name*;
+      # its destinationPath is the real one, and the ObjectStore may be absent.
+      wal_plugin="$(jq -r --arg c "$target" '
+        .items[] | select(.metadata.name == $c) |
+        (.spec.plugins // [] | map(select(.isWALArchiver == true)) | .[0].parameters.barmanObjectName // "")' \
         <<<"$clusters_json")"
+      objectstore_exists=""
+      if [ -n "$wal_plugin" ]; then
+        objectstore_exists="$(jq -r --arg n "$wal_plugin" 'any(.items[]?; .metadata.name == $n)' <<<"$objectstores_json")"
+        destination="$(jq -r --arg n "$wal_plugin" \
+          '(.items[] | select(.metadata.name == $n) | .spec.configuration.destinationPath) // ""' \
+          <<<"$objectstores_json")"
+      fi
       scheduled="$(jq -r --arg n "$target-daily" 'any(.items[]?; .metadata.name == $n)' <<<"$scheduledbackups_json")"
       last_backup="$(jq -r --arg c "$target" \
         '.items[] | select(.metadata.name == $c) | (.status.lastSuccessfulBackup // "")' \
@@ -400,9 +419,16 @@ for pvc in "${pvcs[@]}"; do
         verdict="FAIL"
         mech_disp="CNPG $target (missing)"
         failures+=("$pvc: Cluster $NAMESPACE/$target does not exist — the PVC outlived its Cluster, or the name changed")
+      elif [ -n "$wal_plugin" ] && [ "$objectstore_exists" != true ]; then
+        verdict="FAIL"
+        failures+=("$pvc: Cluster $target names ObjectStore $wal_plugin, which does not exist — apply manifests/cnpg-objectstore.yaml")
       elif [ -z "$destination" ]; then
         verdict="FAIL"
-        failures+=("$pvc: Cluster $target declares no spec.backup.barmanObjectStore.destinationPath — without it the archiver is a successful no-op (#59); re-apply the manifests from an up-to-date main")
+        if [ -n "$wal_plugin" ]; then
+          failures+=("$pvc: ObjectStore $wal_plugin declares no spec.configuration.destinationPath — without it the archiver is a successful no-op (#59); re-apply manifests/cnpg-objectstore.yaml from an up-to-date main")
+        else
+          failures+=("$pvc: Cluster $target declares no spec.backup.barmanObjectStore.destinationPath — without it the archiver is a successful no-op (#59); re-apply the manifests from an up-to-date main")
+        fi
       elif [ "$scheduled" != true ]; then
         verdict="FAIL"
         failures+=("$pvc: no ScheduledBackup $target-daily — apply manifests/cnpg-backup-schedule.yaml")
