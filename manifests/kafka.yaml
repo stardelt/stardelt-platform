@@ -31,6 +31,20 @@ spec:
   jvmOptions:
     -Xms: 1g
     -Xmx: 1g
+  # Pod Security `restricted` (platform#1096 question 5). With `strimzi.io/node-pools: enabled`
+  # the broker pod is rendered from THIS template, not from `Kafka.spec.kafka.template`. Keep
+  # `fsGroup: 0`: Strimzi sets it today and the topic volume's group ownership must not change.
+  template:
+    pod:
+      securityContext:
+        fsGroup: 0
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+    kafkaContainer:
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities: {drop: ["ALL"]}
+        seccompProfile: {type: RuntimeDefault}
 ---
 apiVersion: kafka.strimzi.io/v1
 kind: Kafka
@@ -56,6 +70,24 @@ spec:
   entityOperator:
     topicOperator: {}
     userOperator: {}
+    # Pod Security `restricted` (platform#1096 question 5). The entity operator is a `Kafka`
+    # workload (not a node pool), so its template is here; both operator containers need the
+    # same block.
+    template:
+      pod:
+        securityContext:
+          runAsNonRoot: true
+          seccompProfile: {type: RuntimeDefault}
+      topicOperatorContainer:
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: {drop: ["ALL"]}
+          seccompProfile: {type: RuntimeDefault}
+      userOperatorContainer:
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: {drop: ["ALL"]}
+          seccompProfile: {type: RuntimeDefault}
 ---
 # The D42 example's topic (dags/pegelonline_hourly.py: TOPIC). The DAG publishes keyed records
 # here; a StreamApp reads them back later (design/streaming.md §7).
