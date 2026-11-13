@@ -8,10 +8,10 @@
 # enforces NetworkPolicy (the lab has one) and kubectl access to the namespace.
 #
 # Two groups are gated by NetworkPolicy and only answer a pod that carries the scraper
-# label: the object store (seaweedfs-*-metrics) and the catalog stack (lakekeeper,
-# openfga). Plain `app.kubernetes.io/part-of=stardelt` pods are refused, which is why the
-# probe carries `app.kubernetes.io/name=prometheus` (the label monitoring.coreos.com's own
-# pods carry, operator#607).
+# label: the object store (seaweedfs-*-metrics), the catalog stack (lakekeeper, openfga)
+# and the hub (hub:8081/hub/metrics). Plain `app.kubernetes.io/part-of=stardelt` pods are
+# refused, which is why the probe carries `app.kubernetes.io/name=prometheus` (the label
+# monitoring.coreos.com's own pods carry, operator#607).
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 NS="${NS:-${NAMESPACE:-stardelt}}"
@@ -43,10 +43,14 @@ targets=(
   spark-operator-metrics:8080
   stardelt-operator-metrics:8082
   airflow-statsd:9102
+  hub:8081/hub/metrics
 )
 
 for target in "${targets[@]}"; do
   service="${target%%:*}"
+  # A target may carry its own path (`hub:8081/hub/metrics`); the rest read /metrics.
+  url="http://$target/metrics"
+  case "$target" in */*) url="http://$target" ;; esac
   if ! kubectl -n "$NS" get service "$service" >/dev/null 2>&1; then
     echo "– $target: Service '$service' is not installed, skipped"; continue
   fi
@@ -59,15 +63,18 @@ for target in "${targets[@]}"; do
   # that is really broken fails both attempts.
   for attempt in 1 2; do
     code=$(kubectl -n "$NS" exec "$POD" -- curl -sS -o /tmp/metrics-body -w '%{http_code}' \
-        --max-time 15 "http://$target/metrics" 2>/dev/null || true)
+        --max-time 15 "$url" 2>/dev/null || true)
     [ "$code" = "200" ] && break
     if [ "$attempt" = 1 ]; then sleep 1; fi
   done
   first=$(kubectl -n "$NS" exec "$POD" -- grep -m1 '^# TYPE' /tmp/metrics-body 2>/dev/null || true)
+  # The label is the URL without the scheme: `hub:8081/hub/metrics` for a target that
+  # carries its own path, `host:port/metrics` for the rest.
+  label="${url#http://}"
   if [ "$code" = "200" ] && [ -n "$first" ]; then
-    echo "✓ $target/metrics 200 ${first#\# TYPE }"
+    echo "✓ $label 200 ${first#\# TYPE }"
   else
-    echo "✗ $target/metrics answered ${code:-nothing} ${first:-(no Prometheus text)} — fix before going on"
+    echo "✗ $label answered ${code:-nothing} ${first:-(no Prometheus text)} — fix before going on"
     problems=$((problems + 1))
   fi
 done
