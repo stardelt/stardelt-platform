@@ -11,6 +11,8 @@
 # Checked against every in-repo client (2026-11-12): the backup CronJobs
 # (aws s3 sync, rclone), the bucket-creation scripts (amazon/aws-cli), CNPG's WAL
 # archive (s3://backups/) and the engines all talk to seaweedfs-s3:8333.
+# The chart's post-upgrade bucket hook is a client too — see the job-name rule below;
+# it runs during helm upgrade, so it meets the previous install's policy.
 #
 # Needs a CNI that enforces NetworkPolicy — k3s does; plain Flannel does not.
 # To debug a client that must stay on the filer, delete this policy and say why;
@@ -46,3 +48,20 @@ spec:
       ports:
         - protocol: TCP
           port: 9327
+    # The chart's bucket hook (platform#1244). `helm upgrade` runs it as a
+    # post-upgrade hook — before this policy is re-applied — so it meets the
+    # policy of the previous install. It waits on the master's /cluster/status
+    # and the filer's / and then creates the `lakehouse` and `backups` buckets
+    # through `weed shell`, so it needs 9333 and 8888. The Job controller puts
+    # `job-name: <job>` on the pod (measured in this namespace), and the Job's
+    # name is the fixed `seaweedfs-bucket-hook`, so this admits the hook and
+    # nothing else — not the S3 gateway, not a future chart pod.
+    - from:
+        - podSelector:
+            matchLabels:
+              job-name: seaweedfs-bucket-hook
+      ports:
+        - protocol: TCP
+          port: 9333
+        - protocol: TCP
+          port: 8888
