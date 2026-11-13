@@ -11,6 +11,8 @@
 # Checked against every in-repo client (2026-11-12): the backup CronJobs
 # (aws s3 sync, rclone), the bucket-creation scripts (amazon/aws-cli), CNPG's WAL
 # archive (s3://backups/) and the engines all talk to seaweedfs-s3:8333.
+# The chart's post-upgrade bucket hook is a client too — see the job-name rule below;
+# it runs during helm upgrade, so it meets the previous install's policy.
 #
 # Needs a CNI that enforces NetworkPolicy — k3s does; plain Flannel does not.
 # To debug a client that must stay on the filer, delete this policy and say why;
@@ -46,3 +48,26 @@ spec:
       ports:
         - protocol: TCP
           port: 9327
+    # The chart's bucket hook (platform#1244). `helm upgrade` runs it as a
+    # post-upgrade hook — after this policy is live — and it waits on the master's
+    # /cluster/status (9333) and the filer (8888) before `weed shell` creates the
+    # `lakehouse` and `backups` buckets, which dials both gRPC ports (master 19333,
+    # filer 18888). The Job controller puts `job-name: <job>` on the pod and the
+    # chart's Job name is the fixed `seaweedfs-bucket-hook`, so this admits the hook
+    # and nothing else. `job-name` is a pod's own label: any pod in this namespace
+    # that claims it is admitted, including on 19333 (the master's gRPC admin
+    # surface) — still far narrower than `app.kubernetes.io/instance: seaweedfs`,
+    # which would admit the S3 gateway and every other pod of the release.
+    - from:
+        - podSelector:
+            matchLabels:
+              job-name: seaweedfs-bucket-hook
+      ports:
+        - protocol: TCP
+          port: 9333
+        - protocol: TCP
+          port: 8888
+        - protocol: TCP
+          port: 19333
+        - protocol: TCP
+          port: 18888
