@@ -168,6 +168,19 @@ echo "› ConfigMap keycloak-env (KC_HOSTNAME=https://id.${BASE_DOMAIN})"
 # `tokenEndpoint` is the OAuth2 client-credentials endpoint. This script only ever
 # deploys the Keycloak above, so the realm path *is* the provider's own endpoint;
 # the key lives in the contract so consumers (#611) never build it.
+# The hosted MCP endpoint's switch (stardelt-nova#112). Off on a fresh install; a re-run keeps
+# whatever the live ConfigMap already says unless MCP_ENABLED/MCP_AUDIENCE are given, so
+# `make install-identity` cannot turn a running endpoint off by accident.
+mcp_enabled="${MCP_ENABLED:-}"
+if [ -z "$mcp_enabled" ]; then
+  mcp_enabled="$(kubectl -n "$NAMESPACE" get configmap stardelt-identity -o jsonpath='{.data.mcpEnabled}' 2>/dev/null || true)"
+fi
+mcp_enabled="${mcp_enabled:-0}"
+mcp_audience="${MCP_AUDIENCE:-}"
+if [ -z "$mcp_audience" ]; then
+  mcp_audience="$(kubectl -n "$NAMESPACE" get configmap stardelt-identity -o jsonpath='{.data.mcpAudience}' 2>/dev/null || true)"
+fi
+mcp_audience="${mcp_audience:-https://${BASE_DOMAIN}/mcp}"
 apply_configmap stardelt-identity \
   --from-literal=issuerUrl="https://id.${BASE_DOMAIN}/realms/stardelt" \
   --from-literal=tokenEndpoint="https://id.${BASE_DOMAIN}/realms/stardelt/protocol/openid-connect/token" \
@@ -175,5 +188,7 @@ apply_configmap stardelt-identity \
   --from-literal=adminGroup=stardelt-admins \
   --from-literal=authMode=oidc \
   --from-literal=publicUrl="https://${BASE_DOMAIN}" \
+  --from-literal=mcpEnabled="${mcp_enabled}" \
+  --from-literal=mcpAudience="${mcp_audience}" \
   --from-literal=trinoUrl="https://trino.${NAMESPACE}.svc.cluster.local:8443"
 echo "› ConfigMap stardelt-identity (issuer https://id.${BASE_DOMAIN}/realms/stardelt)"
