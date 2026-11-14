@@ -86,7 +86,7 @@ BASE_DOMAIN ?= $(or $(INGRESS_HOST),alpha.dev.stardelt.io)
 .PHONY: chart-deps chart-template chart-install
 .PHONY: verify-backups verify-backups-identity verify-backups-nova verify-backups-openfga verify-backups-all verify-images verify-streaming verify-compute verify-maintenance verify-backup-config verify-realm-admin verify-seaweedfs-ports verify-metrics verify-pod-security sync-realm-admin sync-realm-user-management
 .PHONY: backups verify-pgdump offsite-backup export-recovery-secrets import-recovery-secrets
-.PHONY: sync-oidc-clients verify-oidc-clients verify-trino-tls verify-trino-auth sync-trino-group-sync-client sync-pipeline-runner-client sync-dev-client sync-catalog-audience openbao test-openbao-policies seaweedfs-admin
+.PHONY: sync-oidc-clients verify-oidc-clients verify-trino-tls verify-trino-auth sync-trino-group-sync-client sync-pipeline-runner-client sync-dev-client sync-mcp-client sync-catalog-audience openbao test-openbao-policies seaweedfs-admin
 .PHONY: external-secrets verify-external-secrets eso-stores
 .PHONY: perf-baseline
 
@@ -1123,6 +1123,11 @@ test-bridge-policies: ## Prove the decision-table policy against a stub Lakekeep
 sync-dev-client: _context ## Converge the live realm's stardelt-dev client (device grant, PKCE, loopback redirects; idempotent)
 	@NAMESPACE=$(NAMESPACE) DEV_CLIENT_ENABLED=$(or $(DEV_CLIENT_ENABLED),true) bash scripts/keycloak-sync-dev-client.sh
 
+# The public client MCP agents sign in with (stardelt-nova#112): PKCE, loopback redirects and the
+# device grant, tokens carrying only the MCP resource audience <Nova publicUrl>/mcp.
+sync-mcp-client: _context ## Converge the live realm's stardelt-mcp client (MCP audience, PKCE, loopback redirects; idempotent)
+	@NAMESPACE=$(NAMESPACE) MCP_AUDIENCE=$(MCP_AUDIENCE) bash scripts/keycloak-sync-mcp-client.sh
+
 # The audience `openbao` on the tokens of Nova, the notebook hub and the developer client, so the
 # secret store's JWT sign-in accepts them (platform#160, decision D27).
 .PHONY: sync-store-audience
@@ -1231,6 +1236,8 @@ install-identity: deps _context ## Install the platform IdP (Keycloak) at id.$(B
 	@$(MAKE) --no-print-directory sync-pipeline-runner-client
 	@echo "› [9/11] Sync the live realm's developer sign-in client (stardelt-dev, platform#157)"
 	@$(MAKE) --no-print-directory sync-dev-client
+	@echo "› [11/11] The MCP client for AI agents"
+	@$(MAKE) --no-print-directory sync-mcp-client
 	@echo "› [9/11] Sync the live realm's secret-store audience (platform#160)"
 	@$(MAKE) --no-print-directory sync-store-audience
 	@echo "› [10/11] guard: every client secret must authenticate at the token endpoint"
