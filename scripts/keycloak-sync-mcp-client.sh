@@ -3,9 +3,10 @@
 # signs in with (stardelt-nova#112, stardelt-operator#69): PKCE to a loopback address and the
 # device grant, no secret, no service account. Its tokens carry the audience `<nova publicUrl>/mcp`
 # and the `groups` claim and nothing else that grants data access — the token is for the `/mcp`
-# endpoint only. The engine (catalog/Trino) token is minted server-side by the token exchange
-# (platform#174); an agent holding an engine-audience token could run SQL directly and bypass the
-# read-only tool surface (`design/agent-access.md` §4).
+# endpoint only. Nova forwards this token to the engine today (there is no exchange yet,
+# platform#174), and the engine accepts it because it checks no audience, so the same token can be
+# replayed against the engine directly — the read-only tool surface is a guardrail, not a boundary
+# (`design/agent-access.md` §4, platform#1365).
 #
 #   NAMESPACE=stardelt bash scripts/keycloak-sync-mcp-client.sh
 #   MCP_AUDIENCE=https://nova.example.com/mcp NAMESPACE=stardelt bash scripts/keycloak-sync-mcp-client.sh
