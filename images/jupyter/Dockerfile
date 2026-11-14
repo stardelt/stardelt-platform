@@ -104,7 +104,8 @@ ARG STARDELT_JUPYTERLAB_WHEEL=https://github.com/stardelt/stardelt-python/releas
 ARG STARDELT_RUNTIME=dev
 ENV STARDELT_RUNTIME=${STARDELT_RUNTIME}
 RUN python3 -m pip install --no-cache-dir "${STARDELT_JUPYTERLAB_WHEEL}" \
-    && jupyter labextension list 2>&1 | grep -q '@stardelt/jupyterlab' \
+    && jupyter labextension list > /tmp/labext-stardelt.txt 2>&1 \
+    && { grep -q '@stardelt/jupyterlab' /tmp/labext-stardelt.txt || { echo '--- full labextension list ---'; cat /tmp/labext-stardelt.txt; exit 1; }; } \
     && mkdir -p "${CONDA_DIR}/share/jupyter/lab/settings" \
     && printf '%s\n' '{ "@jupyterlab/apputils-extension:themes": { "theme": "stardelt Graphite" } }' \
          > "${CONDA_DIR}/share/jupyter/lab/settings/overrides.json"
