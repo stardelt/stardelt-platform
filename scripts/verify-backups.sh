@@ -101,6 +101,20 @@ archive_covers() {
   return 1
 }
 
+newest_object() {
+  # The newest object of an `aws s3 ls` listing (`YYYY-MM-DD HH:MM:SS <bytes> <key>` lines on
+  # stdin), printed as `stamp|key`. Newest timestamp wins; on an equal second the
+  # lexicographically greater key wins, because the listing is key-ordered and the plugin
+  # archives segments in parallel — without the tie-break the older segment "wins" a
+  # same-second burst and a complete archive reads as behind (platform#1288).
+  awk '
+    {
+      stamp = $1 " " $2
+      if (stamp > best || (stamp == best && $NF > key)) { best = stamp; key = $NF }
+    }
+    END { if (best != "") printf "%s|%s", best, key }'
+}
+
 if [ "$SELF_TEST" = 1 ]; then
   failures=0
   expect() { # expect <0|1> <label> <current> <newest> <ready>
@@ -114,6 +128,18 @@ if [ "$SELF_TEST" = 1 ]; then
   check_eq 'plain key' "$(segment_of 'openfga-pg/wals/0000000100000000/0000000100000000000000C9.gz')" '0000000100000000000000C9'
   check_eq 'label key' "$(segment_of 'openfga-pg/wals/0000000100000000/0000000100000000000000C9.00000028.backup.gz')" '0000000100000000000000C9'
   check_eq 'previous segment' "$(previous_segment '0000000100000000000000CA')" '0000000100000000000000C9'
+  check_eq 'newest: a same-second tie keeps the later segment' \
+    "$(printf '%s\n' \
+      '2026-11-13 23:05:00     294263 lakekeeper-pg/wals/000000010000000C/000000010000000C0000006B.gz' \
+      '2026-11-13 23:05:00      17807 lakekeeper-pg/wals/000000010000000C/000000010000000C0000006C.gz' \
+      | newest_object)" \
+    '2026-11-13 23:05:00|lakekeeper-pg/wals/000000010000000C/000000010000000C0000006C.gz'
+  check_eq 'newest: a later second beats a greater key' \
+    "$(printf '%s\n' \
+      '2026-11-13 23:05:01          1 x/000000010000000C0000006B.gz' \
+      '2026-11-13 23:05:00          1 x/000000010000000C0000006C.gz' \
+      | newest_object)" \
+    '2026-11-13 23:05:01|x/000000010000000C0000006B.gz'
   expect 0 'quiet store: current segment archived' '0000000100000000000000C9' '0000000100000000000000C9' 0
   expect 0 'open, empty segment: previous archived, nothing queued' '0000000100000000000000CA' '0000000100000000000000C9' 0
   expect 1 'dead archiver: a segment is queued' '0000000100000000000000CA' '0000000100000000000000C9' 1
@@ -365,13 +391,9 @@ fi
 # Lexicographic "YYYY-MM-DD HH:MM:SS" order equals chronological order, so awk can
 # pick the newest object without any date arithmetic; note that barman label files
 # (<segment>.<lsn>.backup.gz) sort *before* their plain segment, which is why the
-# winner is chosen by timestamp and not by `tail -1` of the listing.
-newest="$(printf '%s\n' "$listing" | awk '
-  {
-    stamp = $1 " " $2
-    if (stamp > best) { best = stamp; key = $NF }
-  }
-  END { if (best != "") printf "%s|%s", best, key }')"
+# winner is chosen by timestamp and not by `tail -1` of the listing. Two objects in
+# the same second are broken by the greater key (newest_object), not by line order.
+newest="$(printf '%s\n' "$listing" | newest_object)"
 newest_stamp="${newest%%|*}"
 newest_key="${newest##*|}"
 
