@@ -24,10 +24,24 @@ class VerifyNotebookIdentityTest(unittest.TestCase):
         self.assertNotIn("warehouse.covid.covid_summary", self.source)
 
     def test_it_asserts_the_quickstart_smoke_round_trip(self):
-        self.assertIn("^Catalog: (shared|playground)$", self.source)
         self.assertIn("quickstart_smoke: 3 rows written and read back", self.source)
         notebook = NOTEBOOK.read_text(encoding="utf-8")
         self.assertIn("quickstart_smoke", notebook)
+
+    def _module(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("verify_notebook_identity", SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_the_catalog_check_tolerates_nbconvert_indentation(self):
+        regex = self._module().CATALOG_LINE
+        self.assertIsNotNone(regex.search("    Catalog: playground\n"))
+        self.assertIsNotNone(regex.search("\tCatalog: shared\n"))
+        self.assertIsNone(regex.search("    Catalog: warehouse\n"))
+        self.assertIsNone(regex.search("    Visible catalogs: bronze, gold, playground, silver\n"))
 
     def test_the_negative_removes_the_hub_token_too(self):
         compact = re.sub(r"\s+", "", self.source)
