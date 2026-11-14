@@ -263,8 +263,11 @@ def main():
           "" if positive.returncode == 0 else positive.stderr.strip()[-300:])
     check(f"Trino reports current_user = {expected} (the token's {PRINCIPAL})",
           "signed_in_as" in output and expected in output)
+    # nbconvert's markdown template indents text outputs by four spaces, so match the
+    # de-indented lines (measured on the demo pod, platform#1323).
+    flattened = "\n".join(line.strip() for line in output.splitlines())
     check("the quickstart chose a catalog the person can see",
-          re.search(r"^Catalog: (shared|playground)$", output, re.M) is not None)
+          re.search(r"^Catalog: (shared|playground)$", flattened, re.M) is not None)
     check("the quickstart wrote and read back its smoke table",
           "quickstart_smoke: 3 rows written and read back" in output)
 
