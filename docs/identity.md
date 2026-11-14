@@ -598,7 +598,7 @@ the same row (`d.password = None`) and check that `database.sqlalchemy_uri` prin
 (`make install-identity` calls it), then restart Trino so its password file is reloaded
 (`kubectl -n stardelt rollout restart deploy/trino-coordinator deploy/trino-worker`). **Superset
 needs nothing else**: its node and worker pods carry
-`secret.reloader.stakater.com/reload: trino-password-db`, so Reloader (`make reloader`) rolls them
+`secret.reloader.stakater.com/reload: trino-password-db`, so Reloader (`make step-reloader`) rolls them
 when the Secret changes — `helm-values/reloader.yaml` also enables `reloadOnCreate`, because the
 rotation replaces the Secret (delete, then re-create) and Reloader ignores create events by default.
 No init Job, no stored URI to rewrite. `make verify-trino-auth` proves
