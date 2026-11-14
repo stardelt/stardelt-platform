@@ -37,13 +37,17 @@ Environment:
                      proves the engine used the person's token in the shape the
                      platform configured.
   NAMESPACE          Kubernetes namespace (default stardelt)
-  NOTEBOOK           path inside the pod (default /home/jovyan/warehouse-quickstart.ipynb)
+  NOTEBOOK           path inside the pod (default /opt/stardelt/notebooks/warehouse-quickstart.ipynb)
   NOTEBOOK_RESTART   stop/start before checking (default 1)
   NOTEBOOK_TIMEOUT   seconds to wait for the server (default 600; the first
                      spawn may pull a new image)
   NOTEBOOK_POD       pod name override; by default the pod is found through the
                      `hub.jupyter.org/username` label
   KUBECONFIG         inherited by kubectl
+
+The default is the image's copy: the postStart hook seeds $HOME with cp -n, so a
+home that already has the notebook keeps the version of the image that created
+it. Pass NOTEBOOK to check a home copy deliberately.
 """
 import base64
 import http.cookiejar
@@ -61,7 +65,7 @@ HUB = os.environ.get("HUB_URL", "https://jupyter.alpha.dev.stardelt.io").rstrip(
 USER = os.environ.get("NOTEBOOK_USER", "analyst")
 PASSWORD = os.environ.get("NOTEBOOK_PASSWORD", "")
 NAMESPACE = os.environ.get("NAMESPACE", "stardelt")
-NOTEBOOK = os.environ.get("NOTEBOOK", "/home/jovyan/warehouse-quickstart.ipynb")
+NOTEBOOK = os.environ.get("NOTEBOOK", "/opt/stardelt/notebooks/warehouse-quickstart.ipynb")
 RESTART = os.environ.get("NOTEBOOK_RESTART", "1") not in ("0", "false", "no")
 TIMEOUT = int(os.environ.get("NOTEBOOK_TIMEOUT", "600"))
 PRINCIPAL = os.environ.get("GROUP_PRINCIPAL", "sub")
