@@ -170,6 +170,7 @@ if [ "$mode" = check ]; then
       10) check_10 || rc=1 ;;
       11) check_11 || rc=1 ;;
       12) check_12 || rc=1 ;;
+      13) check_13 || rc=1 ;;
       *) check_msg="unknown row $id"; check_fix="this is a bug in scripts/public-demo.sh"; rc=1 ;;
     esac
     check_rows=$((check_rows + 1))
@@ -536,6 +537,20 @@ PY
     check_msg="the nightly reset last succeeded at $last"
   }
 
+  # 13. The reset principal may drop in the playground (platform#1310). Since platform#1130 a
+  # `write` grant is Lakekeeper `write`, not `modify`, so the nightly reset needs a
+  # warehouse-scoped `modify` on playground, assigned to the user `service-account-sp-pipeline-demo`
+  # — a role grant would be removed by access-sync on its next tick.
+  check_13() {
+    local out
+    out="$(NAMESPACE="$NAMESPACE" bash scripts/demo-reset-grant.sh --check 2>&1)" || {
+      check_msg="the reset principal cannot drop in playground: $(printf '%s' "$out" | tail -1)"
+      check_fix="make demo-reset-grant"
+      return 1
+    }
+    check_msg="the reset principal holds playground's warehouse modify"
+  }
+
   render 0a
   render 0b
   render 0
@@ -553,6 +568,7 @@ PY
   render 10
   render 11
   render 12
+  render 13
 
   echo ""
   if [ "$check_ok" -eq "$check_rows" ]; then

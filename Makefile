@@ -805,13 +805,15 @@ public-demo-catalogs: _context ## The public demo's bronze/silver/gold Catalogs,
 	fi
 	@kubectl apply -f manifests/public-demo-catalogs.yaml
 
-.PHONY: demo-reset-sync demo-reset-install demo-reset-now
+.PHONY: demo-reset-sync demo-reset-install demo-reset-now demo-reset-grant
 demo-reset-sync: _context ## Refresh the demo-reset script ConfigMap and its CronJob without running a reset (safe after a merge)
 	@kubectl -n $(NAMESPACE) create configmap demo-reset-script --from-file=job.py=scripts/demo-reset-job.py \
 	  --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 	@kubectl apply -f manifests/demo-reset.yaml
-demo-reset-install: demo-reset-sync ## Install CronJob demo-reset (removes the visitors' pipelines and empties the public demo's playground at 03:00 UTC) and run it once
+demo-reset-install: demo-reset-sync demo-reset-grant ## Install CronJob demo-reset (removes the visitors' pipelines and empties the public demo's playground at 03:00 UTC) and run it once
 	@$(MAKE) --no-print-directory demo-reset-now
+demo-reset-grant: _context ## Give the reset principal the playground warehouse's modify role (platform#1310)
+	@NAMESPACE=$(NAMESPACE) bash scripts/demo-reset-grant.sh
 demo-reset-now: _context ## Run one demo-reset Job now, wait for it and print its log
 	@name=demo-reset-now-$$(date +%s); \
 	  kubectl -n $(NAMESPACE) create job --from=cronjob/demo-reset "$$name" >/dev/null; \
