@@ -456,7 +456,7 @@ supersetNode:
   replicas:
     enabled: true
     replicaCount: 1
-  # Reloader (make reloader) rolls the pods when the Trino service-account Secret
+  # Reloader (make step-reloader) rolls the pods when the Trino service-account Secret
   # changes. The password is read from the environment at connect time (#278), so
   # a rotation needs nothing but this restart — no init Job, no SQL Lab round trip.
   podAnnotations:
