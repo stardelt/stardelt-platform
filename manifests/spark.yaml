@@ -106,7 +106,7 @@ data:
     # (images/spark/Dockerfile, platform#601).
     # Single space before the digest: the pinned reference is 136 characters,
     # just inside the 140 the YAML lint allows.
-    spark.kubernetes.container.image ghcr.io/stardelt/spark:dev@sha256:1acae61431891d5354fc959374adf3d5c1fbfc5cf7a7a39b099ef7c6eba89709
+    spark.kubernetes.container.image ghcr.io/stardelt/spark:dev@sha256:8756fc71a0ae607b915895e889e43d29f75e9a07f58dd58c049614eedd576856
     spark.kubernetes.container.image.pullPolicy             IfNotPresent
     spark.kubernetes.container.image.pullSecrets            ghcr-creds
     spark.kubernetes.authenticate.executor.serviceAccountName spark-executor
@@ -254,7 +254,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: spark-connect
-          image: ghcr.io/stardelt/spark:dev@sha256:1acae61431891d5354fc959374adf3d5c1fbfc5cf7a7a39b099ef7c6eba89709
+          image: ghcr.io/stardelt/spark:dev@sha256:8756fc71a0ae607b915895e889e43d29f75e9a07f58dd58c049614eedd576856
           imagePullPolicy: IfNotPresent
           command: ["/opt/spark/bin/stardelt-connect-server"]
           env:
