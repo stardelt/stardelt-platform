@@ -606,6 +606,15 @@
       "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": false,
       "fullScopeAllowed": false,
+      "defaultClientScopes": [
+        "web-origins",
+        "acr",
+        "profile",
+        "roles",
+        "basic",
+        "email",
+        "stardelt:read"
+      ],
       "redirectUris": [
         "http://127.0.0.1/*",
         "http://localhost/*"
@@ -643,6 +652,17 @@
           }
         }
       ]
+    }
+  ],
+  "clientScopes": [
+    {
+      "name": "stardelt:read",
+      "description": "Read-only agent access through Nova's /mcp endpoint (design agent-access §4).",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      }
     }
   ],
   "defaultGroups": [

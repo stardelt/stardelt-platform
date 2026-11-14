@@ -495,9 +495,10 @@ client flows") and the same audiences.
 *MCP agents (stardelt-nova#112).* `stardelt-mcp` is the public client an MCP-capable agent signs in
 with: PKCE to a loopback address and the device grant, no secret, no service account. Its tokens
 carry the `groups` claim and the audience `https://<nova host>/mcp` — the resource of Nova's `/mcp`
-endpoint — and no engine audience. The token an agent runs SQL with is minted server-side by the
-token exchange (`platform#174`), never forwarded, so an agent cannot reach the engine directly and
-bypass the read-only tool surface. The realm import declares the client on a fresh install;
+endpoint — and no engine audience. Every token also carries the realm scope `stardelt:read`. The
+token an agent runs SQL with is minted server-side by the token exchange (`platform#174`), never
+forwarded, so an agent cannot reach the engine directly and bypass the read-only tool surface. The
+realm import declares the client on a fresh install;
 `scripts/keycloak-sync-mcp-client.sh` (`make sync-mcp-client`, run by `make install-identity`)
 creates or converges it on a realm that already exists and proves the stored audience, the device
 endpoint and the loopback redirect. The audience is the `stardelt-identity` ConfigMap's `publicUrl`

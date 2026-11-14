@@ -24,6 +24,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 NAMESPACE="${NAMESPACE:-stardelt}"
 REALM="${REALM:-stardelt}"
 MCP_CLIENT="${MCP_CLIENT:-stardelt-mcp}"
+READ_SCOPE="${READ_SCOPE:-stardelt:read}"
 MCP_AUDIENCE="${MCP_AUDIENCE:-}"
 MASTER_SECRET="${MASTER_SECRET:-keycloak-admin}"
 
@@ -218,6 +219,38 @@ assert "aud-trino" not in m, "the MCP token must not carry the engine audience"
 print("› client %s: aud-mcp=%s, groups" % (client["clientId"], audience))
 PY
 
+# 5d. The read scope. `/mcp` requires `stardelt:read`; the realm import only runs on a fresh
+#     realm, so a realm that predates the client gets the scope here. It is a **default**
+#     client scope: every token carries it without a `scope` parameter, which is what an MCP
+#     client sends.
+scope_id="$("${CURL_SOFT[@]}" "${HEAD[@]}" "${AUTH[@]}" "$API/client-scopes" \
+  | python3 -c "import sys,json; print(next((s['id'] for s in json.load(sys.stdin) if s['name'] == '$READ_SCOPE'), ''))")"
+if [ -z "$scope_id" ]; then
+  python3 - > "$tmp/scope.json" <<'PY'
+import json, sys
+json.dump({"name": "stardelt:read",
+           "description": "Read-only agent access through Nova's /mcp endpoint.",
+           "protocol": "openid-connect",
+           "attributes": {"include.in.token.scope": "true",
+                          "display.on.consent.screen": "false"}}, sys.stdout)
+PY
+  "${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" -H 'Content-Type: application/json' \
+    -X POST --data @"$tmp/scope.json" "$API/client-scopes" >/dev/null \
+    || fail "Keycloak refused to create the client scope $READ_SCOPE"
+  scope_id="$("${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" "$API/client-scopes" \
+    | python3 -c "import sys,json; print(next(s['id'] for s in json.load(sys.stdin) if s['name'] == '$READ_SCOPE'))")"
+  echo "› client $MCP_CLIENT: scope $READ_SCOPE created"
+fi
+if "${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" "$API/clients/$client_uuid/default-client-scopes" \
+  | python3 -c "import sys,json; sys.exit(0 if any(s['name'] == '$READ_SCOPE' for s in json.load(sys.stdin)) else 1)"; then
+  echo "› client $MCP_CLIENT: scope $READ_SCOPE assigned"
+else
+  "${CURL[@]}" -o /dev/null "${HEAD[@]}" "${AUTH[@]}" -X PUT \
+    "$API/clients/$client_uuid/default-client-scopes/$scope_id" \
+    || fail "Keycloak refused to assign scope $READ_SCOPE to $MCP_CLIENT"
+  echo "› client $MCP_CLIENT: scope $READ_SCOPE assigned"
+fi
+
 # 6. Prove it against the realm's own endpoints. Nothing here completes a sign-in (that needs a person).
 OIDC="$KC/realms/$REALM/protocol/openid-connect"
 # PKCE is required on this client, for the device grant as well: every request carries a challenge.
@@ -242,4 +275,24 @@ bad_code="$("${CURL_SOFT[@]}" "${HEAD[@]}" -o /dev/null -w '%{http_code}' "$(aut
 [ "$ok_code" = 200 ] || fail "a loopback redirect with a port was not accepted (HTTP $ok_code)"
 [ "$bad_code" != 200 ] || fail "a redirect to a foreign host was accepted — the redirect list is too wide"
 echo "› redirects: loopback with a port accepted, foreign host refused (HTTP $bad_code)"
+
+# The scope must be in the token the realm would mint, not only stored on the client.
+user_id="$("${CURL_SOFT[@]}" "${HEAD[@]}" "${AUTH[@]}" "$API/users?max=20" | python3 -c 'import sys,json
+users = [u for u in json.load(sys.stdin) if u.get("enabled") and not u.get("username", "").startswith("service-account-")]
+print(users[0]["id"] if users else "")')"
+if [ -z "$user_id" ]; then
+  echo "› no user in realm $REALM yet: $READ_SCOPE is assigned, the example token could not be checked"
+else
+  "${CURL[@]}" "${HEAD[@]}" "${AUTH[@]}" \
+    "$API/clients/$client_uuid/evaluate-scopes/generate-example-access-token?scope=openid&userId=$user_id" \
+    > "$tmp/example-scope.json" \
+    || fail "Keycloak could not evaluate the example access token for $MCP_CLIENT"
+  python3 - "$tmp/example-scope.json" "$READ_SCOPE" "$MCP_CLIENT" <<'PY' || fail "the example access token of $MCP_CLIENT does not carry the scope $READ_SCOPE"
+import json, sys
+scope = json.load(open(sys.argv[1])).get("scope") or ""
+if sys.argv[2] not in scope.split():
+    sys.exit("scope is %r" % scope)
+print("› client %s: example access token carries scope %s" % (sys.argv[3], sys.argv[2]))
+PY
+fi
 echo "keycloak-sync-mcp-client: OK — client $MCP_CLIENT is enabled"
