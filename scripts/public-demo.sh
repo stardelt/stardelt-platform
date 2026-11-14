@@ -32,6 +32,7 @@
 #   8.  one access sync and one catalog convergence (`make catalogs`);
 #   9.  the shop pipelines name the group $GROUP as a viewer (read-only).
 #   10. the Superset dashboard on the shop's gold tables (platform#966).
+#   11. the nightly reset's script matches this checkout (it is a ConfigMap copy).
 #
 # Step 9 has a footgun: `stardelt bundle deploy` rewrites the whole spec, so a redeploy of the
 # shop drops `viewers`. Run `make public-demo YES=1` (or `make public-demo-check`) after one.
@@ -166,6 +167,7 @@ if [ "$mode" = check ]; then
       8) check_8 || rc=1 ;;
       9) check_9 || rc=1 ;;
       10) check_10 || rc=1 ;;
+      11) check_11 || rc=1 ;;
       *) check_msg="unknown row $id"; check_fix="this is a bug in scripts/public-demo.sh"; rc=1 ;;
     esac
     check_rows=$((check_rows + 1))
@@ -496,6 +498,20 @@ PY
     check_msg="dashboard slug public-demo-shop, roles $roles"
   }
 
+  # 11. The nightly reset runs this checkout's script (platform#1283): the CronJob mounts a
+  # ConfigMap copy, so a merged change is dark until it is re-applied.
+  check_11() {
+    local live want
+    live="$(kubectl -n "$NAMESPACE" get configmap demo-reset-script -o jsonpath='{.data.job\.py}' 2>/dev/null | sha256sum | cut -d' ' -f1)"
+    want="$(sha256sum scripts/demo-reset-job.py | cut -d' ' -f1)"
+    if [ "$live" != "$want" ]; then
+      check_msg="CronJob demo-reset's script ConfigMap does not match scripts/demo-reset-job.py"
+      check_fix="make demo-reset-sync"
+      return 1
+    fi
+    check_msg="CronJob demo-reset runs this checkout's scripts/demo-reset-job.py"
+  }
+
   render 0a
   render 0b
   render 0
@@ -511,6 +527,7 @@ PY
   render 8
   render 9
   render 10
+  render 11
 
   echo ""
   if [ "$check_ok" -eq "$check_rows" ]; then
@@ -779,6 +796,14 @@ if printf '%s\n' "$dashboard_db" | grep -q '^stardelt-step-10: present$'; then
 else
   echo "› shop dashboard: Trino Gold not converged yet — wait 5 minutes (superset-group-roles), then run make public-demo YES=1 again"
 fi
+
+# 11. The nightly reset's script is a ConfigMap copy (platform#1283): refresh it here, without
+# running a reset — a mid-day reset would throw away what a visitor is doing.
+kubectl -n "$NAMESPACE" create configmap demo-reset-script --from-file=job.py=scripts/demo-reset-job.py \
+  --dry-run=client -o yaml | kubectl -n "$NAMESPACE" apply -f - >/dev/null \
+  || fail "cannot refresh the demo-reset script ConfigMap"
+kubectl apply -f manifests/demo-reset.yaml >/dev/null || fail "cannot apply manifests/demo-reset.yaml"
+echo "› demo-reset: script and CronJob applied (no reset run)"
 
 echo ""
 echo "public-demo: OK — sign in as demo / demo"
