@@ -66,6 +66,11 @@ bash scripts/check-bridge-uri.sh
 echo "› script: check-spark-parity"
 bash scripts/check-spark-parity.sh
 
+# The notebook's Python and the Spark workers' Python are one minor (platform#369):
+# the UDF pickle is only compatible within a minor.
+echo "› script: check-python-parity"
+bash scripts/check-python-parity.sh
+
 # The operator's Spark runtime catalogue and the Makefile path's spark-defaults.conf are one
 # set of settings (internal#161 slice 4a): the difference between them is exactly the block
 # SparkConnect owns, and check-spark-runtimes.sh names any other drift.

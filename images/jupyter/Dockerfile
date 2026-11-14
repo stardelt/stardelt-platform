@@ -32,6 +32,9 @@
 # Python 3.11 (3.11.10 in the 2024-10-07 base image). Keep both on the same
 # Python minor: Spark Connect UDFs fail otherwise — the Spark image installs its
 # own CPython 3.11 for the workers and must stay on this minor (platform#369).
+# The single-user image's Python minor. `scripts/check-python-parity.sh` compares it with the
+# Spark image's worker Python on every `make lint`; both move together or not at all.
+ARG STARDELL_PYTHON_MINOR=3.11
 FROM quay.io/jupyter/scipy-notebook:2024-10-07
 
 USER ${NB_UID}
