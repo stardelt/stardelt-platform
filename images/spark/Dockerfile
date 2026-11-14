@@ -103,6 +103,8 @@ RUN chmod 0644 /opt/spark/jars/iceberg-spark-runtime.jar /opt/spark/jars/iceberg
 # x86_64-linux-gnu), checksum-verified at build time like the jars above. 3.11.17
 # is the current 3.11 patch; only the minor version has to match the notebook.
 # keep both on the same Python minor: Spark Connect UDFs fail otherwise
+# The archive's minor must equal the notebook image's `ARG STARDELL_PYTHON_MINOR`:
+# `scripts/check-python-parity.sh` fails `make lint` when the two drift apart.
 #
 # pandas, pyarrow and numpy are the notebook image's exact versions
 # (images/jupyter/Dockerfile): a pandas UDF pickles pandas objects on the client
