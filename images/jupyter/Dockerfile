@@ -55,10 +55,21 @@ USER ${NB_UID}
 # spelling -- `spark.sql.session.localRelationSizeLimit` comes back as `3221225472b`
 # -- and every createDataFrame dies with `invalid literal for int()` (platform#399).
 # scripts/check-spark-parity.sh fails the build when the two drift apart.
+# The base stays `2024-10-07`: every dated Docker Stacks tag after it is Python
+# 3.13 and the Spark workers are on CPython 3.11, so the Python minor moves only
+# with the Spark decision (platform#973). The notebook UI is therefore taken
+# from PyPI -- `notebook`, `jupyterlab` and `jupyter_server` are pinned here and
+# move together. JupyterLab 4.6.6 requires `jupyter-server>=2.19,<3` (PyPI
+# metadata), which is why 2.21.1 is pinned beside it; `notebook` 7.6.5 requires
+# `jupyterlab>=4.6.6,<4.7`, which is why the base's 7.2.2 (which requires
+# `jupyterlab<4.3`) is replaced rather than kept.
 RUN python3 -m pip uninstall -y jupyterlab-git \
     && python3 -m pip install --no-cache-dir --upgrade-strategy only-if-needed \
         pandas==2.2.3 \
         pyarrow==18.1.0 \
+        notebook==7.6.5 \
+        jupyterlab==4.6.6 \
+        jupyter_server==2.21.1 \
         pyspark-client==4.1.4 \
         jupyterlab-git==0.55.0 \
         nbgitpuller==1.3.0 \
@@ -70,6 +81,7 @@ RUN python3 -m pip uninstall -y jupyterlab-git \
     && python3 -c "import jupyterlab_git, nbgitpuller; print('jupyterlab-git', jupyterlab_git.__version__, '| nbgitpuller', nbgitpuller.__version__)" \
     && python3 -c "import papermill; print('papermill', papermill.__version__)" \
     && python3 -c "import ipywidgets, sidecar; print('ipywidgets', ipywidgets.__version__, '| sidecar', sidecar.__version__)" \
+    && python3 -c "import jupyterlab, jupyter_server, notebook; print('notebook', notebook.__version__, '| jupyterlab', jupyterlab.__version__, '| jupyter_server', jupyter_server.__version__)" \
     && git --version \
     && { jupyter labextension list 2>&1 | tee /tmp/labext.txt | grep -i '@jupyterlab/git' || { echo '--- full labextension list ---'; cat /tmp/labext.txt; exit 1; }; } \
     && jupyter server extension list 2>&1 | grep -i 'nbgitpuller'
