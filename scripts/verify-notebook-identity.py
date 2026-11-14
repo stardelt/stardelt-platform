@@ -20,9 +20,9 @@ What it does, in order:
   3. runs the quickstart inside the pod with `jupyter nbconvert --execute` and
      expects it to succeed — the notebook itself asserts
      `SELECT current_user` equals the identity in the hub user's token;
-  4. runs the same notebook with `TRINO_TOKEN` removed from the environment and
-     expects a 401: the rows come from the user's own token, not from anything
-     baked into the image;
+  4. runs the same notebook with `TRINO_TOKEN` and the hub's `JUPYTERHUB_API_TOKEN` removed from
+     the environment and expects a 401: the rows come from the user's own token, not from anything
+     baked into the image, and with the hub token gone the library cannot mint one from `auth_state`.
   5. exits non-zero unless every check passed.
 
 Environment:
@@ -263,14 +263,18 @@ def main():
           "" if positive.returncode == 0 else positive.stderr.strip()[-300:])
     check(f"Trino reports current_user = {expected} (the token's {PRINCIPAL})",
           "signed_in_as" in output and expected in output)
-    check("warehouse.covid.covid_summary was queried", "warehouse.covid.covid_summary" in output)
+    check("the quickstart chose a catalog the person can see",
+          re.search(r"^Catalog: (shared|playground)$", output, re.M) is not None)
+    check("the quickstart wrote and read back its smoke table",
+          "quickstart_smoke: 3 rows written and read back" in output)
 
     # 4. The negative: without the token there is nothing to authenticate with.
-    print("› 4/4 execute the quickstart with TRINO_TOKEN unset (expect 401)")
-    negative = kubectl("exec", pod, "--", "env", "-u", "TRINO_TOKEN", *nbconvert)
+    print("› 4/4 execute the quickstart with TRINO_TOKEN and JUPYTERHUB_API_TOKEN unset (expect 401)")
+    negative = kubectl("exec", pod, "--", "env", "-u", "TRINO_TOKEN", "-u", "JUPYTERHUB_API_TOKEN",
+                       *nbconvert)
     failed = negative.returncode != 0
     refused = "401" in (negative.stdout + negative.stderr) or "Unauthorized" in (negative.stdout + negative.stderr)
-    check("notebook fails without TRINO_TOKEN", failed)
+    check("notebook fails without either token", failed)
     check("failure is a 401 from Trino", refused,
           "" if refused else (negative.stdout + negative.stderr).strip()[-300:])
 
