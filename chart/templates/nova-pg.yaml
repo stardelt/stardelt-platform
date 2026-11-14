@@ -11,6 +11,9 @@ metadata:
   labels: { app.kubernetes.io/part-of: stardelt }
 spec:
   instances: 1
+  # Pinned: without `imageName` a Cluster tracks the operator's default image and
+  # starts a major upgrade the next time the operator ships one.
+  imageName: {{ .Values.nova.database.image }}
   storage:
     size: {{ .Values.nova.database.storage.size }}
     {{- with .Values.storage.className }}

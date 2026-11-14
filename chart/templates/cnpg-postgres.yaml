@@ -12,37 +12,26 @@ metadata:
   namespace: {{ .Release.Namespace }}
 spec:
   instances: {{ .Values.postgres.instances }}
+  # Pinned: without `imageName` a Cluster tracks the operator's default image and
+  # starts a major upgrade the next time the operator ships one.
+  imageName: {{ .Values.postgres.image }}
   storage:
     size: {{ .Values.postgres.storage.size }}
     {{- with .Values.storage.className }}
     storageClass: {{ . }}
     {{- end }}
   {{- if .Values.postgres.backup.enabled }}
-  # Continuous backup into the platform's own object store: barman-cloud streams
-  # the WAL and the ScheduledBackup below adds base backups, so a lost volume is
-  # recoverable to a point in time without any external service. Equivalent to
-  # manifests/cnpg-postgres.yaml — the destination bucket must exist (see the
-  # `postgres.backup` comment in values.yaml).
+  # Backup through the barman-cloud plugin (CloudNativePG 1.30; the native
+  # `spec.backup` object store is removed in 1.32). The plugin reads
+  # ObjectStore/lakekeeper-pg-backups from `templates/cnpg-objectstore.yaml`.
   backup:
     retentionPolicy: {{ .Values.postgres.backup.retentionPolicy | quote }}
-    barmanObjectStore:
-      destinationPath: s3://{{ .Values.postgres.backup.bucket }}/
-      endpointURL: {{ tpl .Values.s3Credentials.endpoint . | quote }}
-      s3Credentials:
-        accessKeyId:
-          name: {{ .Values.s3Credentials.name }}
-          key: access-key
-        secretAccessKey:
-          name: {{ .Values.s3Credentials.name }}
-          key: secret-key
-        region:
-          name: {{ .Values.s3Credentials.name }}
-          key: region
-      wal:
-        compression: gzip
-        maxParallel: 2
-      data:
-        compression: gzip
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      enabled: true
+      isWALArchiver: true
+      parameters:
+        barmanObjectName: lakekeeper-pg-backups
   {{- end }}
   bootstrap:
     initdb:
@@ -70,7 +59,9 @@ spec:
   # Keep the Backup objects after the schedule is deleted, so deleting this CR
   # cannot delete the only record of what was taken.
   backupOwnerReference: self
-  method: barmanObjectStore
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io
   cluster:
     name: lakekeeper-pg
 {{- end }}

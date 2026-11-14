@@ -162,6 +162,9 @@ identity:
     # holds a credential.
     postgres:
       instances: 1
+      # Pinned: without `imageName` a Cluster tracks the operator's default image
+      # and starts a major upgrade the next time the operator ships one.
+      image: ghcr.io/cloudnative-pg/postgresql:18.3-system-trixie
       storage:
         size: 1Gi
       resources:
@@ -185,14 +188,22 @@ postgres:
   # `lakekeeper.externalDatabase` below, so change both together.
   enabled: true
   instances: 1
+  # Pinned: without `imageName` a Cluster tracks the operator's default image and
+  # starts a major upgrade the next time the operator ships one.
+  image: ghcr.io/cloudnative-pg/postgresql:17.7-system-trixie
   storage:
     size: 2Gi
-  # Continuous WAL archiving plus a daily base backup into the platform's object
-  # store — equivalent to manifests/cnpg-postgres.yaml (spec.backup) and
-  # manifests/cnpg-backup-schedule.yaml. Needs the destination bucket to exist:
-  # the bundled SeaweedFS creates `backups` below, but with
-  # `s3Credentials.create=false` (BYO S3) your store must already have it, and
-  # the credentials above must be allowed to write there.
+  # Continuous WAL archiving plus a daily base backup through the barman-cloud
+  # CNPG plugin into the platform's object store: `templates/cnpg-objectstore.yaml`
+  # renders ObjectStore/lakekeeper-pg-backups (equivalent to
+  # manifests/cnpg-postgres.yaml + manifests/cnpg-backup-schedule.yaml). Needs the
+  # destination bucket to exist: the bundled SeaweedFS creates `backups` below,
+  # but with `s3Credentials.create=false` (BYO S3) your store must already have
+  # it, and the credentials above must be allowed to write there.
+  #
+  # `postgres.image` — and its twins `identity.keycloak.postgres.image` and
+  # `nova.database.image` — pin the database image of the three Clusters this
+  # chart renders, matching the `spec.imageName` in `manifests/`.
   backup:
     # off = no spec.backup and no ScheduledBackup (no WAL archiving at all)
     enabled: true
@@ -618,6 +629,9 @@ nova:
   # runs without a state store, exactly as before.
   database:
     enabled: true
+    # Pinned: without `imageName` a Cluster tracks the operator's default image
+    # and starts a major upgrade the next time the operator ships one.
+    image: ghcr.io/cloudnative-pg/postgresql:18.3-system-trixie
     storage:
       size: 1Gi
     resources:
