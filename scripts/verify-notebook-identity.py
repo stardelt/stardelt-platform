@@ -69,6 +69,9 @@ NOTEBOOK = os.environ.get("NOTEBOOK", "/opt/stardelt/notebooks/warehouse-quickst
 RESTART = os.environ.get("NOTEBOOK_RESTART", "1") not in ("0", "false", "no")
 TIMEOUT = int(os.environ.get("NOTEBOOK_TIMEOUT", "600"))
 PRINCIPAL = os.environ.get("GROUP_PRINCIPAL", "sub")
+# The quickstart prints `Catalog: <name>`; nbconvert's markdown template indents every
+# text output by four spaces, so the anchor must tolerate leading and trailing space.
+CATALOG_LINE = re.compile(r"^\s*Catalog: (shared|playground)\s*$", re.M)
 
 jar = http.cookiejar.CookieJar()
 opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
@@ -263,11 +266,8 @@ def main():
           "" if positive.returncode == 0 else positive.stderr.strip()[-300:])
     check(f"Trino reports current_user = {expected} (the token's {PRINCIPAL})",
           "signed_in_as" in output and expected in output)
-    # nbconvert's markdown template indents text outputs by four spaces, so match the
-    # de-indented lines (measured on the demo pod, platform#1323).
-    flattened = "\n".join(line.strip() for line in output.splitlines())
     check("the quickstart chose a catalog the person can see",
-          re.search(r"^Catalog: (shared|playground)$", flattened, re.M) is not None)
+          CATALOG_LINE.search(output) is not None)
     check("the quickstart wrote and read back its smoke table",
           "quickstart_smoke: 3 rows written and read back" in output)
 
