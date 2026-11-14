@@ -296,6 +296,9 @@ changes nothing and says so per step, except the password reset. `make public-de
 that rollout in one read-only pass — the checkout, the CLI, the Catalogs, the principal, the realm group and person,
 their memberships and roles, the grants, the playground, the warehouse, the ConfigMap and the nightly reset — one
 `PASS`/`MISSING` line each, with the command that fixes a missing one, and exits 1 while anything is missing.
+The nightly reset runs as `pipeline-demo` and also holds the `playground` warehouse's `modify` role: dropping a
+table or a schema is an administrator action since the grant was scoped down (platform#1130), so the reset
+principal is given `modify` on that one warehouse, and `make demo-reset-grant` re-applies it.
 
 *Catalog service clients (platform#282, step 1 of the catalog's authentication).* Every component
 that calls the Iceberg REST catalog has its own confidential service client instead of sharing one:
