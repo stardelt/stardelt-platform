@@ -591,6 +591,12 @@ nova:
   mcp:
     enabled: false
     audience: ""
+    # The guarded SQL tools' row cap and per-call timeout (`sql_read`/`sql_explain`).
+    # Nova clamps to 1-1000 rows and 1-300 s; empty = Nova's own default (200 rows / 60 s).
+    # The operator's CRD carries the same two knobs as `spec.mcp.maxRows` and
+    # `spec.mcp.queryTimeoutSeconds` (stardelt-operator#732).
+    maxRows: ""
+    queryTimeoutSeconds: ""
   # Sign-in (contract: docs/architecture/identity).
   #   dev  — no login; what CI and the Nova demo mode rely on.
   #   oidc — Nova is a client of the IdP configured under `identity:` above.
