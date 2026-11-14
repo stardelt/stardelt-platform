@@ -496,13 +496,17 @@ client flows") and the same audiences.
 with: PKCE to a loopback address and the device grant, no secret, no service account. Its tokens
 carry the `groups` claim and the audience `https://<nova host>/mcp` — the resource of Nova's `/mcp`
 endpoint — and no engine audience. Every token also carries the realm scope `stardelt:read`. The
-token an agent runs SQL with is minted server-side by the token exchange (`platform#174`), never
-forwarded, so an agent cannot reach the engine directly and bypass the read-only tool surface. The
-realm import declares the client on a fresh install;
-`scripts/keycloak-sync-mcp-client.sh` (`make sync-mcp-client`, run by `make install-identity`)
-creates or converges it on a realm that already exists and proves the stored audience, the device
-endpoint and the loopback redirect. The audience is the `stardelt-identity` ConfigMap's `publicUrl`
-plus `/mcp`; override it with `make sync-mcp-client MCP_AUDIENCE=…`.
+token an agent runs SQL with is **not** exchanged today: Nova forwards the caller's MCP token to the
+engine (`NOVA_FORWARD_IDENTITY=1`), and the engine accepts it because this deployment sets no
+`http-server.authentication.oauth2.audience`; the exchange that mints an engine-audience token is
+planned (`platform#174`). Until then the read-only tool surface, the row cap and the audit line are
+guardrails for a well-behaved client, not a boundary — what a statement may read is decided by the
+person's own grants (`groups`) in the engine. The realm import declares the client on a fresh
+install; `scripts/keycloak-sync-mcp-client.sh` (`make sync-mcp-client`, run by
+`make install-identity`) creates or converges it on a realm that already exists and proves the
+stored audience, the device endpoint and the loopback redirect. The audience is the
+`stardelt-identity` ConfigMap's `publicUrl` plus `/mcp`; override it with
+`make sync-mcp-client MCP_AUDIENCE=…`.
 
 The endpoint's switch is the `stardelt-identity` ConfigMap's `mcpEnabled` (default `0`) and
 `mcpAudience` (default `https://<base domain>/mcp`), read by Nova as `NOVA_MCP_ENABLED` and
