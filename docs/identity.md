@@ -503,6 +503,14 @@ creates or converges it on a realm that already exists and proves the stored aud
 endpoint and the loopback redirect. The audience is the `stardelt-identity` ConfigMap's `publicUrl`
 plus `/mcp`; override it with `make sync-mcp-client MCP_AUDIENCE=…`.
 
+The endpoint's switch is the `stardelt-identity` ConfigMap's `mcpEnabled` (default `0`) and
+`mcpAudience` (default `https://<base domain>/mcp`), read by Nova as `NOVA_MCP_ENABLED` and
+`NOVA_MCP_AUDIENCE`. Because the values live in the ConfigMap, re-applying
+`manifests/nova-deployment.yaml` cannot turn the endpoint off. Turn it on with
+`kubectl -n stardelt patch configmap stardelt-identity --type merge -p '{"data":{"mcpEnabled":"1"}}'`
+followed by `kubectl -n stardelt rollout restart deploy/nova`, or install with
+`MCP_ENABLED=1 make install-identity`; `MCP_ENABLED=0` turns it off again.
+
 ### TLS on the coordinator (why the in-cluster path is safe)
 
 Two listeners, one behavior:
