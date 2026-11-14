@@ -584,6 +584,13 @@ nova:
   devUser: stardelt-dev
   # Sign-ins shared by many people (a public demo), comma separated; empty = none.
   sharedAccounts: ""
+  # The hosted MCP endpoint (stardelt-nova#112; design agent-access §4). Off by default.
+  # `audience` is the resource identifier a token must carry; empty means
+  # https://<nova public origin>/mcp, which is what the realm client `stardelt-mcp`'s
+  # `aud-mcp` mapper mints. Set it explicitly when nova.auth.publicUrl is overridden.
+  mcp:
+    enabled: false
+    audience: ""
   # Sign-in (contract: docs/architecture/identity).
   #   dev  — no login; what CI and the Nova demo mode rely on.
   #   oidc — Nova is a client of the IdP configured under `identity:` above.

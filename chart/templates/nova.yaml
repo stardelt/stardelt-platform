@@ -220,6 +220,14 @@ spec:
               value: {{ .Values.identity.groupClaim | quote }}
             - name: NOVA_OIDC_ADMIN_GROUP
               value: {{ .Values.identity.adminGroup | quote }}
+            {{- if .Values.nova.mcp.enabled }}
+            # The hosted MCP endpoint (stardelt-nova#112). The audience must equal the value
+            # the realm client's `aud-mcp` mapper mints: https://<nova origin>/mcp.
+            - name: NOVA_MCP_ENABLED
+              value: "1"
+            - name: NOVA_MCP_AUDIENCE
+              value: {{ .Values.nova.mcp.audience | default (printf "%s/mcp" $publicUrl) | quote }}
+            {{- end }}
             {{- /* The public client `stardelt login` signs in with (device flow): Nova tells it to
                    the command line at GET /api/auth/config (stardelt-nova#312). The platform's own
                    Keycloak ships the client `stardelt-dev`; with an external IdP nothing is guessed. */}}
