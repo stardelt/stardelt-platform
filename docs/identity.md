@@ -55,8 +55,10 @@ and, with it, a way to query the warehouse **as themselves**.
   and `nbgitpuller` (both BSD-3-Clause), `stardelt-jupyterlab` (the stardelt Graphite and
   Silver themes, Graphite the default, plus a top bar with the link back to Nova, the user and
   the runtime), and the `warehouse-quickstart` notebook under
-  `/opt/stardelt/notebooks/`. `jupyterlab-sql` is deliberately absent — its last release predates
-  JupyterLab 4 and it cannot carry the per-user token. The package is private, like Superset, so
+  `/opt/stardelt/notebooks/` — it queries the catalog the account may write to (`shared` for a
+  member, `playground` in the public demo) and never drops a table. `jupyterlab-sql` is
+  deliberately absent — its last release predates JupyterLab 4 and it cannot carry the per-user
+  token. The package is private, like Superset, so
   the pod pulls with the `ghcr-creds` secret.
 * **The helper (`import stardelt`).** The notebook helper lives in its own repository,
   [`stardelt/stardelt-python`](https://github.com/stardelt/stardelt-python) (MIT): the `stardelt`
