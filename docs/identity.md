@@ -84,8 +84,10 @@ and, with it, a way to query the warehouse **as themselves**.
 * **Notebook.** A `postStart` hook copies `/opt/stardelt/notebooks/*.ipynb` into the home
   directory the first time only (`cp -n`), so a user's edits survive restarts. The quickstart
   connects with `trino.auth.JWTAuthentication(os.environ["TRINO_TOKEN"])`, asserts
-  `SELECT current_user` equals the hub user, lists schemas and queries
-  `warehouse.covid.covid_summary`.
+  `SELECT current_user` equals the hub user, picks the first of `shared`/`playground` the account
+  can see, creates a schema named after the hub user and round-trips three rows through
+  `<catalog>.<schema>.quickstart_smoke`. It drops nothing: a `write` grant is Lakekeeper `write`,
+  and drop and rename are platform-administrator actions (platform#1130).
 * **Endpoint.** With an IdP the hub overrides `TRINO_URL` at spawn
   (`25-notebook-trino` in `hub.extraConfig`) to the coordinator's **in-cluster HTTPS**
   endpoint, `https://trino.stardelt.svc.cluster.local:8443`, and points the `trino` Python
@@ -98,8 +100,9 @@ and, with it, a way to query the warehouse **as themselves**.
   notebook holds the token in its environment for a whole session, where the realm's 5-minute
   default would mean 401s minutes after spawn. Restarting the server re-mints it
   (`refresh_pre_spawn`); after the 10 h SSO session the user signs in again.
-* **Spark.** The quickstart's Spark cell reads `warehouse.covid.covid_summary` through Spark
-  Connect with the person's token and the catalogs Trino lists for them (platform#317). Spark is
+* **Spark.** The quickstart's Spark cell reads the `<catalog>.<schema>.quickstart_smoke` table it
+  wrote in the cell above, through Spark Connect with the person's token and the catalogs Trino
+  lists for them (platform#317). Spark is
   optional (`make install-spark`); the cell reports what it found when the endpoint is absent. The singleuser NetworkPolicy grants egress to exactly
   two private destinations — the `spark-connect` pods on 15002 (see "Spark") and the Trino
   coordinator on 8443 (the in-cluster TLS endpoint above) — everything else private stays denied.
