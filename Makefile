@@ -627,6 +627,7 @@ install-spark: deps _context ## Install the Spark Connect endpoint (Iceberg on t
 	@if kubectl api-resources --api-group=admissionregistration.k8s.io -o name 2>/dev/null \
 	    | grep -qx 'validatingadmissionpolicies.admissionregistration.k8s.io'; then \
 	  kubectl apply -f manifests/spark-connect-pod-guard.yaml; \
+	  kubectl apply -f manifests/spark-stream-rbac.yaml; \
 	else \
 	  echo "› spark-connect pod guard: skipped — ValidatingAdmissionPolicy needs Kubernetes 1.30+"; \
 	fi
@@ -1304,6 +1305,7 @@ uninstall: _context ## Uninstall all stardelt components (reverse order)
 	@kubectl -n $(NAMESPACE) delete configmap trino-warehouses trino-group-file --ignore-not-found
 	@kubectl delete -f manifests/spark.yaml                   --ignore-not-found
 	@kubectl delete -f manifests/spark-connect-pod-guard.yaml --ignore-not-found
+	@kubectl delete -f manifests/spark-stream-rbac.yaml --ignore-not-found
 	@kubectl delete -f manifests/spark-confmap-janitor.yaml --ignore-not-found
 	@kubectl delete -f manifests/spark-operator-metrics.yaml --ignore-not-found
 	@kubectl -n $(NAMESPACE) delete configmap stardelt-spark-runtimes --ignore-not-found

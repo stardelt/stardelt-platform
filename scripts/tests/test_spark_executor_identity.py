@@ -7,6 +7,7 @@ import yaml
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 MANIFEST = REPO_ROOT / "manifests" / "spark.yaml"
+STREAM_MANIFEST = REPO_ROOT / "manifests" / "spark-stream-rbac.yaml"
 
 
 class SparkExecutorIdentityTest(unittest.TestCase):
@@ -99,3 +100,14 @@ class SparkExecutorIdentityTest(unittest.TestCase):
         keys = [line.strip() for line in exclusions.splitlines() if line.strip()]
         self.assertIn("spark.kubernetes.executor.podTemplateFile", keys,
                       "check-spark-runtimes.sh must allow the shared server's template difference")
+
+    def test_the_stream_driver_role_binding_names_the_stream_driver(self):
+        docs = [d for d in yaml.safe_load_all(STREAM_MANIFEST.read_text()) if d]
+        binding = next(d for d in docs if d.get("kind") == "RoleBinding"
+                       and d["metadata"]["name"] == "spark-stream-driver")
+        self.assertEqual([s["name"] for s in binding["subjects"]], ["spark-stream-driver"])
+
+    def test_the_connect_role_binding_does_not_name_the_stream_driver(self):
+        binding = self.by_name("RoleBinding", "spark-connect")
+        for subject in binding["subjects"]:
+            self.assertNotEqual(subject["name"], "spark-stream-driver")
