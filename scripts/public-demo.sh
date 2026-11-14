@@ -33,6 +33,7 @@
 #   9.  the shop pipelines name the group $GROUP as a viewer (read-only).
 #   10. the Superset dashboard on the shop's gold tables (platform#966).
 #   11. the nightly reset's script matches this checkout (it is a ConfigMap copy).
+#   12. the nightly reset last succeeded within 26 hours (its CronJob status, not its script).
 #
 # Step 9 has a footgun: `stardelt bundle deploy` rewrites the whole spec, so a redeploy of the
 # shop drops `viewers`. Run `make public-demo YES=1` (or `make public-demo-check`) after one.
@@ -168,6 +169,7 @@ if [ "$mode" = check ]; then
       9) check_9 || rc=1 ;;
       10) check_10 || rc=1 ;;
       11) check_11 || rc=1 ;;
+      12) check_12 || rc=1 ;;
       *) check_msg="unknown row $id"; check_fix="this is a bug in scripts/public-demo.sh"; rc=1 ;;
     esac
     check_rows=$((check_rows + 1))
@@ -512,6 +514,28 @@ PY
     check_msg="CronJob demo-reset runs this checkout's scripts/demo-reset-job.py"
   }
 
+  # 12. The nightly reset runs and succeeds (platform#1294 follow-up). Row 11 proves the
+  # CronJob mounts this checkout's script; this row proves it actually completes. 26 hours
+  # leaves one late evening + one night before it reports.
+  check_12() {
+    local last epoch now
+    last="$(kubectl -n "$NAMESPACE" get cronjob demo-reset \
+      -o jsonpath='{.status.lastSuccessfulTime}' 2>/dev/null || true)"
+    if [ -z "$last" ]; then
+      check_msg="CronJob demo-reset has no successful run recorded"
+      check_fix="make demo-reset-now   # runs it once and prints the log; it exits non-zero on failure"
+      return 1
+    fi
+    epoch="$(date -u -d "$last" +%s 2>/dev/null || true)"
+    now="$(date -u +%s)"
+    if [ -z "$epoch" ] || [ $((now - epoch)) -gt 93600 ]; then
+      check_msg="the last successful demo reset was $last"
+      check_fix="kubectl -n $NAMESPACE logs -l job-name=demo-reset-<newest>   # then make demo-reset-now"
+      return 1
+    fi
+    check_msg="the nightly reset last succeeded at $last"
+  }
+
   render 0a
   render 0b
   render 0
@@ -528,6 +552,7 @@ PY
   render 9
   render 10
   render 11
+  render 12
 
   echo ""
   if [ "$check_ok" -eq "$check_rows" ]; then

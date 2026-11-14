@@ -12,6 +12,7 @@ import stat
 import subprocess
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -41,6 +42,17 @@ if [ "${args[0]-}" = get ] && [ "${args[1]-}" = catalogs.stardelt.io ]; then
 fi
 if [ "${args[0]-}" = get ] && [ "${args[1]-}" = serviceprincipals.stardelt.io ]; then
   printf 'true'
+fi
+if [ "${args[0]-}" = get ] && [ "${args[1]-}" = configmap ] && [ "${args[2]-}" = keycloak-env ]; then
+  exit 1
+fi
+# The nightly reset's CronJob status: `-o jsonpath={.status.lastSuccessfulTime}` answers
+# FAKE_LAST_SUCCESS (empty when unset), so row 12 can be driven from both sides.
+if [ "${args[0]-}" = get ] && { [ "${args[1]-}" = cronjobs.batch ] || [ "${args[1]-}" = cronjob ]; }; then
+  case "${args[*]}" in
+    *lastSuccessfulTime*) printf '%s' "${FAKE_LAST_SUCCESS:-}" ;;
+  esac
+  exit 0
 fi
 exit 0
 """
@@ -114,6 +126,17 @@ class PublicDemo(unittest.TestCase):
         text = SCRIPT.read_text()
         self.assertIn('"temporary":false', text)
         self.assertIn("default-roles-stardelt", text)
+
+    def test_row_12_reports_a_reset_that_last_succeeded_two_days_ago(self):
+        stale = (datetime.now(timezone.utc) - timedelta(hours=48)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        done = self.run_script("--check", FAKE_LAST_SUCCESS=stale)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn(f"MISSING  12  the last successful demo reset was {stale}", done.stdout)
+
+    def test_row_12_passes_when_the_reset_succeeded_an_hour_ago(self):
+        fresh = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        done = self.run_script("--check", FAKE_LAST_SUCCESS=fresh)
+        self.assertIn(f"PASS     12  the nightly reset last succeeded at {fresh}", done.stdout)
 
 
 if __name__ == "__main__":
