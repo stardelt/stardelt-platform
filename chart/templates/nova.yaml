@@ -227,6 +227,14 @@ spec:
               value: "1"
             - name: NOVA_MCP_AUDIENCE
               value: {{ .Values.nova.mcp.audience | default (printf "%s/mcp" $publicUrl) | quote }}
+            {{- with .Values.nova.mcp.maxRows }}
+            - name: NOVA_MCP_MAX_ROWS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.nova.mcp.queryTimeoutSeconds }}
+            - name: NOVA_MCP_QUERY_TIMEOUT_SECS
+              value: {{ . | quote }}
+            {{- end }}
             {{- end }}
             {{- /* The public client `stardelt login` signs in with (device flow): Nova tells it to
                    the command line at GET /api/auth/config (stardelt-nova#312). The platform's own

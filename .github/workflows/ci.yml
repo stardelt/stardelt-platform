@@ -308,6 +308,17 @@ jobs:
           helm template stardelt chart -n stardelt | grep -q 'name: stardelt-spark-runtimes'
           helm template stardelt chart -n stardelt --set superset.enabled=true > /dev/null
           helm template stardelt chart -n stardelt -f chart/values-slim.yaml > /dev/null
+          # The MCP row cap and timeout reach the Deployment (platform#1370). Unset stays
+          # unset, so Nova's own default applies.
+          test "$(helm template stardelt chart -n stardelt --set nova.auth.mode=oidc \
+                    --set identity.mode=platform --set platform.baseDomain=example.com \
+                    --set nova.mcp.enabled=true --set nova.mcp.maxRows=500 \
+                    --set nova.mcp.queryTimeoutSeconds=120 \
+                    | grep -c -e 'name: NOVA_MCP_MAX_ROWS' -e 'name: NOVA_MCP_QUERY_TIMEOUT_SECS' || true)" = 2
+          test "$(helm template stardelt chart -n stardelt --set nova.auth.mode=oidc \
+                    --set identity.mode=platform --set platform.baseDomain=example.com \
+                    --set nova.mcp.enabled=true \
+                    | grep -c -e 'name: NOVA_MCP_MAX_ROWS' -e 'name: NOVA_MCP_QUERY_TIMEOUT_SECS' || true)" = 0
           # chart-path catalog backups (#51): the Cluster declares the
           # barmanObjectStore config, exactly one ScheduledBackup renders, and
           # both follow the configured bucket and the enabled switch.
