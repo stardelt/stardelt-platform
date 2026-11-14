@@ -7,6 +7,7 @@ import yaml
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 MANIFEST = REPO_ROOT / "manifests" / "spark-stream-rbac.yaml"
+DOCS = [d for d in yaml.safe_load_all(MANIFEST.read_text()) if d]
 
 WIDENED_SECRET_KEY_REF = (
     "object.spec.containers.all(c, !has(c.env) || c.env.all(e, !has(e.valueFrom)"
@@ -26,22 +27,24 @@ CONNECT_ONLY_SECRET_KEY_REF = (
 class SparkStreamRbacTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.docs = [d for d in yaml.safe_load_all(MANIFEST.read_text()) if d]
-        cls.policy = next(d for d in cls.docs
-                          if d.get("kind") == "ValidatingAdmissionPolicy")
-        cls.binding = next(d for d in cls.docs
-                           if d.get("kind") == "ValidatingAdmissionPolicyBinding")
+        cls.docs = DOCS
+        cls.policy = cls.by_name("ValidatingAdmissionPolicy", "spark-stream-executor-pods")
+        cls.binding = cls.by_name("ValidatingAdmissionPolicyBinding", "spark-stream-executor-pods")
+        cls.configmap_policy = cls.by_name("ValidatingAdmissionPolicy", "spark-stream-configmaps")
+        cls.configmap_binding = cls.by_name(
+            "ValidatingAdmissionPolicyBinding", "spark-stream-configmaps")
         cls.role = next(d for d in cls.docs if d.get("kind") == "Role")
         cls.role_binding = next(d for d in cls.docs if d.get("kind") == "RoleBinding")
         cls.service_account = next(d for d in cls.docs if d.get("kind") == "ServiceAccount")
 
-    def by_name(self, kind, name):
-        for doc in self.docs:
+    @staticmethod
+    def by_name(kind, name):
+        for doc in DOCS:
             if doc.get("kind") == kind and doc.get("metadata", {}).get("name") == name:
                 return doc
-        self.fail(f"no {kind} named {name} in {MANIFEST}")
+        raise AssertionError(f"no {kind} named {name} in {MANIFEST}")
 
-    def test_the_file_holds_exactly_the_five_objects(self):
+    def test_the_file_holds_exactly_the_seven_objects(self):
         self.assertEqual(
             [(d["kind"], d["metadata"]["name"]) for d in self.docs],
             [
@@ -50,6 +53,8 @@ class SparkStreamRbacTest(unittest.TestCase):
                 ("RoleBinding", "spark-stream-driver"),
                 ("ValidatingAdmissionPolicy", "spark-stream-executor-pods"),
                 ("ValidatingAdmissionPolicyBinding", "spark-stream-executor-pods"),
+                ("ValidatingAdmissionPolicy", "spark-stream-configmaps"),
+                ("ValidatingAdmissionPolicyBinding", "spark-stream-configmaps"),
             ],
         )
 
@@ -131,6 +136,32 @@ class SparkStreamRbacTest(unittest.TestCase):
         self.assertEqual(self.binding["spec"]["policyName"], "spark-stream-executor-pods")
         self.assertEqual(self.binding["spec"]["validationActions"], ["Deny"])
         selector = self.binding["spec"]["matchResources"]["namespaceSelector"]
+        self.assertEqual(selector["matchLabels"]["kubernetes.io/metadata.name"], "stardelt")
+
+    def test_the_config_map_policy_matches_only_the_stream_driver(self):
+        policy = self.configmap_policy
+        self.assertEqual(policy["metadata"]["name"], "spark-stream-configmaps")
+        self.assertNotIn("namespace", policy["metadata"])
+        self.assertEqual(policy["spec"]["failurePolicy"], "Fail")
+        self.assertEqual(policy["spec"]["matchConstraints"]["resourceRules"], [
+            {"apiGroups": [""], "apiVersions": ["v1"],
+             "operations": ["CREATE", "DELETE"], "resources": ["configmaps"]},
+        ])
+        conditions = policy["spec"]["matchConditions"]
+        self.assertEqual(len(conditions), 1)
+        self.assertIn(":spark-stream-driver'", conditions[0]["expression"])
+        self.assertNotIn(":spark-connect'", conditions[0]["expression"])
+        self.assertNotIn(":spark-batch-driver'", conditions[0]["expression"])
+        validations = policy["spec"]["validations"]
+        self.assertEqual(len(validations), 1)
+        self.assertEqual(validations[0]["expression"],
+                         "request.name.startsWith('spark-') && request.name.endsWith('-conf-map')")
+
+    def test_the_config_map_binding_denies_in_this_namespace(self):
+        binding = self.configmap_binding
+        self.assertEqual(binding["spec"]["policyName"], "spark-stream-configmaps")
+        self.assertEqual(binding["spec"]["validationActions"], ["Deny"])
+        selector = binding["spec"]["matchResources"]["namespaceSelector"]
         self.assertEqual(selector["matchLabels"]["kubernetes.io/metadata.name"], "stardelt")
 
     def test_make_install_applies_it_inside_the_admission_policy_block(self):

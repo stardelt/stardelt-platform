@@ -13,6 +13,12 @@
 # verb for verb — pods plus one ConfigMap, nothing else, and no Secret access for
 # the driver itself. `manifests/spark-connect-pod-guard.yaml` is unchanged: the
 # shared Connect server keeps the `stardelt-s3-creds`-only executor rule.
+#
+# The ConfigMap half of that Role is bounded by `spark-stream-configmaps` below,
+# as the Connect and batch drivers' are by `spark-connect-configmaps` and
+# `spark-batch-configmaps`: without it `create`/`delete` on `configmaps` would
+# reach `trino-catalog`, `stardelt-identity`, `spark-confmap-janitor-script` and
+# every other ConfigMap in the namespace.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -104,6 +110,42 @@ metadata:
   labels: { app.kubernetes.io/part-of: stardelt }
 spec:
   policyName: spark-stream-executor-pods
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: stardelt
+---
+# What ConfigMaps the StreamApp driver may create or delete. A StreamApp driver writes one
+# `spark-<app>-conf-map` per application (same shape as the Connect session and batch
+# ConfigMaps), so the name filter and the two verbs are the Connect policy's.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: spark-stream-configmaps
+  labels: { app.kubernetes.io/part-of: stardelt }
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "DELETE"]
+        resources: ["configmaps"]
+  matchConditions:
+    - name: created-by-spark-stream-driver
+      expression: "request.userInfo.username == 'system:serviceaccount:' + request.namespace + ':spark-stream-driver'"
+  validations:
+    - expression: "request.name.startsWith('spark-') && request.name.endsWith('-conf-map')"
+      message: "the StreamApp driver may create or delete only its own spark-*-conf-map ConfigMaps"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: spark-stream-configmaps
+  labels: { app.kubernetes.io/part-of: stardelt }
+spec:
+  policyName: spark-stream-configmaps
   validationActions: [Deny]
   matchResources:
     namespaceSelector:
