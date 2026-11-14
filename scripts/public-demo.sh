@@ -171,6 +171,7 @@ if [ "$mode" = check ]; then
       11) check_11 || rc=1 ;;
       12) check_12 || rc=1 ;;
       13) check_13 || rc=1 ;;
+      14) check_14 || rc=1 ;;
       *) check_msg="unknown row $id"; check_fix="this is a bug in scripts/public-demo.sh"; rc=1 ;;
     esac
     check_rows=$((check_rows + 1))
@@ -551,6 +552,32 @@ PY
     check_msg="the reset principal holds playground's warehouse modify"
   }
 
+  # 14. Nobody keeps the shared demo sign-in locked out (platform#1105 option 3).
+  check_14() {
+    kc_prepare || { kc_down; return 1; }
+    local uid out disabled until failures
+    uid="$(user_id "$PERSON")"
+    if [ -z "$uid" ]; then
+      check_msg="the person $PERSON does not exist"
+      check_fix="make public-demo YES=1"
+      return 1
+    fi
+    if ! out="$(kc "$API/attack-detection/brute-force/users/$uid")"; then
+      check_msg="the brute-force state of $PERSON cannot be read"
+      check_fix="make public-demo YES=1"
+      return 1
+    fi
+    disabled="$(jq -r '.disabled // false' <<<"$out")"
+    until="$(jq -r '.failedLoginNotBefore // 0' <<<"$out")"
+    failures="$(jq -r '.numFailures // 0' <<<"$out")"
+    if [ "$disabled" = true ] || [ "$until" -gt "$(date +%s)" ]; then
+      check_msg="the demo sign-in is locked out (disabled=$disabled, locked until $until)"
+      check_fix="make public-demo YES=1"
+      return 1
+    fi
+    check_msg="the demo sign-in is not locked out ($failures failed attempt(s))"
+  }
+
   render 0a
   render 0b
   render 0
@@ -569,6 +596,7 @@ PY
   render 11
   render 12
   render 13
+  render 14
 
   echo ""
   if [ "$check_ok" -eq "$check_rows" ]; then
