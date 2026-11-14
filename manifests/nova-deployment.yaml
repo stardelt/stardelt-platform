@@ -166,6 +166,14 @@ spec:
               value: warehouse
             - name: NOVA_DEV_USER
               value: stardelt-dev
+            # The hosted MCP endpoint (stardelt-nova#112). Off here on purpose: the
+            # manifest path is fixes-only after the operator cut-over, so turning MCP on is
+            # an explicit patch. NOVA_MCP_AUDIENCE must be the same https://<nova host>/mcp
+            # that the realm client's `aud-mcp` mapper mints (scripts/keycloak-sync-mcp-client.sh).
+            - name: NOVA_MCP_ENABLED
+              value: "0"
+            - name: NOVA_MCP_AUDIENCE
+              value: ""
             # ---- Sign-in (contract: docs/architecture/identity) --------------
             # `dev` keeps the no-login behaviour (CI, `make demo`, the kind gate).
             # To turn on SSO on a manifest install: run scripts/identity-bootstrap.sh
