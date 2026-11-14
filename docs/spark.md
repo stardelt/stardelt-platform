@@ -31,8 +31,8 @@ From a notebook, use the helper the single-user image ships (the pinned release 
 import stardelt
 
 spark = stardelt.spark()          # every catalog Trino lists for you, with your token
-spark.sql("SELECT country, confirmed_cases FROM warehouse.covid.covid_summary").show()
 spark.sql("SHOW CATALOGS").show()
+spark.sql("SELECT current_user()").show()   # the person, not the platform
 ```
 
 A scheduled job (PySpark Connect client, `pip install pyspark-client==4.1.4`) has no
@@ -60,9 +60,11 @@ for key, value in {
 spark = builder.create()          # create(), not getOrCreate(): a fresh session per token
 ```
 
-The quickstart notebook's Spark cell uses `stardelt.spark()` and prints the count
-of `warehouse.covid.covid_summary` (`demo` was removed on 2026-10-21), so one click
-in Nova's Notebooks page proves the second engine as well as the first.
+The quickstart notebook's Spark cell uses `stardelt.spark()` and reads back the
+`<catalog>.<schema>.quickstart_smoke` table the Trino cells above wrote, so one run in
+Nova's Notebooks page proves the second engine as well as the first. Members' notebooks reach
+the endpoint; the public demo's visitor pod is refused on 15002 by `manifests/spark.yaml`
+(platform#1097), and the cell reports that instead of failing.
 
 Notebook pods reach the endpoint because the JupyterHub chart's singleuser NetworkPolicy carries
 one egress rule for it (`helm-values/jupyterhub.yaml`): `podSelector:
